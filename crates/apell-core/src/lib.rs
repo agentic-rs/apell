@@ -1,5 +1,8 @@
 pub mod bundles;
+pub mod config;
+pub mod filesystem;
 mod http;
+pub mod http_request;
 pub mod llm;
 pub mod resources;
 pub mod sqlite;

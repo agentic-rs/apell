@@ -147,7 +147,15 @@ pub fn parse(bytes: &[u8]) -> Result<Bundle, String> {
   {
     return Err("Invalid applet metadata.".into());
   }
-  let allowed = ["sqlite", "llm", "resources", "device"];
+  let allowed = [
+    "sqlite",
+    "llm",
+    "resources",
+    "device",
+    "http",
+    "fs",
+    "config",
+  ];
   let mut seen = HashSet::new();
   if m
     .permissions
@@ -288,6 +296,17 @@ mod tests {
     .unwrap();
     assert!(store.load("test").is_err());
     assert!(store.install(&bytes, &digest(&bytes)).is_err());
+  }
+
+  #[test]
+  fn accepts_service_permissions_and_rejects_unknown_or_duplicate_permissions() {
+    let mut bundle = parse(&fixture("test", 1)).unwrap();
+    bundle.manifest.permissions = ["http", "fs", "config"].map(str::to_owned).to_vec();
+    assert!(parse(&serde_json::to_vec(&bundle).unwrap()).is_ok());
+    for permissions in [vec!["fs", "fs"], vec!["fs", "shell"]] {
+      bundle.manifest.permissions = permissions.into_iter().map(str::to_owned).collect();
+      assert!(parse(&serde_json::to_vec(&bundle).unwrap()).is_err());
+    }
   }
 
   #[test]

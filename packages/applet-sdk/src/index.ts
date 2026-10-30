@@ -1,14 +1,18 @@
-import type { DownloadProgress, LlmEvent } from './types';
-
-export type {
+import type {
+  ConfigEntry,
+  DirectoryEntry,
   DownloadProgress,
-  LlmConfiguration,
+  FileReadOptions,
+  FileReadResult,
+  FileStat,
+  HttpRequest,
+  HttpResponse,
+  JsonValue,
   LlmEvent,
-  LlmMessage,
-  LlmRequest,
-  QueryResult,
-  SqlValue,
 } from './types';
+import { assertJsonValue } from './json';
+
+export type * from './types';
 
 type Pending = {
   resolve: (value: unknown) => void;
@@ -137,7 +141,11 @@ export async function hostCall<T = unknown>(
         }
         reject(new HostError('The host request timed out.', partial));
       },
-      method === 'llm.complete' ? 330_000 : method === 'resources.download' ? 135_000 : 35_000,
+      method === 'llm.complete'
+        ? 330_000
+        : method === 'resources.download' || method === 'http.request'
+          ? 135_000
+          : 35_000,
     );
     pending.set(request_id, {
       resolve: (value) => resolve(value as T),
@@ -162,3 +170,49 @@ export function onDownloadProgress(handler: (event: DownloadProgress) => void): 
     downloadSubscribers.delete(handler);
   };
 }
+
+/** Native HTTP; non-2xx statuses are returned for the applet to interpret. */
+export const http = {
+  request(request: HttpRequest): Promise<HttpResponse> {
+    return hostCall('http.request', { ...request });
+  },
+};
+
+/** Relative paths in this applet's private file directory. */
+export const fs = {
+  read(path: string, options: FileReadOptions = {}): Promise<FileReadResult> {
+    return hostCall('fs.read', { path, ...options });
+  },
+  write(path: string, bytes: number[] | Uint8Array): Promise<{ size_bytes: number }> {
+    return hostCall('fs.write', { path, bytes: Array.from(bytes) });
+  },
+  list(path = ''): Promise<{ entries: DirectoryEntry[] }> {
+    return hostCall('fs.list', { path });
+  },
+  stat(path: string): Promise<FileStat> {
+    return hostCall('fs.stat', { path });
+  },
+  mkdir(path: string): Promise<void> {
+    return hostCall('fs.mkdir', { path });
+  },
+  remove(path: string): Promise<void> {
+    return hostCall('fs.remove', { path });
+  },
+  rename(from_path: string, to_path: string): Promise<void> {
+    return hostCall('fs.rename', { from_path, to_path });
+  },
+};
+
+/** Non-secret JSON preferences, persisted independently of applet files. */
+export const config = {
+  get(key: string): Promise<ConfigEntry> {
+    return hostCall('config.get', { key });
+  },
+  async set(key: string, value: JsonValue): Promise<void> {
+    assertJsonValue(value);
+    return hostCall('config.set', { key, value });
+  },
+  delete(key: string): Promise<{ deleted: boolean }> {
+    return hostCall('config.delete', { key });
+  },
+};

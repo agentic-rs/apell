@@ -70,6 +70,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-plugin-apell-credentials",
+ "tempfile",
  "tokio",
  "uuid",
 ]

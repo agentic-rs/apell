@@ -1,4 +1,5 @@
 import type { BridgeRequest } from './types';
+import { assertJsonValue } from '../../packages/applet-sdk/src/json';
 
 const methods = new Set([
   'sqlite.open',
@@ -14,6 +15,17 @@ const methods = new Set([
   'resources.download',
   'resources.read',
   'device.info',
+  'http.request',
+  'fs.read',
+  'fs.write',
+  'fs.list',
+  'fs.stat',
+  'fs.mkdir',
+  'fs.remove',
+  'fs.rename',
+  'config.get',
+  'config.set',
+  'config.delete',
 ]);
 export function isBridgeRequest(value: unknown): value is BridgeRequest {
   if (!value || typeof value !== 'object') return false;
@@ -48,6 +60,9 @@ export function attachBridge(
     }
     active.add(data.request_id);
     try {
+      if (data.method === 'config.set') {
+        assertJsonValue((data.params as Record<string, unknown>).value);
+      }
       const result = await call(data.method, data.params);
       if (!closed) port.postMessage({ type: 'response', request_id: data.request_id, result });
     } catch (error) {
