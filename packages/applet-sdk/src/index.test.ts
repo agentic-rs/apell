@@ -117,4 +117,75 @@ describe('applet bridge', () => {
     });
     await expect(response).resolves.toEqual({ resource_handle: 'resource' });
   });
+
+  it('rejects invalid configuration before transport and still permits explicit null', async () => {
+    const sdk = await import('./index');
+    connect();
+    for (const value of [{ nested: [NaN] }, { nested: { limit: Infinity } }]) {
+      await expect(sdk.config.set('saved', value)).rejects.toThrow(/finite numbers/);
+    }
+    expect(channel.postMessage).not.toHaveBeenCalled();
+    const response = sdk.config.set('saved', null);
+    await vi.waitFor(() => expect(channel.postMessage).toHaveBeenCalledOnce());
+    const request = channel.postMessage.mock.calls[0][0];
+    expect(request.params).toEqual({ key: 'saved', value: null });
+    receive({ type: 'response', request_id: request.request_id, result: null });
+    await expect(response).resolves.toBeNull();
+  });
+
+  it('round-trips binary files, HTTP responses, and missing versus null config values', async () => {
+    const sdk = await import('./index');
+    connect();
+    const timer = vi.spyOn(globalThis, 'setTimeout');
+    const operations = [
+      {
+        call: () => sdk.fs.write('cache/data.bin', new Uint8Array([0, 128, 255])),
+        method: 'fs.write',
+        params: { path: 'cache/data.bin', bytes: [0, 128, 255] },
+        result: { size_bytes: 3 },
+      },
+      {
+        call: () => sdk.fs.read('cache/data.bin', { offset: 1, length: 2 }),
+        method: 'fs.read',
+        params: { path: 'cache/data.bin', offset: 1, length: 2 },
+        result: { bytes: [128, 255], eof: true },
+      },
+      {
+        call: () => sdk.http.request({ url: 'https://example.invalid/data', timeout_ms: 120_000 }),
+        method: 'http.request',
+        params: { url: 'https://example.invalid/data', timeout_ms: 120_000 },
+        result: { status: 404, headers: [{ name: 'x-bytes', value: '\u00ff' }], body: [0, 255] },
+      },
+      {
+        call: () => sdk.config.get('missing'),
+        method: 'config.get',
+        params: { key: 'missing' },
+        result: { found: false },
+      },
+      {
+        call: () => sdk.config.get('stored_null'),
+        method: 'config.get',
+        params: { key: 'stored_null' },
+        result: { found: true, value: null },
+      },
+    ];
+    for (const operation of operations) {
+      channel.postMessage.mockClear();
+      timer.mockClear();
+      const response = operation.call();
+      await vi.waitFor(() => expect(channel.postMessage).toHaveBeenCalledOnce());
+      const request = channel.postMessage.mock.calls[0][0];
+      expect(request).toEqual({
+        type: 'request',
+        request_id: expect.any(String),
+        method: operation.method,
+        params: operation.params,
+      });
+      if (operation.method === 'http.request') {
+        expect(timer).toHaveBeenCalledWith(expect.any(Function), 135_000);
+      }
+      receive({ type: 'response', request_id: request.request_id, result: operation.result });
+      await expect(response).resolves.toEqual(operation.result);
+    }
+  });
 });

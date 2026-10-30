@@ -38,7 +38,7 @@ cargo check -p apell
 pnpm desktop:build
 ```
 
-`pnpm test` builds and executes the actual chatbot WASM against a SQLite-backed host substitute, and tests the bridge request contract. The Rust core tests cover native SQLite isolation and transactions, bundle integrity and concurrent installation, resources, and LLM parsing and cancellation. These checks complement device testing; they do not establish mobile packaging, signing, or runtime behavior.
+`pnpm test` builds and executes the actual chatbot WASM against a SQLite-backed host substitute, and tests the bridge request contract. The Rust core tests cover native SQLite isolation and transactions, bundle integrity and concurrent installation, resources, HTTP transport, applet files and config, and LLM parsing and cancellation. These checks complement device testing; they do not establish mobile packaging, signing, or runtime behavior.
 
 ## Mobile development
 
@@ -73,7 +73,7 @@ This produces `artifacts/chatbot.apell.json` and `artifacts/chatbot.sha256`. The
 
 Use **Choose bundle** for a local file. To download a bundle, provide its URL and the SHA-256 from a trusted copy of the build output. Downloads require HTTPS, with loopback HTTP allowed for local development. Remote redirects are not followed. No hosting or publication is performed by this project.
 
-A checksum pins exact bytes; it is not a publisher signature. This version is for applets you build and trust. Installing another bundle with the same `applet_id` updates its code while retaining its local databases and resources.
+A checksum pins exact bytes; it is not a publisher signature. This version is for applets you build and trust. Installing another bundle with the same `applet_id` updates its code while retaining its local databases, resources, files, and config.
 
 ## Current scope
 
@@ -82,9 +82,11 @@ A checksum pins exact bytes; it is not a publisher signature. This version is fo
 - Shared LLM configuration, streaming text completions, and cancellation.
 - Provider keys in Apple Keychain or Android Keystore-backed encrypted storage.
 - Applet-scoped resource downloads and bounded binary reads.
+- Native HTTP requests with binary bodies, headers, timeouts, and session cancellation.
+- Applet-private file operations and persistent JSON configuration.
 - A basic `device.info` API for platform and host API version.
 
-Cloud synchronization, tool calling, model discovery, generic per-applet credential APIs, filesystem APIs, background applets, and additional device integrations are deferred. Version files are retained, but there is no rollback selector, uninstall flow, or automatic resource eviction yet. Reinstall a known bundle to select its code version; database downgrade compatibility remains the applet's responsibility.
+Cloud synchronization, tool calling, model discovery, generic per-applet credential APIs, background applets, and additional device integrations are deferred. Version files are retained, but there is no rollback selector, uninstall flow, or automatic resource eviction yet. Reinstall a known bundle to select its code version; database downgrade compatibility remains the applet's responsibility.
 
 See [the architecture and API contract](docs/architecture.md) for migration guidance and limits, and [verification notes](docs/verification.md) for tested behavior.
 

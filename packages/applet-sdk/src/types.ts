@@ -38,3 +38,40 @@ export interface LlmRequest {
   messages: LlmMessage[];
   temperature?: number;
 }
+
+export type JsonValue =
+  null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
+export type ConfigEntry = { found: false } | { found: true; value: JsonValue };
+
+export interface HttpHeader {
+  name: string;
+  /** HTTP byte string: each character U+0000–U+00FF represents one byte. */
+  value: string;
+}
+export interface HttpRequest {
+  url: string;
+  method?: 'GET' | 'HEAD' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'OPTIONS';
+  headers?: HttpHeader[];
+  body?: number[];
+  timeout_ms?: number;
+}
+export interface HttpResponse {
+  status: number;
+  headers: HttpHeader[];
+  body: number[];
+}
+export interface FileReadOptions {
+  offset?: number;
+  length?: number;
+}
+export interface FileReadResult {
+  bytes: number[];
+  eof: boolean;
+}
+export interface FileStat {
+  kind: 'file' | 'directory';
+  size_bytes: number;
+}
+export interface DirectoryEntry extends FileStat {
+  name: string;
+}

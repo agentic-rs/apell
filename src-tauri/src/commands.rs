@@ -6,7 +6,7 @@ use apell_core::{
 use serde_json::{json, Value};
 use std::sync::{
   atomic::{AtomicBool, Ordering},
-  Arc,
+  Arc, RwLock,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -91,6 +91,7 @@ pub async fn shell_command(
             manifest: bundle.manifest.clone(),
             alive: Arc::new(AtomicBool::new(true)),
             cancellation: tokio::sync::watch::channel(false).0,
+            operations: Arc::new(RwLock::new(())),
           },
         );
       Ok(
@@ -184,7 +185,34 @@ pub async fn applet_call(
     })
     .await;
   }
+  if method.starts_with("fs.") {
+    let files = host.files.clone();
+    return blocking(move || {
+      session.run_local(|| files.dispatch(&session.manifest.applet_id, &method, params))
+    })
+    .await;
+  }
+  if method.starts_with("config.") {
+    let config = host.config.clone();
+    return blocking(move || {
+      session.run_local(|| config.dispatch(&session.manifest.applet_id, &method, params))
+    })
+    .await;
+  }
   match method.as_str() {
+    "http.request" => {
+      let request =
+        serde_json::from_value(params).map_err(|_| "Invalid HTTP request parameters.")?;
+      let mut cancellation = session.cancellation.subscribe();
+      if *cancellation.borrow() {
+        return Err("Applet session is closed.".into());
+      }
+      tokio::select! {
+        biased;
+        _ = cancellation.changed() => Err("Applet session is closed.".into()),
+        response = host.http.request(request) => serde_json::to_value(response?).map_err(|_| "Could not encode HTTP response.".into()),
+      }
+    }
     "llm.config" => Ok(public_config(&*host.settings.lock().await)),
     "llm.complete" => {
       let request: LlmRequest =
