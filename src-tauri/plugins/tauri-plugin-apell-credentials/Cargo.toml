@@ -1,0 +1,17 @@
+[package]
+name = "tauri-plugin-apell-credentials"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+links = "tauri-plugin-apell-credentials"
+
+[build-dependencies]
+tauri-plugin = { version = "2", features = ["build"] }
+
+[dependencies]
+tauri = "2"
+serde = { version = "1", features = ["derive"] }
+
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+apple-native-keyring-store = { version = "1.0.2", features = ["keychain", "protected"] }
+keyring-core = "1"

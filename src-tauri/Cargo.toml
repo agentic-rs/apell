@@ -1,0 +1,25 @@
+[package]
+name = "apell"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+custom-protocol = ["tauri/custom-protocol"]
+
+[lib]
+name = "apell_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+apell-core = { path = "../crates/apell-core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = [] }
+tokio = { version = "1", features = ["sync", "time", "fs"] }
+uuid = { version = "1", features = ["v4"] }
+sha2 = "0.10"
+tauri-plugin-apell-credentials = { path = "plugins/tauri-plugin-apell-credentials" }
