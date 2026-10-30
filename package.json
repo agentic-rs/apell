@@ -1,0 +1,40 @@
+{
+  "name": "apell",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "pnpm build:chatbot && vite",
+    "build": "pnpm build:chatbot && tsc --noEmit && vite build",
+    "build:chatbot": "node --experimental-strip-types scripts/build-chatbot.ts",
+    "tauri": "tauri",
+    "desktop:dev": "tauri dev",
+    "desktop:build": "tauri build",
+    "ios:init": "tauri ios init",
+    "ios:dev": "tauri ios dev",
+    "android:init": "tauri android init",
+    "android:dev": "tauri android dev",
+    "test": "pnpm build:chatbot && vitest run",
+    "check": "pnpm build && cargo test -p apell-core",
+    "format": "prettier --write . && cargo fmt --all && cargo fmt --manifest-path examples/chatbot/Cargo.toml",
+    "format:check": "prettier --check . && cargo fmt --all --check && cargo fmt --manifest-path examples/chatbot/Cargo.toml --check",
+    "check:staged": "node --experimental-strip-types scripts/check-staged.ts"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.11.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.11.0",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "esbuild": "^0.25.0",
+    "prettier": "^3.9.10",
+    "typescript": "~5.9.0",
+    "vite": "^7.0.0",
+    "vitest": "^3.2.0"
+  }
+}

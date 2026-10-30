@@ -1,0 +1,10 @@
+node_modules
+dist
+target
+artifacts
+src/generated
+src-tauri/gen
+src-tauri/icons
+examples/chatbot/pkg
+examples/chatbot/target
+pnpm-lock.yaml

@@ -1,0 +1,6 @@
+{
+  "identifier": "shell",
+  "description": "Events for the trusted shell; applets use a scoped message bridge.",
+  "windows": ["main"],
+  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
+}
