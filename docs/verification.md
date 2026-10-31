@@ -1,5 +1,7 @@
 # Verification
 
+The applet controls update passed all 21 existing TypeScript tests, formatting checks, and the native iOS simulator build. Simulator smoke checks covered the top-right capsule and menu in portrait and landscape, About details, reloading with the saved conversation intact, closing to the library, and opening the shared installation sheet. Reload replaces the native session and iframe; applet bundles need no changes to receive these host controls.
+
 The mobile launcher update was checked with:
 
 - `pnpm test`: 21 bridge, SDK, WASM, and iOS preparation tests passed.

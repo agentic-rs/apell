@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Library } from './pages/Library';
 import { Settings } from './pages/Settings';
 import { AppletView } from './pages/AppletView';
-import { closeApplet, nativeAvailable } from './lib/tauri';
+import { closeApplet, launchApplet, nativeAvailable } from './lib/tauri';
 import type { AppletSession } from './lib/types';
 import { Icon } from './components/Icon';
 import { useViewportHeight } from './lib/useViewportHeight';
@@ -16,10 +16,15 @@ export default function App() {
   if (session)
     return (
       <AppletView
+        key={session.session_id}
         session={session}
         onClose={async () => {
           await closeApplet(session.session_id);
           setSession(null);
+        }}
+        onReload={async () => {
+          await closeApplet(session.session_id);
+          setSession(await launchApplet(session.manifest.applet_id));
         }}
       />
     );

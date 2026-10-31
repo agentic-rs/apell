@@ -235,7 +235,7 @@ svg {
     max(16px, env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-left, 0px));
   background: #1e2b2540;
 }
-.install-sheet {
+.sheet-panel {
   width: min(480px, 100%);
   max-width: 100%;
   max-height: 100%;
@@ -407,17 +407,79 @@ svg {
   display: flex;
   align-items: center;
   gap: 8px;
-  min-height: 52px;
-  padding: 4px 12px;
+  justify-content: space-between;
+  min-height: 56px;
+  padding: 6px 12px 6px 20px;
   border-bottom: 1px solid var(--line);
 }
 .applet-bar > span {
+  flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 15px;
   font-weight: 500;
+}
+.applet-controls {
+  display: flex;
+  align-items: center;
+  flex: none;
+  border: 1px solid #26392e26;
+  border-radius: 24px;
+  background: #ffffffd9;
+}
+.applet-controls .icon-button {
+  width: 46px;
+  min-width: 46px;
+}
+.applet-control-divider {
+  width: 1px;
+  height: 20px;
+  background: #26392e26;
+}
+.applet-menu-actions {
+  display: grid;
+  gap: 8px;
+}
+.applet-menu-action {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 56px;
+  padding: 14px 16px;
+  text-align: left;
+  background: #fafbf7;
+}
+.applet-about h3 {
+  margin: 0 0 6px;
+  font-size: 20px;
+}
+.applet-about p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+}
+.applet-about h4 {
+  margin: 24px 0 10px;
+  font-size: 14px;
+}
+.applet-about ul {
+  display: grid;
+  gap: 10px;
+  padding-left: 20px;
+  margin: 0;
+  font-size: 14px;
+}
+.applet-state {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 20px;
+  padding: 24px;
+  text-align: center;
 }
 .applet-view iframe {
   display: block;
