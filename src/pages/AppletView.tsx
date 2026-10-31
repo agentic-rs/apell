@@ -2,20 +2,25 @@ import { useEffect, useRef, useState } from 'react';
 import { attachBridge } from '../lib/bridge';
 import { callApplet, onAppletEvent, message } from '../lib/tauri';
 import type { AppletSession } from '../lib/types';
-import { Icon } from '../components/Icon';
+import { AppletControls } from '../components/AppletControls';
 
 export function AppletView({
   session,
   onClose,
+  onReload,
 }: {
   session: AppletSession;
   onClose: () => Promise<void>;
+  onReload: () => Promise<void>;
 }) {
   const frame = useRef<HTMLIFrameElement>(null);
   const [ready, setReady] = useState(false);
   const [error, setError] = useState('');
-  const [closing, setClosing] = useState(false);
+  const [suspended, setSuspended] = useState(false);
+  const [action, setAction] = useState<'close' | 'reload' | null>(null);
+  const pending = useRef(false);
   useEffect(() => {
+    if (suspended) return;
     let dispose: (() => void) | undefined;
     let unlisten: (() => void) | undefined;
     let cancelled = false;
@@ -25,7 +30,7 @@ export function AppletView({
     setReady(false);
     setError('');
     const timeout = setTimeout(() => {
-      if (!cancelled) setError('The applet did not connect. Return to the library and reopen it.');
+      if (!cancelled) setError('The applet did not connect. Use the menu to reload it.');
     }, 15_000);
     const initialize = async () => {
       if (initializing || cancelled) return;
@@ -68,39 +73,66 @@ export function AppletView({
       channel.port1.close();
       channel.port2.close();
     };
-  }, [session]);
+  }, [session, suspended]);
+
+  const run = async (next_action: 'close' | 'reload') => {
+    if (pending.current) return;
+    pending.current = true;
+    // Suspend the old iframe and bridge while changing its native session.
+    // On failure it stays suspended; a retry must create a fresh session.
+    setSuspended(true);
+    setAction(next_action);
+    setError('');
+    try {
+      await (next_action === 'reload' ? onReload() : onClose());
+    } catch (error) {
+      setError(`Could not ${next_action} the applet. ${message(error)}`);
+    } finally {
+      pending.current = false;
+      setAction(null);
+    }
+  };
+
   return (
     <section className="applet-view">
       <header className="applet-bar">
-        <button
-          className="icon-button"
-          aria-label="Back to applets"
-          disabled={closing}
-          onClick={async () => {
-            setClosing(true);
-            try {
-              await onClose();
-            } catch (error) {
-              setError(message(error));
-              setClosing(false);
-            }
-          }}
-        >
-          <Icon name="back" />
-        </button>
         <span>{session.manifest.name}</span>
+        <AppletControls
+          manifest={session.manifest}
+          disabled={action !== null}
+          onClose={() => void run('close')}
+          onReload={() => void run('reload')}
+        />
       </header>
-      {(!ready || error || closing) && (
-        <div className={`applet-loading${error ? ' error' : ''}`} role={error ? 'alert' : 'status'}>
-          {error || (closing ? 'Closing applet…' : 'Opening applet…')}
+      {suspended ? (
+        <div className="applet-state">
+          <p className={error ? 'status error' : 'status'} role={error ? 'alert' : 'status'}>
+            {error || (action === 'close' ? 'Closing applet…' : 'Reloading applet…')}
+          </p>
+          {!action && (
+            <button className="primary" onClick={() => void run('reload')}>
+              Try reloading
+            </button>
+          )}
         </div>
+      ) : (
+        <>
+          {(!ready || error) && (
+            <div
+              className={`applet-loading${error ? ' error' : ''}`}
+              role={error ? 'alert' : 'status'}
+            >
+              {error || 'Opening applet…'}
+            </div>
+          )}
+          <iframe
+            ref={frame}
+            title={session.manifest.name}
+            sandbox="allow-scripts"
+            referrerPolicy="no-referrer"
+          />
+        </>
       )}
-      <iframe
-        ref={frame}
-        title={session.manifest.name}
-        sandbox="allow-scripts"
-        referrerPolicy="no-referrer"
-      />
     </section>
   );
 }

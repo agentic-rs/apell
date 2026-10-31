@@ -25,6 +25,8 @@ In the shell:
 
 The library shows each applet as one icon and its name. Add and Settings stay in the header. To refresh the bundled sample after updating the shell, choose **+ → Update Companion**; existing chats are preserved.
 
+Inside an applet, the top-right capsule contains **…** and **Close**. The menu offers **Reload applet** and **About this applet**. Reload starts a fresh session and keeps saved data; unsaved input is reset. About shows the applet's version and requested access. Close returns to the library.
+
 Closing and reopening the applet preserves conversations. A stopped reply is marked interrupted; interrupted replies are excluded from later model context. A pending reply left by an applet shutdown is marked interrupted when the applet next initializes.
 
 `pnpm dev` alone serves the frontend in a browser. SQLite, applet execution, and credentials require the native shell.
