@@ -1,5 +1,5 @@
 use apell_core::llm::{
-  LlmConfig, LlmEvent, LlmMessage, LlmRequest, LlmResult, LlmService, LlmStatus, LlmToolChoice,
+  LlmConfig, LlmEvent, LlmRequest, LlmResult, LlmService, LlmStatus, LlmToolChoice,
 };
 use serde_json::{json, Value};
 use std::{
@@ -158,7 +158,7 @@ async fn read_request(stream: &mut TcpStream) -> CapturedRequest {
 fn input(request_id: &str) -> LlmRequest {
   LlmRequest {
     request_id: request_id.into(),
-    messages: vec![LlmMessage { role: "user".into(), content: "Check the fixture.".into(), ..LlmMessage::default() }],
+    messages: vec![json!({"role":"user", "content":"Check the fixture.", "client_metadata":{"retain":true}})],
     tools: vec![serde_json::from_value(json!({
       "name": "inspect_fixture",
       "description": "Inspect a local fixture.",
@@ -168,25 +168,20 @@ fn input(request_id: &str) -> LlmRequest {
   }
 }
 
-fn assistant(result: &LlmResult) -> LlmMessage {
-  LlmMessage {
-    role: "assistant".into(),
-    content: result.content.clone(),
-    tool_calls: result.tool_calls.clone(),
-    continuation_id: result.continuation_id.clone(),
-    ..LlmMessage::default()
-  }
+fn assistant(result: &LlmResult) -> Value {
+  result
+    .message
+    .clone()
+    .expect("Successful results must carry a replayable assistant message.")
 }
 
 fn followup(result: &LlmResult) -> LlmRequest {
   let mut request = input("followup");
   request.messages.push(assistant(result));
-  request.messages.push(LlmMessage {
-    role: "tool".into(),
-    content: "{\"found\":true}".into(),
-    tool_call_id: Some("call_fixture".into()),
-    ..LlmMessage::default()
-  });
+  request.messages.push(json!({
+    "role":"tool", "content":"{\"found\":true}", "tool_call_id":"call_fixture",
+    "client_metadata":{"source":"applet"}
+  }));
   request
 }
 
@@ -199,13 +194,22 @@ fn completion(message: Value, finish_reason: &str) -> Value {
 }
 
 fn tool_response() -> Value {
+  // The same message must fit the SDK's whole-request depth limit on replay:
+  // request -> messages -> assistant -> 61 containers -> scalar at depth 64.
+  let mut deep_metadata = Value::Null;
+  for _ in 0..61 {
+    deep_metadata = json!([deep_metadata]);
+  }
   completion(
     json!({
       "role": "assistant",
       "content": null,
       "reasoning_content": "Visible provider reasoning.",
       "reasoning_details": [{ "type": "reasoning.encrypted", "data": "opaque-provider-state", "id": "reasoning_fixture", "index": 0 }],
-      "tool_calls": [{ "id": "call_fixture", "type": "function", "function": { "name": "inspect_fixture", "arguments": "{\"label\":\"例\"}" } }]
+      "tool_calls": [{ "id": "call_fixture", "type": "function", "function": { "name": "inspect_fixture", "arguments": "{\"label\":\"例\"}", "function_metadata":{"keep":true} }, "extra_content":{"google":{"thought_signature":"opaque-signature"}} }],
+      "arbitrary_metadata":{"nested":[1,null,{"signature":"opaque"}]},
+      "deep_metadata":deep_metadata,
+      "annotations":[{"source":"fixture"}]
     }),
     "tool_calls",
   )
@@ -236,73 +240,79 @@ async fn generate(
   .await
   .expect("LLM generation did not finish.");
   let events = events.lock().unwrap().clone();
-  let terminal: Vec<_> = events
-    .iter()
-    .filter(|event| event.kind == "terminal")
-    .collect();
+  assert!(events.iter().all(|event| matches!(
+    event.kind.as_str(),
+    "started" | "text_delta" | "reasoning_delta"
+  )));
   assert_eq!(
-    terminal.len(),
-    1,
-    "Every request must emit one terminal result."
+    result.message.is_some(),
+    matches!(result.status, LlmStatus::Completed | LlmStatus::ToolCalls)
   );
-  assert_eq!(
-    serde_json::to_value(terminal[0].result.as_ref().unwrap()).unwrap(),
-    serde_json::to_value(&result).unwrap()
-  );
+  assert!(!serde_json::to_value(&result)
+    .unwrap()
+    .as_object()
+    .unwrap()
+    .contains_key("continuation_id"));
   (result, events)
 }
 
 #[tokio::test]
-async fn tool_history_and_all_assistant_reasoning_round_trip_without_exposing_provider_state() {
+async fn applet_owned_messages_replay_exactly_after_session_close_and_service_recreation() {
+  let second_message = json!({
+    "role":"assistant", "content":"The fixture exists.",
+    "reasoning_content":"Second turn reasoning.", "provider_extension":{"ref":"response-reference"}
+  });
   let server = Server::start(vec![
     Reply::Json(tool_response()),
-    Reply::Json(completion(json!({ "role": "assistant", "content": "The fixture exists.", "reasoning_content": "Second turn reasoning." }), "stop")),
-    Reply::Json(completion(json!({ "role": "assistant", "content": "Still available." }), "stop")),
-  ]).await;
+    Reply::Json(completion(second_message.clone(), "stop")),
+    Reply::Json(completion(
+      json!({"role":"assistant", "content":"Still available."}),
+      "stop",
+    )),
+  ])
+  .await;
   let service = LlmService::new().unwrap();
-  service.register_session("session").unwrap();
+  service.register_session("first_launch").unwrap();
   let mut request = input("tools");
+  request.stream = false;
+  request.max_output_tokens = Some(1024);
   request.tool_choice = Some(LlmToolChoice::Named {
     name: "inspect_fixture".into(),
   });
-  let (first, events) = generate(&service, "session", request, &server.config).await;
+  let (first, events) = generate(&service, "first_launch", request, &server.config).await;
   assert_eq!(first.status, LlmStatus::ToolCalls);
-  assert!(first.content.is_empty());
-  assert_eq!(first.tool_calls[0].arguments, "{\"label\":\"例\"}");
-  assert!(first.continuation_id.is_some());
-  assert!(events
-    .iter()
-    .any(|event| event.kind == "reasoning_delta" && event.text == "Visible provider reasoning."));
-  assert!(
-    events.iter().any(
-      |event| event.kind == "tool_call" && event.tool_call.as_ref() == first.tool_calls.first()
-    )
+  assert_eq!(
+    first.message.as_ref().unwrap(),
+    &tool_response()["choices"][0]["message"]
   );
-  assert!(!serde_json::to_string(&first)
-    .unwrap()
-    .contains("opaque-provider-state"));
+  assert_eq!(first.tool_calls[0].arguments, "{\"label\":\"例\"}");
+  assert!(events.iter().all(|event| event.kind == "started"));
   assert_eq!(first.provenance.connection_id, server.config.connection_id);
   assert_eq!(first.provenance.requested_model_id, "requested-alias");
   assert_eq!(
     first.provenance.model_id.as_deref(),
     Some("actual-model-revision")
   );
-
-  let mut next = followup(&first);
+  // This serialization represents applet persistence. No host cache, launch
+  // identity, or original service is available when it is replayed.
+  let persisted = serde_json::to_string(&followup(&first)).unwrap();
+  service.close_session("first_launch");
+  drop(service);
+  let service = LlmService::new().unwrap();
+  service.register_session("second_launch").unwrap();
+  let mut next: LlmRequest = serde_json::from_str(&persisted).unwrap();
+  next.stream = false;
   next.tool_choice = Some(LlmToolChoice::Mode("auto".into()));
-  let (second, _) = generate(&service, "session", next.clone(), &server.config).await;
+  let (second, _) = generate(&service, "second_launch", next.clone(), &server.config).await;
   assert_eq!(second.status, LlmStatus::Completed);
-  assert!(second.continuation_id.is_some());
+  assert_eq!(second.message, Some(second_message.clone()));
   next.request_id = "third_turn".into();
   next.messages.push(assistant(&second));
-  next.messages.push(LlmMessage {
-    role: "user".into(),
-    content: "Check again.".into(),
-    ..LlmMessage::default()
-  });
-  let (third, _) = generate(&service, "session", next, &server.config).await;
+  next
+    .messages
+    .push(json!({"role":"user", "content":"Check again."}));
+  let (third, _) = generate(&service, "second_launch", next, &server.config).await;
   assert_eq!(third.status, LlmStatus::Completed);
-
   let requests = server.requests();
   assert_eq!(requests.len(), 3);
   assert!(requests[0]
@@ -312,91 +322,68 @@ async fn tool_history_and_all_assistant_reasoning_round_trip_without_exposing_pr
     .headers
     .to_ascii_lowercase()
     .contains("authorization: bearer fixture-api-key"));
+  assert_eq!(requests[0].body["stream"], false);
+  assert_eq!(requests[0].body["max_tokens"], 1024);
+  assert!(requests[0].body.get("max_output_tokens").is_none());
   assert_eq!(requests[0].body["tools"][0]["type"], "function");
   assert_eq!(
-    requests[0].body["tools"][0]["function"]["name"],
-    "inspect_fixture"
-  );
-  assert_eq!(
     requests[0].body["tool_choice"],
-    json!({ "type": "function", "function": { "name": "inspect_fixture" } })
+    json!({"type":"function", "function":{"name":"inspect_fixture"}})
   );
   assert_eq!(requests[1].body["tool_choice"], "auto");
   for sent in &requests[1..] {
+    assert_eq!(sent.body["messages"][0], input("fixture").messages[0]);
     assert_eq!(
-      sent.body["messages"][1]["reasoning_content"],
-      "Visible provider reasoning."
-    );
-    assert_eq!(
-      sent.body["messages"][1]["reasoning_details"],
-      tool_response()["choices"][0]["message"]["reasoning_details"]
-    );
-    assert_eq!(
-      sent.body["messages"][1]["tool_calls"],
-      tool_response()["choices"][0]["message"]["tool_calls"]
+      sent.body["messages"][1],
+      tool_response()["choices"][0]["message"]
     );
     assert_eq!(
       sent.body["messages"][2],
-      json!({ "role": "tool", "tool_call_id": "call_fixture", "content": "{\"found\":true}" })
+      json!({
+        "role":"tool", "tool_call_id":"call_fixture", "content":"{\"found\":true}",
+        "client_metadata":{"source":"applet"}
+      })
     );
     let encoded = sent.body.to_string();
     assert!(!encoded.contains("continuation_id"));
     assert!(!encoded.contains("connection_id"));
     assert!(!encoded.contains("fixture-api-key"));
   }
-  assert_eq!(
-    requests[2].body["messages"][3]["reasoning_content"],
-    "Second turn reasoning."
-  );
+  assert_eq!(requests[2].body["messages"][3], second_message);
 }
 
 #[tokio::test]
-async fn continuation_rejects_wrong_session_mutation_and_connection_changes_before_network() {
-  let server = Server::start(vec![Reply::Json(tool_response())]).await;
+async fn unknown_stream_metadata_requires_explicit_buffered_request_without_hidden_retry() {
+  let message = json!({
+    "role":"assistant", "content":"Answer.",
+    "reasoning_details":[{"type":"reasoning.encrypted", "data":"opaque"}],
+    "vendor_metadata":{"signature":"signed"}
+  });
+  let server = Server::start(vec![
+    Reply::Stream(sse(
+      json!({"choices":[{"delta":message, "finish_reason":"stop"}]}),
+    )),
+    Reply::Json(completion(message.clone(), "stop")),
+  ])
+  .await;
   let service = LlmService::new().unwrap();
-  service.register_session("owner").unwrap();
-  service.register_session("other").unwrap();
-  let (first, _) = generate(&service, "owner", input("first"), &server.config).await;
-  let continuation = followup(&first);
-  let mut attempts = vec![("other", continuation.clone(), server.config.clone())];
-  let mut invalid = continuation.clone();
-  invalid.messages[1].continuation_id = Some("unknown-token".into());
-  attempts.push(("owner", invalid, server.config.clone()));
-  let mut changed = continuation.clone();
-  changed.messages[1].content = "Altered assistant text.".into();
-  attempts.push(("owner", changed, server.config.clone()));
-  let mut changed = continuation.clone();
-  changed.messages[1].tool_calls[0].arguments = "{}".into();
-  attempts.push(("owner", changed, server.config.clone()));
-  let mut connection = server.config.clone();
-  connection.connection_id = "different-connection".into();
-  attempts.push(("owner", continuation.clone(), connection));
-  let mut model = server.config.clone();
-  model.model_id = "different-model".into();
-  attempts.push(("owner", continuation.clone(), model));
-  let mut endpoint = server.config.clone();
-  endpoint.base_url.push_str("/different");
-  attempts.push(("owner", continuation, endpoint));
-  for (index, (session_id, mut request, config)) in attempts.into_iter().enumerate() {
-    request.request_id = format!("invalid_{index}");
-    let (result, _) = generate(&service, session_id, request, &config).await;
-    assert_eq!(result.status, LlmStatus::Failed);
-    assert_eq!(result.error.as_ref().unwrap().code, "invalid_continuation");
-    assert!(result.provenance.model_id.is_none());
-    assert_eq!(
-      server.requests().len(),
-      1,
-      "Invalid continuation reached the provider."
-    );
-  }
-  // A rejected replay must not consume or corrupt the owner's token.
-  // The next valid replay reaches our server, which intentionally returns an error.
-  let (valid, _) = generate(&service, "owner", followup(&first), &server.config).await;
-  assert_ne!(
-    valid.error.as_ref().map(|error| error.code.as_str()),
-    Some("invalid_continuation")
+  service.register_session("session").unwrap();
+  let (streamed, _) = generate(&service, "session", input("stream"), &server.config).await;
+  assert_eq!(streamed.status, LlmStatus::Unsupported);
+  assert_eq!(streamed.content, "Answer.");
+  assert!(streamed.message.is_none());
+  assert_eq!(
+    streamed.error.unwrap().capability.as_deref(),
+    Some("stream_metadata")
   );
-  assert_eq!(server.requests().len(), 2);
+  assert_eq!(server.requests().len(), 1);
+  let mut request = input("buffered");
+  request.stream = false;
+  let (buffered, events) = generate(&service, "session", request, &server.config).await;
+  assert_eq!(buffered.status, LlmStatus::Completed);
+  assert_eq!(buffered.message, Some(message));
+  assert!(events.iter().all(|event| event.kind == "started"));
+  assert_eq!(server.requests()[1].body["stream"], false);
 }
 
 #[tokio::test]
@@ -419,7 +406,7 @@ async fn cancellation_returns_native_partial_answer_and_actual_model() {
       server.config.clone(),
       None,
       move |event| {
-        if event.kind == "delta" {
+        if event.kind == "text_delta" {
           cancel.cancel("session", "cancelled").unwrap();
         }
         emitted.lock().unwrap().push(event);
@@ -435,21 +422,12 @@ async fn cancellation_returns_native_partial_answer_and_actual_model() {
     Some("actual-model-revision")
   );
   assert_eq!(result.provenance.connection_id, server.config.connection_id);
-  assert!(result.continuation_id.is_none());
+  assert!(result.message.is_none());
   let events = events.lock().unwrap();
-  let terminals: Vec<_> = events
-    .iter()
-    .filter(|event| event.kind == "terminal")
-    .collect();
-  assert_eq!(terminals.len(), 1);
-  assert_eq!(
-    terminals[0].result.as_ref().unwrap().content,
-    result.content
-  );
-  assert_eq!(
-    terminals[0].result.as_ref().unwrap().status,
-    LlmStatus::Cancelled
-  );
+  assert!(events.iter().all(|event| matches!(
+    event.kind.as_str(),
+    "started" | "text_delta" | "reasoning_delta"
+  )));
 }
 
 #[tokio::test]
@@ -468,7 +446,7 @@ async fn truncation_and_transport_eof_keep_partial_answers_without_claiming_comp
   assert_eq!(truncated.status, LlmStatus::Truncated);
   assert_eq!(truncated.content, "Token-limited partial.");
   assert_eq!(truncated.finish_reason.as_deref(), Some("length"));
-  assert!(truncated.continuation_id.is_none());
+  assert!(truncated.message.is_none());
   let (interrupted, _) = generate(&service, "session", input("interrupted"), &server.config).await;
   assert_eq!(interrupted.status, LlmStatus::Failed);
   assert_eq!(interrupted.content, "Transport partial.");
@@ -477,7 +455,7 @@ async fn truncation_and_transport_eof_keep_partial_answers_without_claiming_comp
     Some("stream-model")
   );
   assert!(interrupted.error.is_some());
-  assert!(interrupted.continuation_id.is_none());
+  assert!(interrupted.message.is_none());
 }
 
 #[tokio::test]
@@ -690,7 +668,7 @@ async fn tokn_bounds_cumulative_stream_bytes_even_when_events_are_only_comments(
   assert_eq!(result.status, LlmStatus::Failed);
   assert_eq!(result.content, "Bounded partial.");
   assert_eq!(result.error.unwrap().code, "response_limit");
-  assert!(result.continuation_id.is_none());
+  assert!(result.message.is_none());
 }
 
 #[tokio::test]

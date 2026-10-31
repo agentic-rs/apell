@@ -1,4 +1,6 @@
-use super::{Failure, LlmConfig, LlmRequest, LlmToolChoice, MAX_INPUT_BYTES, MAX_TOOLS};
+use super::{
+  Failure, LlmConfig, LlmRequest, LlmToolCall, LlmToolChoice, MAX_INPUT_BYTES, MAX_TOOLS,
+};
 use reqwest::Url;
 use std::collections::HashSet;
 use tokn_sdk::policy::{CanonicalAuthority, InvalidAuthority, InvalidHost};
@@ -109,6 +111,12 @@ pub(super) fn request(request: &LlmRequest) -> Result<(), Failure> {
   {
     return Err(invalid("Temperature must be between 0 and 2."));
   }
+  if request
+    .max_output_tokens
+    .is_some_and(|limit| !(1..=131_072).contains(&limit))
+  {
+    return Err(invalid("Max output tokens must be between 1 and 131072."));
+  }
   // Include tool schemas, arguments, results, and metadata, not only chat text.
   if serde_json::to_vec(request)
     .map_err(|_| invalid("The LLM request is not valid JSON."))?
@@ -130,7 +138,7 @@ pub(super) fn request(request: &LlmRequest) -> Result<(), Failure> {
         "Tool definitions require unique valid names and JSON object parameters.",
       ));
     }
-    validate_json_depth(&tool.parameters, 0)?;
+    validate_json_depth(&tool.parameters, 3)?;
   }
   match &request.tool_choice {
     Some(LlmToolChoice::Mode(mode)) if !matches!(mode.as_str(), "auto" | "none" | "required") => {
@@ -148,18 +156,24 @@ pub(super) fn request(request: &LlmRequest) -> Result<(), Failure> {
   let mut pending = HashSet::new();
   let mut meaningful = false;
   for message in &request.messages {
-    if !matches!(
-      message.role.as_str(),
-      "system" | "user" | "assistant" | "tool"
-    ) {
-      return Err(invalid("The LLM message role is unsupported."));
-    }
-    meaningful |=
-      !message.content.is_empty() || !message.tool_calls.is_empty() || message.role == "tool";
-    if message.role == "tool" {
-      let Some(id) = message.tool_call_id.as_deref() else {
-        return Err(invalid("A tool result requires its tool call ID."));
-      };
+    let object = message
+      .as_object()
+      .ok_or_else(|| invalid("Messages must be JSON objects."))?;
+    let tool_calls = message_fields(object)?;
+    let role = object["role"]
+      .as_str()
+      .expect("message_fields validates the role");
+    let content = object
+      .get("content")
+      .and_then(serde_json::Value::as_str)
+      .unwrap_or("");
+    meaningful |= !content.is_empty() || !tool_calls.is_empty() || role == "tool";
+    if role == "tool" {
+      let id = object
+        .get("tool_call_id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|id| valid_call_id(id))
+        .ok_or_else(|| invalid("A tool result requires its tool call ID."))?;
       if !pending.remove(id) {
         return Err(invalid(
           "A tool result does not match an outstanding assistant tool call.",
@@ -169,34 +183,12 @@ pub(super) fn request(request: &LlmRequest) -> Result<(), Failure> {
       return Err(invalid(
         "Provide every tool result before the next conversation message.",
       ));
-    } else if message.tool_call_id.is_some() {
-      return Err(invalid("Only tool results can carry a tool call ID."));
     }
-    if message.role != "assistant"
-      && (!message.tool_calls.is_empty() || message.continuation_id.is_some())
-    {
-      return Err(invalid(
-        "Only assistant messages can carry tool calls or continuation handles.",
-      ));
-    }
-    if message.tool_calls.len() > MAX_TOOLS {
-      return Err(invalid("Too many assistant tool calls."));
-    }
-    for call in &message.tool_calls {
-      if !valid_call_id(&call.id) || !valid_tool_name(&call.name) || !calls.insert(call.id.as_str())
-      {
-        return Err(invalid(
-          "Assistant tool calls require unique valid IDs and valid names.",
-        ));
+    for call in tool_calls {
+      if !calls.insert(call.id.clone()) {
+        return Err(invalid("Assistant tool calls require unique IDs."));
       }
-      pending.insert(call.id.as_str());
-    }
-    if message
-      .continuation_id
-      .as_deref()
-      .is_some_and(|id| !valid_id(id))
-    {
-      return Err(invalid("The continuation handle is invalid."));
+      pending.insert(call.id);
     }
   }
   if !pending.is_empty() {
@@ -210,9 +202,98 @@ pub(super) fn request(request: &LlmRequest) -> Result<(), Failure> {
   Ok(())
 }
 
+/// Shared message shape checks keep successful outputs valid as future input.
+/// Unknown provider metadata remains untouched.
+pub(super) fn message_fields(
+  object: &serde_json::Map<String, serde_json::Value>,
+) -> Result<Vec<LlmToolCall>, Failure> {
+  for value in object.values() {
+    // Request object -> messages array -> message object -> field value.
+    // Match the SDK's whole-request depth limit so returned messages replay.
+    validate_json_depth(value, 3)?;
+  }
+  let role = object
+    .get("role")
+    .and_then(serde_json::Value::as_str)
+    .filter(|role| matches!(*role, "system" | "user" | "assistant" | "tool"))
+    .ok_or_else(|| invalid("The LLM message role is unsupported."))?;
+  if object
+    .get("content")
+    .is_some_and(|value| !value.is_null() && !value.is_string())
+  {
+    return Err(invalid("Message content must be a string or null."));
+  }
+  if role == "tool" {
+    if object
+      .get("tool_call_id")
+      .and_then(serde_json::Value::as_str)
+      .is_none_or(|id| !valid_call_id(id))
+    {
+      return Err(invalid("A tool result requires its tool call ID."));
+    }
+  } else if object
+    .get("tool_call_id")
+    .is_some_and(|value| !value.is_null())
+  {
+    return Err(invalid("Only tool results can carry a tool call ID."));
+  }
+  if object
+    .get("function_call")
+    .is_some_and(|value| !value.is_null())
+  {
+    return Err(Failure::unsupported("legacy_function_call"));
+  }
+  let calls = match object.get("tool_calls") {
+    None | Some(serde_json::Value::Null) => &[][..],
+    Some(serde_json::Value::Array(calls)) if role == "assistant" => calls.as_slice(),
+    _ => {
+      return Err(invalid(
+        "Only assistant messages can carry an array of tool calls.",
+      ))
+    }
+  };
+  if calls.len() > MAX_TOOLS {
+    return Err(invalid("Too many assistant tool calls."));
+  }
+  calls.iter().map(tool_call).collect()
+}
+
+/// Validate understood fields without projecting away provider-owned fields.
+fn tool_call(value: &serde_json::Value) -> Result<LlmToolCall, Failure> {
+  let fields = value
+    .as_object()
+    .ok_or_else(|| invalid("A tool call must be an object."))?;
+  if fields.get("type").and_then(serde_json::Value::as_str) != Some("function") {
+    return Err(Failure::unsupported("tool_type"));
+  }
+  let id = fields
+    .get("id")
+    .and_then(serde_json::Value::as_str)
+    .filter(|id| valid_call_id(id))
+    .ok_or_else(|| invalid("A tool call requires a valid ID."))?;
+  let function = fields
+    .get("function")
+    .and_then(serde_json::Value::as_object)
+    .ok_or_else(|| invalid("A tool call requires a function."))?;
+  let name = function
+    .get("name")
+    .and_then(serde_json::Value::as_str)
+    .filter(|name| valid_tool_name(name))
+    .ok_or_else(|| invalid("A tool call requires a valid function name."))?;
+  let arguments = function
+    .get("arguments")
+    .and_then(serde_json::Value::as_str)
+    .ok_or_else(|| invalid("Tool arguments must be JSON text."))?;
+  Ok(LlmToolCall {
+    id: id.into(),
+    name: name.into(),
+    arguments: arguments.into(),
+  })
+}
+
 fn validate_json_depth(value: &serde_json::Value, depth: usize) -> Result<(), Failure> {
-  if depth > 64 {
-    return Err(invalid("The tool schema is nested too deeply."));
+  if depth >= 64 && (value.is_array() || value.is_object()) {
+    return Err(invalid("The request JSON is nested too deeply."));
   }
   match value {
     serde_json::Value::Array(items) => {

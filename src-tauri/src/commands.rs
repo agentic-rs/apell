@@ -227,7 +227,7 @@ pub async fn applet_call(
       }
     }
     "llm.config" => Ok(public_config(&*host.settings.lock().await)),
-    "llm.complete" | "llm.generate" => {
+    "llm.generate" => {
       let request: LlmRequest =
         serde_json::from_value(params).map_err(|_| "Invalid LLM request.")?;
       let current = host.settings.lock().await;
@@ -258,13 +258,13 @@ pub async fn applet_call(
       };
       let key = match key_result {
         Ok(key) => key,
-        Err(_) if method == "llm.generate" => {
+        Err(_) => {
           let result = LlmResult {
             request_id: request.request_id,
             status: LlmStatus::Failed,
             content: String::new(),
             tool_calls: Vec::new(),
-            continuation_id: None,
+            message: None,
             finish_reason: None,
             provenance: config.provenance(),
             error: Some(LlmFailure {
@@ -274,30 +274,14 @@ pub async fn applet_call(
               retryable: true,
             }),
           };
-          emit(LlmEvent {
-            request_id: result.request_id.clone(),
-            kind: "terminal".into(),
-            text: String::new(),
-            result: Some(result.clone()),
-            tool_call: None,
-            provenance: None,
-          });
           return serde_json::to_value(result).map_err(|_| "Could not encode LLM result.".into());
         }
-        Err(error) => return Err(error),
       };
-      if method == "llm.generate" {
-        let result = host
-          .llm
-          .generate(&session_id, request, config, key, emit)
-          .await;
-        serde_json::to_value(result).map_err(|_| "Could not encode LLM result.".into())
-      } else {
-        host
-          .llm
-          .complete(&session_id, request, config, key, emit)
-          .await
-      }
+      let result = host
+        .llm
+        .generate(&session_id, request, config, key, emit)
+        .await;
+      serde_json::to_value(result).map_err(|_| "Could not encode LLM result.".into())
     }
     "llm.cancel" => {
       host

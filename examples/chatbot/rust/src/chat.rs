@@ -19,12 +19,32 @@ impl Drop for SendingGuard {
 struct Completion {
   content: String,
   status: String,
+  message: Option<Value>,
+  provenance: Value,
   error: Option<CompletionError>,
 }
 
 #[derive(Deserialize)]
 struct CompletionError {
   message: String,
+}
+
+fn is_assistant_message(message: &Value) -> bool {
+  message.is_object() && message.get("role").and_then(Value::as_str) == Some("assistant")
+}
+
+fn history_message(row: &[Value]) -> Result<Value, JsValue> {
+  let role = storage::cell(row, 0)?;
+  if let Some(encoded) = storage::optional_cell(row, 3)? {
+    let message: Value = serde_json::from_str(&encoded)
+      .map_err(|_| bridge::error("A stored assistant message cannot be read."))?;
+    if role != "assistant" || !is_assistant_message(&message) {
+      return Err(bridge::error("A stored assistant message is invalid."));
+    }
+    return Ok(message);
+  }
+  // User messages and replies written before schema v2 contain only text.
+  Ok(json!({"role": role, "content": storage::cell(row, 1)?}))
 }
 
 async fn prepare(
@@ -37,13 +57,13 @@ async fn prepare(
   let result = async {
     let conversation = storage::query("SELECT conversation_id FROM conversations WHERE conversation_id = ?1", vec![storage::text(conversation_id)], Some(&transaction)).await?;
     if conversation.is_empty() { return Err(bridge::error("This conversation no longer exists.")); }
-    let rows = storage::query("SELECT role, content, status FROM messages WHERE conversation_id = ?1 ORDER BY rowid LIMIT 1001", vec![storage::text(conversation_id)], Some(&transaction)).await?;
+    let rows = storage::query("SELECT role, content, status, provider_message FROM messages WHERE conversation_id = ?1 ORDER BY rowid LIMIT 1001", vec![storage::text(conversation_id)], Some(&transaction)).await?;
     if rows.len() >= 1000 { return Err(bridge::error("This conversation is full. Start a new conversation.")); }
     let mut messages = vec![json!({"role": "system", "content": "You are a helpful, thoughtful assistant. Answer clearly and directly."})];
     for row in &rows {
       match storage::cell(row, 2)?.as_str() {
         "pending" => return Err(bridge::error("This conversation already has a reply in progress.")),
-        "complete" => messages.push(json!({"role": storage::cell(row, 0)?, "content": storage::cell(row, 1)?})),
+        "complete" => messages.push(history_message(row)?),
         _ => {}
       }
     }
@@ -80,35 +100,44 @@ pub async fn send(conversation_id: &str, content: &str, request_id: &str) -> Res
     json!({"request_id": request_id, "messages": messages}),
   )
   .await;
-  let (content, status) = match &result {
-    Ok(completion) => (
-      completion.content.clone(),
-      if completion.status == "completed" {
-        "complete"
-      } else {
-        "interrupted"
-      },
-    ),
-    Err(error) => (bridge::property(error, "partial_content"), "interrupted"),
+  let provider_message = result.as_ref().ok().and_then(|completion| {
+    if matches!(completion.status.as_str(), "completed" | "tool_calls") {
+      completion
+        .message
+        .as_ref()
+        .filter(|message| is_assistant_message(message))
+    } else {
+      None
+    }
+  });
+  let completed = result
+    .as_ref()
+    .is_ok_and(|completion| completion.status == "completed" && provider_message.is_some());
+  let content = match &result {
+    Ok(completion) => completion.content.clone(),
+    Err(error) => bridge::property(error, "partial_content"),
   };
   storage::execute(
-    "UPDATE messages SET content = ?1, status = ?2 WHERE message_id = ?3 AND status = 'pending'",
+    "UPDATE messages SET content = ?1, status = ?2, provider_message = ?3, provenance = ?4 WHERE message_id = ?5 AND status = 'pending'",
     vec![
       storage::text(content),
-      storage::text(status),
+      storage::text(if completed { "complete" } else { "interrupted" }),
+      storage::optional_text(provider_message.map(Value::to_string)),
+      storage::optional_text(result.as_ref().ok().map(|completion| completion.provenance.to_string())),
       storage::text(assistant_id),
     ],
     None,
   )
   .await?;
   match result {
-    Ok(completion) if completion.status == "completed" => Ok(()),
+    Ok(_) if completed => Ok(()),
     Ok(completion) => Err(bridge::error(
       completion
         .error
         .map(|error| error.message)
         .unwrap_or_else(|| {
           match completion.status.as_str() {
+            "completed" => "The model did not return a replayable assistant message.",
             "cancelled" => "The reply was stopped.",
             "truncated" => "The model reached its response limit before finishing.",
             "tool_calls" => "This chatbot requires a text reply.",

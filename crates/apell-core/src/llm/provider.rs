@@ -17,12 +17,11 @@ pub(super) struct Output {
   request_id: String,
   pub content: String,
   pub tool_calls: Vec<LlmToolCall>,
-  pub opaque: Map<String, Value>,
   pub provenance: LlmProvenance,
-  pub continuation_id: Option<String>,
+  message: Map<String, Value>,
   finish_reason: Option<String>,
   response_id: Option<String>,
-  calls: BTreeMap<usize, LlmToolCall>,
+  calls: BTreeMap<usize, Value>,
   used_bytes: usize,
   refusal: bool,
 }
@@ -33,9 +32,11 @@ impl Output {
       request_id: request_id.into(),
       content: String::new(),
       tool_calls: Vec::new(),
-      opaque: Map::new(),
       provenance,
-      continuation_id: None,
+      message: json!({"role": "assistant", "content": null})
+        .as_object()
+        .unwrap()
+        .clone(),
       finish_reason: None,
       response_id: None,
       calls: BTreeMap::new(),
@@ -55,13 +56,11 @@ impl Output {
     Ok(())
   }
 
-  fn text(&mut self, text: &str, emit: &impl Fn(LlmEvent)) -> Result<(), Failure> {
-    self.charge(text.len())?;
+  fn text(&mut self, text: &str, emit: &impl Fn(LlmEvent)) {
     self.content.push_str(text);
     if !text.is_empty() {
-      emit(event(&self.request_id, "delta", text));
+      emit(event(&self.request_id, "text_delta", text));
     }
-    Ok(())
   }
 
   fn metadata(&mut self, value: &Value) -> Result<(), Failure> {
@@ -109,174 +108,140 @@ impl Output {
     if object
       .get("role")
       .is_some_and(|role| role.as_str() != Some("assistant"))
+      || (!streaming && object.get("role").and_then(Value::as_str) != Some("assistant"))
     {
       return Err(invalid_response());
     }
-    for (name, value) in object {
-      if value.is_null() {
-        continue;
-      }
-      if !matches!(
-        name.as_str(),
-        "role"
-          | "content"
-          | "refusal"
-          | "tool_calls"
-          | "function_call"
-          | "annotations"
-          | "reasoning_content"
-          | "reasoning"
-          | "reasoning_details"
-      ) {
-        return Err(Failure::unsupported("continuation_format"));
-      }
-    }
-    if let Some(value) = object.get("content").filter(|value| !value.is_null()) {
-      self.text(value.as_str().ok_or_else(invalid_response)?, emit)?;
-    }
-    if let Some(value) = object.get("refusal").filter(|value| !value.is_null()) {
-      let refusal = value.as_str().ok_or_else(invalid_response)?;
-      self.refusal |= !refusal.is_empty();
-      // A refusal remains a distinct failed outcome, but its public text is
-      // useful partial content. Never confuse it with a transport failure.
-      self.text(refusal, emit)?;
-    }
-    for field in ["reasoning_content", "reasoning"] {
-      if let Some(value) = object.get(field).filter(|value| !value.is_null()) {
-        let text = value
-          .as_str()
-          .ok_or_else(|| Failure::unsupported("continuation_format"))?;
-        self.charge(text.len())?;
-        let entry = self.opaque.entry(field).or_insert_with(|| json!(""));
-        if let Value::String(accumulated) = entry {
-          accumulated.push_str(text);
-        }
-        if !text.is_empty() {
-          emit(event(&self.request_id, "reasoning_delta", text));
-        }
-      }
-    }
-    if let Some(details) = object
-      .get("reasoning_details")
-      .filter(|value| !value.is_null())
-    {
-      if details.as_array().is_some_and(Vec::is_empty) {
-        // An explicitly empty field can still be required on provider replay.
-        self.charge(2)?;
-        self
-          .opaque
-          .insert("reasoning_details".into(), details.clone());
-      } else if streaming {
-        return Err(Failure::unsupported("continuation_format"));
-      } else {
-        self.charge(
-          serde_json::to_vec(details)
-            .map_err(|_| invalid_response())?
-            .len(),
-        )?;
-        self
-          .opaque
-          .insert("reasoning_details".into(), details.clone());
-        if let Some(items) = details.as_array() {
-          for item in items {
-            for name in ["text", "summary"] {
-              if let Some(text) = item.get(name).and_then(Value::as_str) {
-                if !text.is_empty() {
-                  emit(event(&self.request_id, "reasoning_delta", text));
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-    if let Some(calls) = object.get("tool_calls").filter(|value| !value.is_null()) {
-      let calls = calls.as_array().ok_or_else(invalid_response)?;
-      if calls.len() > MAX_TOOLS {
-        return Err(invalid_response());
-      }
-      for (position, value) in calls.iter().enumerate() {
-        let index = if streaming {
-          value
-            .get("index")
-            .and_then(Value::as_u64)
-            .filter(|index| *index < MAX_TOOLS as u64)
-            .ok_or_else(invalid_response)? as usize
-        } else {
-          position
-        };
-        self.tool_delta(index, value, streaming)?;
-      }
-    }
+    self.charge(
+      serde_json::to_vec(message)
+        .map_err(|_| invalid_response())?
+        .len(),
+    )?;
     if object
       .get("function_call")
       .is_some_and(|value| !value.is_null())
     {
       return Err(Failure::unsupported("legacy_function_call"));
     }
+    if let Some(value) = object.get("content").filter(|value| !value.is_null()) {
+      self.text(value.as_str().ok_or_else(invalid_response)?, emit);
+    }
+    if let Some(value) = object.get("refusal").filter(|value| !value.is_null()) {
+      let refusal = value.as_str().ok_or_else(invalid_response)?;
+      self.refusal |= !refusal.is_empty();
+      self.text(refusal, emit);
+    }
+    for name in ["reasoning_content", "reasoning"] {
+      if let Some(text) = object
+        .get(name)
+        .and_then(Value::as_str)
+        .filter(|text| !text.is_empty())
+      {
+        emit(event(&self.request_id, "reasoning_delta", text));
+      }
+    }
+    if let Some(calls) = object.get("tool_calls").filter(|value| !value.is_null()) {
+      if calls.as_array().is_none_or(|calls| calls.len() > MAX_TOOLS) {
+        return Err(invalid_response());
+      }
+    }
+    if !streaming {
+      // The entire message is applet data: retain arbitrary fields and nested
+      // metadata exactly, rather than projecting it through a lossy schema.
+      self.message = object.clone();
+      if let Some(items) = object.get("reasoning_details").and_then(Value::as_array) {
+        for item in items {
+          for name in ["text", "summary"] {
+            if let Some(text) = item
+              .get(name)
+              .and_then(Value::as_str)
+              .filter(|text| !text.is_empty())
+            {
+              emit(event(&self.request_id, "reasoning_delta", text));
+            }
+          }
+        }
+      }
+      return Ok(());
+    }
+    for (name, value) in object {
+      if value.is_null() {
+        self.message.entry(name).or_insert(Value::Null);
+        continue;
+      }
+      match name.as_str() {
+        "role" => {}
+        "content" | "refusal" | "reasoning_content" | "reasoning" => {
+          append_string(&mut self.message, name, value)?;
+        }
+        "tool_calls" => {
+          for value in value.as_array().ok_or_else(invalid_response)? {
+            let index = value
+              .get("index")
+              .and_then(Value::as_u64)
+              .filter(|index| *index < MAX_TOOLS as u64)
+              .ok_or_else(invalid_response)? as usize;
+            self.tool_delta(index, value)?;
+          }
+          self.message.insert(
+            name.clone(),
+            Value::Array(self.calls.values().cloned().collect()),
+          );
+        }
+        "annotations" | "reasoning_details" if value.as_array().is_some_and(Vec::is_empty) => {
+          self.message.insert(name.clone(), value.clone());
+        }
+        // An unknown field may be a delta, a snapshot, or an indexed update.
+        // Guessing a merge loses replay data; a buffered request preserves it.
+        _ => return Err(stream_metadata()),
+      }
+    }
     Ok(())
   }
 
-  fn tool_delta(&mut self, index: usize, value: &Value, streaming: bool) -> Result<(), Failure> {
+  fn tool_delta(&mut self, index: usize, value: &Value) -> Result<(), Failure> {
     let fields = value.as_object().ok_or_else(invalid_response)?;
-    if fields.iter().any(|(name, value)| {
-      !value.is_null() && !matches!(name.as_str(), "index" | "id" | "type" | "function")
-    }) {
-      return Err(Failure::unsupported("continuation_format"));
-    }
-    if value
-      .get("type")
-      .is_some_and(|value| value.as_str() != Some("function"))
-    {
-      return Err(Failure::unsupported("tool_type"));
-    }
-    let function = value
-      .get("function")
-      .and_then(Value::as_object)
-      .ok_or_else(invalid_response)?;
-    if function
-      .iter()
-      .any(|(name, value)| !value.is_null() && !matches!(name.as_str(), "name" | "arguments"))
-    {
-      return Err(Failure::unsupported("continuation_format"));
-    }
-    let id = value
-      .get("id")
-      .map(|value| value.as_str().ok_or_else(invalid_response))
-      .transpose()?;
-    let name = function
-      .get("name")
-      .map(|value| value.as_str().ok_or_else(invalid_response))
-      .transpose()?;
-    let arguments = function
-      .get("arguments")
-      .map(|value| value.as_str().ok_or_else(invalid_response))
-      .transpose()?
-      .unwrap_or("");
-    self.charge(id.map_or(0, str::len) + name.map_or(0, str::len) + arguments.len())?;
-    let call = self.calls.entry(index).or_insert_with(|| LlmToolCall {
-      id: String::new(),
-      name: String::new(),
-      arguments: String::new(),
-    });
-    if let Some(id) = id {
-      if !call.id.is_empty() && call.id != id {
-        return Err(invalid_response());
+    let call = self.calls.entry(index).or_insert_with(|| json!({}));
+    let call = call.as_object_mut().expect("tool delta creates objects");
+    for (name, value) in fields {
+      match name.as_str() {
+        "index" => {}
+        "id" | "type" if !value.is_null() => {
+          let text = value.as_str().ok_or_else(invalid_response)?;
+          if name == "type" && text != "function" {
+            return Err(Failure::unsupported("tool_type"));
+          }
+          if call
+            .get(name)
+            .is_some_and(|previous| !previous.is_null() && previous != value)
+          {
+            return Err(invalid_response());
+          }
+          call.insert(name.clone(), value.clone());
+        }
+        "function" if !value.is_null() => {
+          let fields = value.as_object().ok_or_else(invalid_response)?;
+          let function = call.entry("function").or_insert_with(|| json!({}));
+          if function.is_null() {
+            *function = json!({});
+          }
+          let function = function.as_object_mut().ok_or_else(invalid_response)?;
+          for (name, value) in fields {
+            if value.is_null() {
+              function.entry(name).or_insert(Value::Null);
+            } else if matches!(name.as_str(), "name" | "arguments") {
+              append_string(function, name, value)?;
+            } else {
+              return Err(stream_metadata());
+            }
+          }
+        }
+        _ if value.is_null() => {
+          call.entry(name).or_insert(Value::Null);
+        }
+        _ => return Err(stream_metadata()),
       }
-      call.id = id.into();
     }
-    if let Some(name) = name {
-      if !call.name.is_empty() && call.name != name {
-        return Err(invalid_response());
-      }
-      call.name = name.into();
-    }
-    if !streaming
-      && (!validation::valid_call_id(&call.id) || !validation::valid_tool_name(&call.name))
-    {
-      return Err(invalid_response());
-    }
-    call.arguments.push_str(arguments);
     Ok(())
   }
 
@@ -335,7 +300,6 @@ impl Output {
   }
 
   fn finish(&mut self, request: &LlmRequest) -> Result<LlmStatus, Failure> {
-    self.tool_calls = self.calls.values().cloned().collect();
     if self.refusal {
       return Err(Failure::new(
         "refusal",
@@ -364,6 +328,23 @@ impl Output {
         ))
       }
     }
+    if serde_json::to_vec(&self.message)
+      .map_err(|_| invalid_response())?
+      .len()
+      > MAX_OUTPUT_BYTES
+    {
+      return Err(Failure::new(
+        "response_limit",
+        "The LLM output exceeded the size limit.",
+      ));
+    }
+    self.tool_calls = validation::message_fields(&self.message).map_err(|error| {
+      if error.code == "unsupported_capability" {
+        error
+      } else {
+        invalid_response()
+      }
+    })?;
     if self.finish_reason.as_deref() == Some("tool_calls") {
       if self.tool_calls.is_empty() {
         return Err(invalid_response());
@@ -448,11 +429,36 @@ impl Output {
       } else {
         Vec::new()
       },
-      continuation_id: self.continuation_id,
+      message: matches!(status, LlmStatus::Completed | LlmStatus::ToolCalls)
+        .then_some(Value::Object(self.message)),
       finish_reason: self.finish_reason,
       provenance: self.provenance,
       error,
     }
+  }
+}
+
+fn append_string(
+  target: &mut Map<String, Value>,
+  name: &str,
+  value: &Value,
+) -> Result<(), Failure> {
+  let text = value.as_str().ok_or_else(stream_metadata)?;
+  let current = target.entry(name).or_insert(Value::Null);
+  if current.is_null() {
+    *current = Value::String(String::new());
+  }
+  current.as_str().ok_or_else(invalid_response)?;
+  if let Value::String(current) = current {
+    current.push_str(text);
+  }
+  Ok(())
+}
+
+fn stream_metadata() -> Failure {
+  Failure {
+    message: "The provider streamed metadata that cannot be reconstructed safely. Use stream: false to retain its complete assistant message.".into(),
+    ..Failure::unsupported("stream_metadata")
   }
 }
 
@@ -475,6 +481,7 @@ fn provider_error(value: &Value, status: Option<u16>) -> Failure {
       "tools" | "tools.function" => Some("tools"),
       "tool_choice" => Some("required_tool_choice"),
       "reasoning" | "reasoning_content" => Some("exposed_reasoning"),
+      "max_tokens" | "max_completion_tokens" => Some("max_output_tokens"),
       _ => None,
     };
     if let Some(capability) = capability {
@@ -499,14 +506,23 @@ pub(super) async fn demo(
     .messages
     .iter()
     .rev()
-    .find(|message| message.role == "user")
-    .map(|message| message.content.chars().take(200).collect::<String>())
+    .find(|message| message["role"] == "user")
+    .and_then(|message| message.get("content").and_then(Value::as_str))
+    .map(|content| content.chars().take(200).collect::<String>())
     .unwrap_or_default();
   let answer = format!("This is the local demo provider. Your message was: “{prompt}”\n\nThe applet is running Rust WebAssembly, and this conversation is stored by the shell’s native SQLite service. Configure a provider in the shell settings for real model responses.");
   for text in answer.split_inclusive(' ') {
     tokio::time::sleep(Duration::from_millis(18)).await;
-    output.text(text, emit)?;
+    output.charge(text.len())?;
+    if request.stream {
+      output.text(text, emit);
+    } else {
+      output.content.push_str(text);
+    }
   }
+  output
+    .message
+    .insert("content".into(), json!(output.content));
   output.finish_reason = Some("stop".into());
   output.finish(request)
 }
@@ -516,11 +532,19 @@ pub(super) async fn remote(
   request: &LlmRequest,
   config: &LlmConfig,
   api_key: Option<String>,
-  messages: Vec<Value>,
   output: &mut Output,
   emit: &impl Fn(LlmEvent),
 ) -> Result<LlmStatus, Failure> {
-  let mut body = json!({"model": config.model_id, "messages": messages, "stream": true});
+  let mut body =
+    json!({"model": config.model_id, "messages": request.messages, "stream": request.stream});
+  if let Some(limit) = request.max_output_tokens {
+    body["max_tokens"] = json!(limit);
+  }
+  let progress = |event| {
+    if request.stream {
+      emit(event);
+    }
+  };
   if let Some(temperature) = request.temperature {
     body["temperature"] = json!(temperature);
   }
@@ -552,7 +576,7 @@ pub(super) async fn remote(
   {
     return Err(Failure::new(
       "context_limit",
-      "The context including tool schemas and continuation data exceeds the size limit.",
+      "The context including tool schemas and message metadata exceeds the size limit.",
     ));
   }
   let rules = tokn_config::execution_rules(config).map_err(|_| {
@@ -579,7 +603,7 @@ pub(super) async fn remote(
   }
   // The embedded fixed-provider relay preserves the compatible wire format.
   // Friendly generation currently canonicalizes through Responses, which can
-  // discard provider-private assistant metadata required by continuation.
+  // discard assistant metadata the applet needs to preserve in its history.
   let response = sdk
     .execute(tokn_sdk::Endpoint::ChatCompletions, body, options)
     .await
@@ -613,7 +637,7 @@ pub(super) async fn remote(
   match response_body {
     ApellBody::Buffered(bytes) if content_type.starts_with("application/json") => {
       let value: Value = serde_json::from_slice(&bytes).map_err(|_| invalid_response())?;
-      output.consume(&value, false, emit)?;
+      output.consume(&value, false, &progress)?;
     }
     ApellBody::Stream(mut stream) if content_type.starts_with("text/event-stream") => {
       let mut parser = SseParser::default();
@@ -634,7 +658,7 @@ pub(super) async fn remote(
             break 'stream;
           }
           let value: Value = serde_json::from_str(&data).map_err(|_| invalid_response())?;
-          output.consume(&value, true, emit)?;
+          output.consume(&value, true, &progress)?;
         }
       }
       // Unframed trailing records are discarded. [DONE] alone is not evidence

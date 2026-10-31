@@ -1,4 +1,3 @@
-mod continuation;
 mod platform;
 mod provider;
 mod sse;
@@ -9,10 +8,8 @@ mod validation;
 pub use types::*;
 pub use validation::validate_config;
 
-use continuation::ContinuationCache;
 use provider::Output;
 use reqwest::Client;
-use serde_json::{json, Value};
 use std::{
   collections::{HashMap, HashSet},
   sync::{Arc, Mutex},
@@ -69,7 +66,6 @@ struct RequestRegistry {
   sessions: HashSet<String>,
   active: HashMap<RequestKey, ActiveRequest>,
   early_cancels: HashMap<RequestKey, Instant>,
-  continuations: ContinuationCache,
 }
 
 impl RequestRegistry {
@@ -77,7 +73,6 @@ impl RequestRegistry {
     self
       .early_cancels
       .retain(|_, received| received.elapsed() < REQUEST_TIMEOUT);
-    self.continuations.prune();
   }
 }
 
@@ -118,8 +113,8 @@ impl LlmService {
     Ok(())
   }
 
-  /// Every accepted generation returns one authoritative terminal outcome.
-  /// Private reasoning is kept only in the bounded session continuation cache.
+  /// The result is the sole terminal outcome; events report progress only.
+  /// Conversation messages and provider metadata are owned by the applet.
   pub async fn generate(
     &self,
     session_id: &str,
@@ -132,65 +127,7 @@ impl LlmService {
     let result = self
       .run(session_id, &request, &config, api_key, &mut output, &emit)
       .await;
-    let terminal = output.result(result);
-    if terminal.status == LlmStatus::ToolCalls {
-      for call in &terminal.tool_calls {
-        emit(LlmEvent {
-          tool_call: Some(call.clone()),
-          ..event(&request.request_id, "tool_call", "")
-        });
-      }
-    }
-    emit(LlmEvent {
-      result: Some(terminal.clone()),
-      ..event(&request.request_id, "terminal", "")
-    });
-    terminal
-  }
-
-  /// Preserve the old success/rejection contract for already installed applets.
-  pub async fn complete(
-    &self,
-    session_id: &str,
-    request: LlmRequest,
-    config: LlmConfig,
-    api_key: Option<String>,
-    emit: impl Fn(LlmEvent) + Send + Sync + 'static,
-  ) -> Result<Value, String> {
-    if !request.tools.is_empty()
-      || request.tool_choice.is_some()
-      || request.messages.iter().any(|message| {
-        message.role == "tool"
-          || !message.tool_calls.is_empty()
-          || message.continuation_id.is_some()
-      })
-    {
-      return Err("Use llm.generate for tools and continuation.".into());
-    }
-    let result = self
-      .generate(session_id, request, config, api_key, move |value| {
-        if value.kind == "delta" {
-          emit(value);
-        } else if value.kind == "terminal"
-          && value
-            .result
-            .as_ref()
-            .is_some_and(|result| result.status == LlmStatus::Completed)
-        {
-          emit(event(&value.request_id, "done", ""));
-        }
-      })
-      .await;
-    if result.status == LlmStatus::Completed {
-      Ok(json!({"request_id": result.request_id, "content": result.content}))
-    } else {
-      Err(
-        result
-          .error
-          .map(|error| error.message)
-          .unwrap_or_else(|| "The text completion did not finish.".into()),
-      )
-    }
+    output.result(result)
   }
 
   async fn run(
@@ -219,24 +156,15 @@ impl LlmService {
       ));
     }
     let (mut cancellation, guard) = self.register(session_id, &request.request_id)?;
-    let messages = {
-      let mut registry = self
-        .requests
-        .lock()
-        .map_err(|_| Failure::new("internal_error", "LLM request state is unavailable."))?;
-      continuation::messages(
-        &mut registry.continuations,
-        session_id,
-        config,
-        &request.messages,
-      )?
-    };
     if config.base_url == "demo"
       && (!request.tools.is_empty()
-        || request
-          .messages
-          .iter()
-          .any(|message| !message.tool_calls.is_empty() || message.role == "tool"))
+        || request.messages.iter().any(|message| {
+          message
+            .get("tool_calls")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|calls| !calls.is_empty())
+            || message["role"] == "tool"
+        }))
     {
       return Err(Failure::unsupported("tools"));
     }
@@ -251,16 +179,7 @@ impl LlmService {
         if config.base_url == "demo" {
           provider::demo(request, output, emit).await
         } else {
-          provider::remote(
-            &self.client,
-            request,
-            config,
-            api_key,
-            messages,
-            output,
-            emit,
-          )
-          .await
+          provider::remote(&self.client, request, config, api_key, output, emit).await
         }
       };
       tokio::select! {
@@ -270,12 +189,12 @@ impl LlmService {
       }
     }?;
     if matches!(status, LlmStatus::Completed | LlmStatus::ToolCalls) {
-      let mut registry = self
+      let registry = self
         .requests
         .lock()
         .map_err(|_| Failure::new("internal_error", "LLM request state is unavailable."))?;
-      // Closing a session and storing a continuation share this lock. A late
-      // completion can never recreate private state after close_session clears it.
+      // A cancellation accepted before completion must remain authoritative,
+      // even if the provider finished in the same poll.
       if !registry.sessions.contains(session_id)
         || !registry
           .active
@@ -284,7 +203,6 @@ impl LlmService {
       {
         return Err(Failure::new("cancelled", "LLM request canceled."));
       }
-      output.continuation_id = registry.continuations.insert(session_id, config, output)?;
     }
     Ok(status)
   }
@@ -330,7 +248,6 @@ impl LlmService {
     requests
       .early_cancels
       .retain(|(owner, _), _| owner != session_id);
-    requests.continuations.close_session(session_id);
   }
 
   fn register(
@@ -396,8 +313,6 @@ fn event(request_id: &str, kind: &str, text: &str) -> LlmEvent {
     request_id: request_id.into(),
     kind: kind.into(),
     text: text.into(),
-    result: None,
-    tool_call: None,
     provenance: None,
   }
 }

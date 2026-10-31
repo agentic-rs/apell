@@ -211,7 +211,7 @@ mod tests {
 
   #[tokio::test]
   async fn preserves_incompatible_saved_connection_for_correction_without_using_it() {
-    use apell_core::llm::{LlmMessage, LlmRequest, LlmStatus};
+    use apell_core::llm::{LlmRequest, LlmStatus};
 
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("llm.json");
@@ -240,11 +240,7 @@ mod tests {
         "recovery",
         LlmRequest {
           request_id: "invalid_connection".into(),
-          messages: vec![LlmMessage {
-            role: "user".into(),
-            content: "Hello".into(),
-            ..Default::default()
-          }],
+          messages: vec![json!({"role": "user", "content": "Hello"})],
           ..Default::default()
         },
         config.clone(),
@@ -317,10 +313,7 @@ mod tests {
     let (_directory, host) = fixture();
     register(&host, "unprivileged", &[]);
     let groups: &[(&str, &[&str])] = &[
-      (
-        "llm",
-        &["llm.config", "llm.generate", "llm.complete", "llm.cancel"],
-      ),
+      ("llm", &["llm.config", "llm.generate", "llm.cancel"]),
       ("http", &["http.request"]),
       (
         "fs",
