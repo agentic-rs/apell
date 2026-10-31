@@ -1,7 +1,9 @@
-use crate::host::{credential_account, public_config, string, Host, Session};
+use crate::host::{
+  credential_account, public_config, string, update_connection_identity, Host, Session,
+};
 use apell_core::{
   bundles::{digest, sandbox_document, valid_hash, MAX_BUNDLE_BYTES},
-  llm::{validate_config, LlmConfig, LlmRequest},
+  llm::{validate_config, LlmConfig, LlmEvent, LlmFailure, LlmRequest, LlmResult, LlmStatus},
 };
 use serde_json::{json, Value};
 use std::sync::{
@@ -135,7 +137,7 @@ pub async fn shell_command(
       Ok(value)
     }
     "llm.save_settings" => {
-      let config: LlmConfig =
+      let mut config: LlmConfig =
         serde_json::from_value(params.get("config").cloned().ok_or("Missing config.")?)
           .map_err(|_| "Invalid LLM settings.")?;
       validate_config(&config)?;
@@ -150,6 +152,7 @@ pub async fn shell_command(
         return Err("Invalid API key.".into());
       }
       let mut current = host.settings.lock().await;
+      update_connection_identity(&mut config, &current);
       let account = credential_account(&config);
       let saved_config = config.clone();
       blocking(move || {
@@ -224,37 +227,77 @@ pub async fn applet_call(
       }
     }
     "llm.config" => Ok(public_config(&*host.settings.lock().await)),
-    "llm.complete" => {
+    "llm.complete" | "llm.generate" => {
       let request: LlmRequest =
         serde_json::from_value(params).map_err(|_| "Invalid LLM request.")?;
       let current = host.settings.lock().await;
       let config = current.clone();
       let account = credential_account(&config);
       let app_for_key = app.clone();
-      let key = if config.base_url == "demo" {
-        None
+      let key_result = if config.base_url == "demo" {
+        Ok(None)
       } else {
         tauri::async_runtime::spawn_blocking(move || {
           tauri_plugin_apell_credentials::read(&app_for_key, &account)
         })
         .await
-        .map_err(|_| "Credential read interrupted.")??
+        .map_err(|_| "Credential read interrupted.".to_owned())
+        .and_then(|result| result)
       };
       drop(current);
       if !session.alive.load(Ordering::SeqCst) {
         return Err("Applet session is closed.".into());
       }
       let event_session = session_id.clone();
-      host
-        .llm
-        .complete(&session_id, request, config, key, move |event| {
-          let _ = app.emit_to(
-            "main",
-            "applet-event",
-            json!({"session_id":event_session,"event":event}),
-          );
-        })
-        .await
+      let emit = move |event: LlmEvent| {
+        let _ = app.emit_to(
+          "main",
+          "applet-event",
+          json!({"session_id":event_session,"event":event}),
+        );
+      };
+      let key = match key_result {
+        Ok(key) => key,
+        Err(_) if method == "llm.generate" => {
+          let result = LlmResult {
+            request_id: request.request_id,
+            status: LlmStatus::Failed,
+            content: String::new(),
+            tool_calls: Vec::new(),
+            continuation_id: None,
+            finish_reason: None,
+            provenance: config.provenance(),
+            error: Some(LlmFailure {
+              code: "credential_unavailable".into(),
+              message: "The host could not read the provider credential.".into(),
+              capability: None,
+              retryable: true,
+            }),
+          };
+          emit(LlmEvent {
+            request_id: result.request_id.clone(),
+            kind: "terminal".into(),
+            text: String::new(),
+            result: Some(result.clone()),
+            tool_call: None,
+            provenance: None,
+          });
+          return serde_json::to_value(result).map_err(|_| "Could not encode LLM result.".into());
+        }
+        Err(error) => return Err(error),
+      };
+      if method == "llm.generate" {
+        let result = host
+          .llm
+          .generate(&session_id, request, config, key, emit)
+          .await;
+        serde_json::to_value(result).map_err(|_| "Could not encode LLM result.".into())
+      } else {
+        host
+          .llm
+          .complete(&session_id, request, config, key, emit)
+          .await
+      }
     }
     "llm.cancel" => {
       host

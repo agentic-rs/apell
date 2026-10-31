@@ -6,6 +6,10 @@ describe('applet bridge boundary', () => {
     const request = { type: 'request', request_id: 'one', method: 'sqlite.query', params: {} };
     for (const method of [
       'sqlite.query',
+      'llm.config',
+      'llm.generate',
+      'llm.complete',
+      'llm.cancel',
       'http.request',
       'fs.read',
       'fs.write',
@@ -25,6 +29,37 @@ describe('applet bridge boundary', () => {
     }
     expect(isBridgeRequest({ ...request, params: null })).toBe(false);
     expect(isBridgeRequest({ ...request, request_id: '' })).toBe(false);
+  });
+
+  it('rejects tool schemas that native JSON serialization would silently alter', async () => {
+    const nativeCall = vi.fn(async () => ({}));
+    const port = {
+      onmessage: null,
+      postMessage: vi.fn(),
+      start: vi.fn(),
+      close: vi.fn(),
+    } as unknown as MessagePort;
+    const dispose = attachBridge(port, nativeCall);
+    const params = {
+      request_id: 'generation',
+      messages: [{ role: 'user', content: 'Make a draft' }],
+      tools: [{ name: 'draft', parameters: { type: 'object', maximum: NaN } }],
+    };
+    await port.onmessage?.({
+      data: { type: 'request', request_id: 'schema', method: 'llm.generate', params },
+    } as MessageEvent);
+    expect(nativeCall).not.toHaveBeenCalled();
+    expect(port.postMessage).toHaveBeenLastCalledWith({
+      type: 'response',
+      request_id: 'schema',
+      error: expect.stringContaining('plain JSON'),
+    });
+    params.tools[0].parameters.maximum = 100;
+    await port.onmessage?.({
+      data: { type: 'request', request_id: 'valid', method: 'llm.generate', params },
+    } as MessageEvent);
+    expect(nativeCall).toHaveBeenCalledWith('llm.generate', params);
+    dispose();
   });
 
   it('protects saved config from raw requests with nested nonfinite numbers', async () => {

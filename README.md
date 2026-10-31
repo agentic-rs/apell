@@ -87,16 +87,19 @@ A checksum pins exact bytes; it is not a publisher signature. This version is fo
 
 - One foreground applet with a restricted message bridge.
 - Native SQLite with applet-owned schemas and SQL, typed parameters, and transaction handles.
-- Shared LLM configuration, streaming text completions, and cancellation.
+- Shared LLM configuration, tool calling, separate answer/reasoning events, and cancellation.
+- Opaque session continuation, explicit generation outcomes, and per-request model attribution.
 - Provider keys in Apple Keychain or Android Keystore-backed encrypted storage.
 - Applet-scoped resource downloads and bounded binary reads.
 - Native HTTP requests with binary bodies, headers, timeouts, and session cancellation.
 - Applet-private file operations and persistent JSON configuration.
 - A basic `device.info` API for platform and host API version.
 
-Cloud synchronization, tool calling, model discovery, generic per-applet credential APIs, background applets, and additional device integrations are deferred. Version files are retained, but there is no rollback selector, uninstall flow, or automatic resource eviction yet. Reinstall a known bundle to select its code version; database downgrade compatibility remains the applet's responsibility.
+Cloud synchronization, provider model catalogs, schema-constrained answers, generic per-applet credential APIs, background applets, and additional device integrations are deferred. The current LLM adapter uses OpenAI-compatible Chat Completions; native Anthropic/Gemini protocols are not included. Version files are retained, but there is no rollback selector, uninstall flow, or automatic resource eviction yet. Reinstall a known bundle to select its code version; database downgrade compatibility remains the applet's responsibility.
 
 See [the architecture and API contract](docs/architecture.md) for migration guidance and limits, and [verification notes](docs/verification.md) for tested behavior.
+
+New applets should use `llm.generate` and inspect its terminal status. See the [LLM tool continuation example](docs/llm.md). The legacy `llm.complete` text-only contract remains available for installed bundles.
 
 ## Repository hygiene
 

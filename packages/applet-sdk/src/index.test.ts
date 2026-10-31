@@ -1,4 +1,23 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { LlmResult } from './types';
+
+function llmResult(request_id: string, overrides: Partial<LlmResult> = {}): LlmResult {
+  return {
+    request_id,
+    status: 'completed',
+    content: 'An answer',
+    tool_calls: [],
+    continuation_id: null,
+    finish_reason: 'stop',
+    provenance: {
+      connection_id: 'test_connection',
+      requested_model_id: 'requested_model',
+      model_id: 'reported_model',
+    },
+    error: null,
+    ...overrides,
+  };
+}
 
 describe('applet bridge', () => {
   let windowMock: EventTarget & { parent: { postMessage: ReturnType<typeof vi.fn> } };
@@ -186,6 +205,217 @@ describe('applet bridge', () => {
       }
       receive({ type: 'response', request_id: request.request_id, result: operation.result });
       await expect(response).resolves.toEqual(operation.result);
+    }
+  });
+
+  it('round-trips tool calls and opaque continuation only when the applet submits a follow-up', async () => {
+    const sdk = await import('./index');
+    connect();
+    const events: string[] = [];
+    sdk.onLlmEvent((event) => events.push(event.kind));
+    const tool = {
+      name: 'lookup',
+      description: undefined,
+      parameters: {
+        type: 'object',
+        properties: { query: { type: 'string' } },
+        required: ['query'],
+      },
+    };
+    const response = sdk.llm.generate({
+      request_id: 'tool_round',
+      messages: [{ role: 'user', content: 'Find an answer' }],
+      tools: [tool],
+      tool_choice: 'auto',
+      temperature: undefined,
+    });
+    await vi.waitFor(() => expect(channel.postMessage).toHaveBeenCalledOnce());
+    const request = channel.postMessage.mock.calls[0][0];
+    expect(request.method).toBe('llm.generate');
+    expect(request.params).not.toHaveProperty('temperature');
+    expect(request.params.tools[0]).not.toHaveProperty('description');
+    const tool_call = { id: 'call_one', name: 'lookup', arguments: '{"query":"example"}' };
+    const outcome = llmResult('tool_round', {
+      status: 'tool_calls',
+      content: '',
+      tool_calls: [tool_call],
+      continuation_id: 'opaque_continuation',
+      finish_reason: 'tool_calls',
+    });
+    receive({
+      type: 'event',
+      event: {
+        request_id: 'tool_round',
+        kind: 'started',
+        text: '',
+        provenance: outcome.provenance,
+      },
+    });
+    receive({
+      type: 'event',
+      event: { request_id: 'tool_round', kind: 'reasoning_delta', text: 'Provider reasoning' },
+    });
+    receive({
+      type: 'event',
+      event: { request_id: 'tool_round', kind: 'tool_call', text: '', tool_call },
+    });
+    receive({
+      type: 'event',
+      event: { request_id: 'tool_round', kind: 'terminal', text: '', result: outcome },
+    });
+    receive({ type: 'response', request_id: request.request_id, result: outcome });
+    await expect(response).resolves.toEqual(outcome);
+    expect(events).toEqual(['started', 'reasoning_delta', 'tool_call', 'terminal']);
+    expect(channel.postMessage).toHaveBeenCalledOnce();
+
+    const messages = [
+      { role: 'user' as const, content: 'Find an answer' },
+      {
+        role: 'assistant' as const,
+        content: outcome.content,
+        tool_calls: outcome.tool_calls,
+        continuation_id: outcome.continuation_id,
+      },
+      { role: 'tool' as const, content: 'The applet found a result', tool_call_id: tool_call.id },
+    ];
+    const follow_up = sdk.llm.generate({
+      request_id: 'final_round',
+      messages,
+      tool_choice: 'none',
+    });
+    await vi.waitFor(() => expect(channel.postMessage).toHaveBeenCalledTimes(2));
+    const next = channel.postMessage.mock.calls[1][0];
+    expect(next.params.messages).toEqual(messages);
+    receive({ type: 'response', request_id: next.request_id, result: llmResult('final_round') });
+    await expect(follow_up).resolves.toEqual(llmResult('final_round'));
+  });
+
+  it('resolves terminal failures with authoritative partial content', async () => {
+    const sdk = await import('./index');
+    connect();
+    for (const status of ['cancelled', 'truncated', 'unsupported', 'failed'] as const) {
+      channel.postMessage.mockClear();
+      const response = sdk.llm.generate({
+        request_id: status,
+        messages: [{ role: 'user', content: 'Question' }],
+      });
+      await vi.waitFor(() => expect(channel.postMessage).toHaveBeenCalledOnce());
+      const request = channel.postMessage.mock.calls[0][0];
+      receive({
+        type: 'event',
+        event: { request_id: status, kind: 'delta', text: 'Only the received prefix' },
+      });
+      const outcome = llmResult(status, {
+        status,
+        content: 'Authoritative partial answer',
+        error: { code: status, message: 'The reply did not complete.', retryable: false },
+      });
+      receive({ type: 'response', request_id: request.request_id, result: outcome });
+      await expect(response).resolves.toEqual(outcome);
+    }
+  });
+
+  it('keeps the original partial answer when a duplicate request is rejected and excludes reasoning', async () => {
+    const sdk = await import('./index');
+    connect();
+    const response = sdk.llm.generate({
+      request_id: 'shared',
+      messages: [{ role: 'user', content: 'Question' }],
+    });
+    const rejected = expect(response).rejects.toMatchObject({
+      message: 'Bridge failed',
+      partial_content: 'Answer prefix',
+    });
+    await vi.waitFor(() => expect(channel.postMessage).toHaveBeenCalledOnce());
+    const request = channel.postMessage.mock.calls[0][0];
+    receive({
+      type: 'event',
+      event: { request_id: 'shared', kind: 'reasoning_delta', text: 'Transient reasoning' },
+    });
+    receive({
+      type: 'event',
+      event: { request_id: 'shared', kind: 'delta', text: 'Answer prefix' },
+    });
+    await expect(
+      sdk.hostCall('llm.complete', { request_id: 'shared', messages: [] }),
+    ).rejects.toThrow('already active');
+    expect(channel.postMessage).toHaveBeenCalledOnce();
+    receive({ type: 'response', request_id: request.request_id, error: 'Bridge failed' });
+    await rejected;
+  });
+
+  it('rejects invalid tool parameters before transport and releases IDs after transport errors', async () => {
+    const sdk = await import('./index');
+    connect();
+    await expect(
+      sdk.llm.generate({
+        request_id: 'invalid',
+        messages: [{ role: 'user', content: 'Question' }],
+        tools: [{ name: 'lookup', parameters: { limit: Infinity } }],
+      }),
+    ).rejects.toThrow(/finite numbers/);
+    expect(channel.postMessage).not.toHaveBeenCalled();
+    channel.postMessage.mockImplementationOnce(() => {
+      throw new Error('Clone failed');
+    });
+    const request = {
+      request_id: 'retry',
+      messages: [{ role: 'user' as const, content: 'Question' }],
+    };
+    await expect(sdk.llm.generate(request)).rejects.toMatchObject({
+      name: 'HostError',
+      message: 'Clone failed',
+      partial_content: '',
+    });
+    const response = sdk.llm.generate(request);
+    await vi.waitFor(() => expect(channel.postMessage).toHaveBeenCalledTimes(2));
+    const sent = channel.postMessage.mock.calls[1][0];
+    receive({ type: 'response', request_id: sent.request_id, result: llmResult('retry') });
+    await expect(response).resolves.toEqual(llmResult('retry'));
+  });
+
+  it('keeps concurrent answers separate and cancels only the timed-out request', async () => {
+    const sdk = await import('./index');
+    connect();
+    vi.useFakeTimers();
+    try {
+      const slow = sdk.llm.generate({
+        request_id: 'slow',
+        messages: [{ role: 'user', content: 'Slow question' }],
+      });
+      const rejected = expect(slow).rejects.toMatchObject({
+        name: 'HostError',
+        message: 'The host request timed out.',
+        partial_content: 'Slow answer',
+      });
+      const fast = sdk.llm.generate({
+        request_id: 'fast',
+        messages: [{ role: 'user', content: 'Fast question' }],
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(channel.postMessage).toHaveBeenCalledTimes(2);
+      for (const [request_id, kind, text] of [
+        ['slow', 'reasoning_delta', 'Private reasoning'],
+        ['slow', 'delta', 'Slow answer'],
+        ['fast', 'delta', 'Fast answer'],
+      ]) {
+        receive({ type: 'event', event: { request_id, kind, text } });
+      }
+      const fastRequest = channel.postMessage.mock.calls[1][0];
+      receive({
+        type: 'response',
+        request_id: fastRequest.request_id,
+        result: llmResult('fast'),
+      });
+      await expect(fast).resolves.toEqual(llmResult('fast'));
+      await vi.advanceTimersByTimeAsync(330_000);
+      await rejected;
+      expect(channel.postMessage).toHaveBeenCalledTimes(3);
+      const cancel = channel.postMessage.mock.calls[2][0];
+      expect(cancel).toMatchObject({ method: 'llm.cancel', params: { request_id: 'slow' } });
+      receive({ type: 'response', request_id: cancel.request_id, result: null });
+    } finally {
+      vi.useRealTimers();
     }
   });
 });

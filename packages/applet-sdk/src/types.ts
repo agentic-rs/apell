@@ -12,8 +12,11 @@ export interface QueryResult {
 
 export interface LlmEvent {
   request_id: string;
-  kind: 'delta' | 'done' | 'error';
+  kind: 'started' | 'delta' | 'reasoning_delta' | 'tool_call' | 'terminal' | 'done' | 'error';
   text: string;
+  result?: LlmResult;
+  tool_call?: LlmToolCall;
+  provenance?: LlmProvenance;
 }
 
 export interface DownloadProgress {
@@ -26,17 +29,77 @@ export interface DownloadProgress {
 export interface LlmConfiguration {
   model_id: string;
   mode: 'demo' | 'provider';
+  connection_id: string;
+  capabilities: LlmCapabilities;
 }
 
-export interface LlmMessage {
-  role: 'system' | 'user' | 'assistant';
-  content: string;
+export type LlmCapability = 'supported' | 'unsupported' | 'unknown';
+
+export interface LlmCapabilities {
+  tools: LlmCapability;
+  required_tool_choice: LlmCapability;
+  exposed_reasoning: LlmCapability;
 }
+
+export interface LlmToolCall {
+  id: string;
+  name: string;
+  arguments: string;
+}
+
+export interface LlmTool {
+  name: string;
+  description?: string;
+  parameters: JsonValue;
+}
+
+export type LlmToolChoice = 'auto' | 'none' | 'required' | { name: string };
+
+export type LlmMessage =
+  | { role: 'system' | 'user'; content: string }
+  | {
+      role: 'assistant';
+      content: string;
+      tool_calls?: LlmToolCall[];
+      /** Opaque, transient host metadata; return unchanged during tool continuation. */
+      continuation_id?: string | null;
+    }
+  | { role: 'tool'; content: string; tool_call_id: string };
 
 export interface LlmRequest {
   request_id: string;
   messages: LlmMessage[];
   temperature?: number;
+  tools?: LlmTool[];
+  tool_choice?: LlmToolChoice;
+}
+
+export interface LlmProvenance {
+  connection_id: string;
+  requested_model_id: string;
+  /** The provider-reported model, or null when it was not reported. */
+  model_id: string | null;
+}
+
+export type LlmStatus =
+  'completed' | 'tool_calls' | 'cancelled' | 'truncated' | 'unsupported' | 'failed';
+
+export interface LlmFailure {
+  code: string;
+  message: string;
+  capability?: string | null;
+  retryable: boolean;
+}
+
+export interface LlmResult {
+  request_id: string;
+  content: string;
+  tool_calls: LlmToolCall[];
+  continuation_id: string | null;
+  status: LlmStatus;
+  finish_reason: string | null;
+  provenance: LlmProvenance;
+  error: LlmFailure | null;
 }
 
 export type JsonValue =

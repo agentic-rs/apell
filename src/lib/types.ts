@@ -17,6 +17,7 @@ export interface AppletSession {
 export interface LlmSettings {
   base_url: string;
   model_id: string;
+  connection_id: string;
   has_api_key: boolean;
 }
 export interface AppletEvent {
