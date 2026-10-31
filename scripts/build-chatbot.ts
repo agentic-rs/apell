@@ -50,7 +50,7 @@ const bundle = JSON.stringify({
     api_version: 1,
     applet_id: 'chatbot',
     name: 'Companion',
-    version: '0.1.0',
+    version: '0.2.0',
     permissions: ['sqlite', 'llm'],
   },
   html,

@@ -8,7 +8,6 @@ describe('applet bridge boundary', () => {
       'sqlite.query',
       'llm.config',
       'llm.generate',
-      'llm.complete',
       'llm.cancel',
       'http.request',
       'fs.read',
@@ -24,7 +23,13 @@ describe('applet bridge boundary', () => {
     ]) {
       expect(isBridgeRequest({ ...request, method })).toBe(true);
     }
-    for (const method of ['llm.save_settings', 'applets.install', 'shell_command', '__proto__']) {
+    for (const method of [
+      'llm.complete',
+      'llm.save_settings',
+      'applets.install',
+      'shell_command',
+      '__proto__',
+    ]) {
       expect(isBridgeRequest({ ...request, method })).toBe(false);
     }
     expect(isBridgeRequest({ ...request, params: null })).toBe(false);
@@ -106,6 +111,57 @@ describe('applet bridge boundary', () => {
     } as MessageEvent);
     expect(nativeCall).toHaveBeenCalledOnce();
     expect(saved).toBeNull();
+    dispose();
+  });
+
+  it('forwards complete raw messages unchanged and rejects non-JSON provider metadata', async () => {
+    const nativeCall = vi.fn(async () => ({ status: 'tool_calls' }));
+    const port = {
+      onmessage: null,
+      postMessage: vi.fn(),
+      start: vi.fn(),
+      close: vi.fn(),
+    } as unknown as MessagePort;
+    const dispose = attachBridge(port, nativeCall);
+    const params = {
+      request_id: 'raw_generation',
+      stream: false,
+      max_output_tokens: 512,
+      messages: [
+        {
+          role: 'assistant',
+          content: null,
+          reasoning_content: '',
+          tool_calls: [
+            {
+              id: 'call',
+              type: 'function',
+              function: { name: 'lookup', arguments: '{}', provider_extension: { valid: true } },
+              extra_content: { signature: 'provider-state' },
+            },
+          ],
+          provider_extension: { nested: [true, null, 'preserved'] },
+        },
+      ],
+    };
+    await port.onmessage?.({
+      data: { type: 'request', request_id: 'raw', method: 'llm.generate', params },
+    } as MessageEvent);
+    expect(nativeCall).toHaveBeenCalledWith('llm.generate', params);
+    await port.onmessage?.({
+      data: {
+        type: 'request',
+        request_id: 'invalid',
+        method: 'llm.generate',
+        params: { ...params, messages: [{ ...params.messages[0], provider_extension: undefined }] },
+      },
+    } as MessageEvent);
+    expect(nativeCall).toHaveBeenCalledOnce();
+    expect(port.postMessage).toHaveBeenLastCalledWith({
+      type: 'response',
+      request_id: 'invalid',
+      error: expect.stringContaining('plain JSON'),
+    });
     dispose();
   });
 

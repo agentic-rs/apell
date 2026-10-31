@@ -67,6 +67,16 @@ pnpm tauri android build --debug --target aarch64
 
 Choose a target supported by the local toolchain. Physical iOS devices require local signing setup. Generated Xcode and Gradle projects under `src-tauri/gen/` are ignored because they can contain machine paths and signing identities; regenerate them with the init commands.
 
+After each completed app change, update the running simulator as well as building it. On Apple Silicon with one simulator booted:
+
+```sh
+pnpm tauri ios build --debug --target aarch64-sim --no-sign --ci
+xcrun simctl install booted src-tauri/gen/apple/build/arm64-sim/Apell.app
+xcrun simctl launch --terminate-running-process booted dev.apell.shell
+```
+
+Verify the installed executable matches the build before reporting the simulator updated. Reinstalling the shell retains applet data. If the bundled Companion code changed, use **+ → Update Companion** and reopen it; rebuilding the host alone does not update an installed applet bundle.
+
 For installation from Xcode, run `pnpm tauri ios build --debug --open`, keep that terminal running, select the `apell_iOS` target, enable automatic signing with your development team, select the connected iPhone, and Run. This builds a bundled frontend that works without the development server once installed.
 
 iOS build/dev commands automatically run `pnpm ios:prepare`. It prepares the generated Xcode Rust build phase to find Node, pnpm, and Rust even when Xcode was opened from the Dock. Tool locations are resolved from the current terminal into an ignored local environment file; personal paths and signing settings stay out of source files. After changing Node or Rust installations, rerun the Tauri command or `pnpm ios:prepare`. If Xcode reports `pnpm: command not found`, run the prepare command and retry the build. Keep the Tauri terminal running during Xcode builds so its build-options service remains available.
@@ -88,7 +98,7 @@ A checksum pins exact bytes; it is not a publisher signature. This version is fo
 - One foreground applet with a restricted message bridge.
 - Native SQLite with applet-owned schemas and SQL, typed parameters, and transaction handles.
 - Shared LLM configuration, tool calling, separate answer/reasoning events, and cancellation.
-- Opaque session continuation, explicit generation outcomes, and per-request model attribution.
+- Client-owned complete assistant messages, explicit generation outcomes, and per-request model attribution.
 - Provider keys in Apple Keychain or Android Keystore-backed encrypted storage.
 - Applet-scoped resource downloads and bounded binary reads.
 - Native HTTP requests with binary bodies, headers, timeouts, and session cancellation.
@@ -105,7 +115,7 @@ The SDK runs inside the native host with an in-memory configuration. No Tokn gat
 
 See [the architecture and API contract](docs/architecture.md) for migration guidance and limits, and [verification notes](docs/verification.md) for tested behavior.
 
-New applets should use `llm.generate` and inspect its terminal status. See the [LLM tool continuation example](docs/llm.md). The legacy `llm.complete` text-only contract remains available for installed bundles.
+Applets use `llm.generate(request, { signal, on_event })` and inspect the returned status. Save and replay the complete `result.message`; Apell keeps no conversation or continuation cache. See the [LLM history and tool example](docs/llm.md). This is a breaking API update: rebuild existing applets and update Companion from the install sheet.
 
 ## Repository hygiene
 

@@ -10,7 +10,6 @@ const methods = new Set([
   'sqlite.commit',
   'sqlite.rollback',
   'llm.config',
-  'llm.complete',
   'llm.generate',
   'llm.cancel',
   'resources.download',

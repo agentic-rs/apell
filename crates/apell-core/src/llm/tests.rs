@@ -1,13 +1,10 @@
 use super::*;
+use serde_json::json;
 
 fn request(id: &str) -> LlmRequest {
   LlmRequest {
     request_id: id.into(),
-    messages: vec![LlmMessage {
-      role: "user".into(),
-      content: "Hello".into(),
-      ..Default::default()
-    }],
+    messages: vec![json!({"role":"user", "content":"Hello"})],
     ..Default::default()
   }
 }
@@ -49,24 +46,15 @@ fn validates_urls_schema_budget_and_tool_history() {
   }];
   assert!(validation::request(&invalid).is_err());
   invalid.tools.clear();
-  invalid.messages.push(LlmMessage {
-    role: "tool".into(),
-    content: "result".into(),
-    tool_call_id: Some("unmatched".into()),
-    ..Default::default()
-  });
+  invalid
+    .messages
+    .push(json!({"role":"tool", "content":"result", "tool_call_id":"unmatched"}));
   assert!(validation::request(&invalid).is_err());
   invalid.messages.insert(
     1,
-    LlmMessage {
-      role: "assistant".into(),
-      tool_calls: vec![LlmToolCall {
-        id: "unmatched".into(),
-        name: "search".into(),
-        arguments: "{}".into(),
-      }],
-      ..Default::default()
-    },
+    json!({"role":"assistant", "content":null, "tool_calls":[{
+      "id":"unmatched", "type":"function", "function":{"name":"search", "arguments":"{}"}
+    }]}),
   );
   assert!(validation::request(&invalid).is_ok());
   invalid.temperature = Some(f64::NAN);
@@ -130,7 +118,7 @@ fn stale_guard_cannot_remove_replacement_request() {
 }
 
 #[tokio::test]
-async fn demo_terminal_matches_stream_and_legacy_contract() {
+async fn demo_result_matches_progress_and_returns_replayable_message() {
   let service = LlmService::new().unwrap();
   service.register_session("session").unwrap();
   let events = Arc::new(Mutex::new(Vec::new()));
@@ -149,16 +137,21 @@ async fn demo_terminal_matches_stream_and_legacy_contract() {
   {
     let events = events.lock().unwrap();
     assert_eq!(events.first().unwrap().kind, "started");
-    assert_eq!(events.last().unwrap().kind, "terminal");
     assert_eq!(
       events
         .iter()
-        .filter(|event| event.kind == "delta")
+        .filter(|event| event.kind == "text_delta")
         .map(|event| event.text.as_str())
         .collect::<String>(),
       result.content
     );
-    assert!(events.last().unwrap().result.is_some());
+    assert!(events
+      .iter()
+      .all(|event| matches!(event.kind.as_str(), "started" | "text_delta")));
+    assert_eq!(
+      result.message.as_ref().unwrap(),
+      &json!({"role":"assistant", "content":result.content})
+    );
   }
   let mut tools = request("tools");
   tools.tools.push(LlmToolDefinition {
@@ -173,19 +166,55 @@ async fn demo_terminal_matches_stream_and_legacy_contract() {
       .status,
     LlmStatus::Unsupported
   );
-  assert!(service
-    .complete("session", tools, LlmConfig::default(), None, |_| {})
-    .await
+  let mut buffered = request("buffered");
+  buffered.stream = false;
+  let result = service
+    .generate("session", buffered, LlmConfig::default(), None, |event| {
+      assert_eq!(event.kind, "started");
+    })
+    .await;
+  assert_eq!(result.status, LlmStatus::Completed);
+  assert!(result.message.is_some());
+}
+
+#[test]
+fn validates_raw_message_shape_metadata_and_generation_options() {
+  let mut input = request("raw");
+  input.messages[0]["vendor_metadata"] = json!({"signature":[null, {"opaque":"data"}]});
+  assert!(validation::request(&input).is_ok());
+  for content in [json!([]), json!({}), json!(1), json!(true)] {
+    input.messages[0]["content"] = content;
+    assert!(validation::request(&input).is_err());
+  }
+  input.messages[0]["content"] = json!("hello");
+  for limit in [0, 131_073, u32::MAX] {
+    input.max_output_tokens = Some(limit);
+    assert!(validation::request(&input).is_err());
+  }
+  for limit in [1, 131_072] {
+    input.max_output_tokens = Some(limit);
+    assert!(validation::request(&input).is_ok());
+  }
+  for limit in [json!(-1), json!(1.5), json!("10")] {
+    assert!(serde_json::from_value::<LlmRequest>(json!({
+      "request_id":"raw", "messages":input.messages, "max_output_tokens":limit
+    }))
     .is_err());
-  service.cancel("session", "legacy").unwrap();
-  assert!(service
-    .complete(
-      "session",
-      request("legacy"),
-      LlmConfig::default(),
-      None,
-      |event| assert_ne!(event.kind, "done")
-    )
-    .await
-    .is_err());
+  }
+  let decoded: LlmRequest = serde_json::from_value(json!({
+    "request_id":"raw", "messages":input.messages
+  }))
+  .unwrap();
+  assert!(decoded.stream);
+  assert!(LlmRequest::default().stream);
+  let mut nested = json!(null);
+  for _ in 0..61 {
+    nested = json!([nested]);
+  }
+  input.messages[0]["vendor_metadata"] = nested.clone();
+  assert!(validation::request(&input).is_ok());
+  input.messages[0]["vendor_metadata"] = json!([nested]);
+  assert!(validation::request(&input).is_err());
+  input.messages[0]["vendor_metadata"] = json!("x".repeat(MAX_INPUT_BYTES));
+  assert!(validation::request(&input).is_err());
 }

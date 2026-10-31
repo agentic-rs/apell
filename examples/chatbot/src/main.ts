@@ -5,7 +5,13 @@ import init, {
   load_messages,
   send_message,
 } from '../pkg/chatbot.js';
-import { createId, HostError, hostCall, llm, onLlmEvent } from '../../../packages/applet-sdk/src';
+import {
+  createId,
+  HostError,
+  hostCall,
+  llm,
+  type LlmRequest,
+} from '../../../packages/applet-sdk/src';
 import './style.css';
 
 interface Conversation {
@@ -20,21 +26,6 @@ interface Message {
   content: string;
   status: 'complete' | 'pending' | 'interrupted';
 }
-
-const canceled = new Set<string>();
-Object.assign(globalThis, {
-  apellCreateId: createId,
-  apellHostCall: (method: string, params: Record<string, unknown>) => {
-    if (
-      (method === 'llm.complete' || method === 'llm.generate') &&
-      typeof params.request_id === 'string' &&
-      canceled.has(params.request_id)
-    ) {
-      return Promise.reject(new HostError('Reply stopped.'));
-    }
-    return hostCall(method, params);
-  },
-});
 
 const root =
   document.getElementById('app') ?? document.body.appendChild(document.createElement('div'));
@@ -79,10 +70,33 @@ const stopButton = element<HTMLButtonElement>('.stop');
 const select = element<HTMLSelectElement>('select');
 let conversations: Conversation[] = [];
 let currentId = '';
-let activeRequest: string | undefined;
+let activeRequest: { request_id: string; controller: AbortController } | undefined;
 let streamNode: HTMLParagraphElement | undefined;
 let streamText = '';
 let ready = false;
+
+Object.assign(globalThis, {
+  apellCreateId: createId,
+  apellHostCall: (method: string, params: Record<string, unknown>) => {
+    if (method !== 'llm.generate') return hostCall(method, params);
+    const active = activeRequest;
+    if (!active || params.request_id !== active.request_id) {
+      return Promise.reject(new HostError('This reply is no longer active.'));
+    }
+    return llm.generate(params as unknown as LlmRequest, {
+      signal: active.controller.signal,
+      on_event: (event) => {
+        if (activeRequest !== active || event.kind !== 'text_delta' || !streamNode) return;
+        const follow =
+          messagesElement.scrollHeight - messagesElement.scrollTop - messagesElement.clientHeight <
+          100;
+        streamText += event.text;
+        streamNode.textContent = streamText;
+        if (follow) scrollToBottom();
+      },
+    });
+  },
+});
 
 function showError(error?: unknown): void {
   errorElement.hidden = error === undefined;
@@ -206,8 +220,8 @@ async function newConversation(): Promise<void> {
 async function send(): Promise<void> {
   const content = textarea.value.trim();
   if (!ready || activeRequest || !content) return;
-  const request_id = createId();
-  activeRequest = request_id;
+  const active = { request_id: createId(), controller: new AbortController() };
+  activeRequest = active;
   streamText = '';
   showError();
   setBusy(true);
@@ -217,13 +231,12 @@ async function send(): Promise<void> {
   textarea.value = '';
   scrollToBottom();
   try {
-    await send_message(currentId, content, request_id);
+    await send_message(currentId, content, active.request_id);
   } catch (error) {
-    if (!canceled.has(request_id)) showError(error);
+    if (!active.controller.signal.aborted) showError(error);
   } finally {
     activeRequest = undefined;
     streamNode = undefined;
-    canceled.delete(request_id);
     try {
       await refreshHistory();
       renderMessages((await load_messages(currentId)) as Message[]);
@@ -234,15 +247,6 @@ async function send(): Promise<void> {
     textarea.focus({ preventScroll: true });
   }
 }
-
-onLlmEvent((event) => {
-  if (event.request_id !== activeRequest || event.kind !== 'delta' || !streamNode) return;
-  const follow =
-    messagesElement.scrollHeight - messagesElement.scrollTop - messagesElement.clientHeight < 100;
-  streamText += event.text;
-  streamNode.textContent = streamText;
-  if (follow) scrollToBottom();
-});
 
 element<HTMLFormElement>('form').addEventListener('submit', (event) => {
   event.preventDefault();
@@ -259,12 +263,8 @@ textarea.addEventListener('keydown', (event) => {
 });
 stopButton.addEventListener('click', () => {
   if (!activeRequest) return;
-  canceled.add(activeRequest);
   stopButton.disabled = true;
-  void llm.cancel(activeRequest).catch((error) => {
-    showError(error);
-    stopButton.disabled = false;
-  });
+  activeRequest.controller.abort();
 });
 element<HTMLButtonElement>('.new-chat').addEventListener('click', () => {
   void newConversation().catch(showError);

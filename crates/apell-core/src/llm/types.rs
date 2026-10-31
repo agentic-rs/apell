@@ -91,31 +91,40 @@ pub enum LlmToolChoice {
   Named { name: String },
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct LlmMessage {
-  pub role: String,
-  #[serde(default)]
-  pub content: String,
-  #[serde(default, skip_serializing_if = "Vec::is_empty")]
-  pub tool_calls: Vec<LlmToolCall>,
-  #[serde(default, skip_serializing_if = "Option::is_none")]
-  pub tool_call_id: Option<String>,
-  #[serde(default, skip_serializing_if = "Option::is_none")]
-  pub continuation_id: Option<String>,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct LlmRequest {
   pub request_id: String,
-  pub messages: Vec<LlmMessage>,
+  /// Complete provider-compatible messages, including applet-owned metadata.
+  pub messages: Vec<Value>,
+  #[serde(default = "default_stream")]
+  pub stream: bool,
+  #[serde(default)]
+  pub max_output_tokens: Option<u32>,
   #[serde(default)]
   pub temperature: Option<f64>,
   #[serde(default)]
   pub tools: Vec<LlmToolDefinition>,
   #[serde(default)]
   pub tool_choice: Option<LlmToolChoice>,
+}
+
+fn default_stream() -> bool {
+  true
+}
+
+impl Default for LlmRequest {
+  fn default() -> Self {
+    Self {
+      request_id: String::new(),
+      messages: Vec::new(),
+      stream: true,
+      max_output_tokens: None,
+      temperature: None,
+      tools: Vec::new(),
+      tool_choice: None,
+    }
+  }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -152,7 +161,8 @@ pub struct LlmResult {
   pub status: LlmStatus,
   pub content: String,
   pub tool_calls: Vec<LlmToolCall>,
-  pub continuation_id: Option<String>,
+  /// Complete assistant message, present only for a successful generation.
+  pub message: Option<Value>,
   pub finish_reason: Option<String>,
   pub provenance: LlmProvenance,
   pub error: Option<LlmFailure>,
@@ -163,10 +173,6 @@ pub struct LlmEvent {
   pub request_id: String,
   pub kind: String,
   pub text: String,
-  #[serde(skip_serializing_if = "Option::is_none")]
-  pub result: Option<LlmResult>,
-  #[serde(skip_serializing_if = "Option::is_none")]
-  pub tool_call: Option<LlmToolCall>,
   #[serde(skip_serializing_if = "Option::is_none")]
   pub provenance: Option<LlmProvenance>,
 }

@@ -36,6 +36,10 @@ pub fn text(value: impl Into<String>) -> Value {
   json!({"type": "text", "value": value.into()})
 }
 
+pub fn optional_text(value: Option<String>) -> Value {
+  value.map(text).unwrap_or_else(|| json!({"type": "null"}))
+}
+
 pub fn cell(row: &[Value], index: usize) -> Result<String, JsValue> {
   row
     .get(index)
@@ -43,6 +47,19 @@ pub fn cell(row: &[Value], index: usize) -> Result<String, JsValue> {
     .and_then(Value::as_str)
     .map(str::to_owned)
     .ok_or_else(|| bridge::error("The chatbot database returned an invalid value."))
+}
+
+pub fn optional_cell(row: &[Value], index: usize) -> Result<Option<String>, JsValue> {
+  if row
+    .get(index)
+    .and_then(|value| value.get("type"))
+    .and_then(Value::as_str)
+    == Some("null")
+  {
+    Ok(None)
+  } else {
+    cell(row, index).map(Some)
+  }
 }
 
 pub async fn query(
@@ -116,11 +133,16 @@ pub async fn initialize() -> Result<(), JsValue> {
     match version.as_str() {
       "0" => {
         execute("CREATE TABLE conversations (conversation_id TEXT PRIMARY KEY, title TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)", vec![], Some(&transaction)).await?;
-        execute("CREATE TABLE messages (message_id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE, role TEXT NOT NULL CHECK(role IN ('user', 'assistant')), content TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('pending', 'complete', 'interrupted')), request_id TEXT NOT NULL, created_at TEXT NOT NULL)", vec![], Some(&transaction)).await?;
+        execute("CREATE TABLE messages (message_id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE, role TEXT NOT NULL CHECK(role IN ('user', 'assistant')), content TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('pending', 'complete', 'interrupted')), request_id TEXT NOT NULL, created_at TEXT NOT NULL, provider_message TEXT, provenance TEXT)", vec![], Some(&transaction)).await?;
         execute("CREATE INDEX messages_by_conversation ON messages(conversation_id)", vec![], Some(&transaction)).await?;
-        execute("PRAGMA user_version = 1", vec![], Some(&transaction)).await?;
+        execute("PRAGMA user_version = 2", vec![], Some(&transaction)).await?;
       }
-      "1" => {}
+      "1" => {
+        execute("ALTER TABLE messages ADD COLUMN provider_message TEXT", vec![], Some(&transaction)).await?;
+        execute("ALTER TABLE messages ADD COLUMN provenance TEXT", vec![], Some(&transaction)).await?;
+        execute("PRAGMA user_version = 2", vec![], Some(&transaction)).await?;
+      }
+      "2" => {}
       _ => return Err(bridge::error("This chatbot database requires a newer applet.")),
     }
     execute("UPDATE messages SET status = 'interrupted' WHERE status = 'pending'", vec![], Some(&transaction)).await?;

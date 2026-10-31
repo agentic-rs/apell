@@ -1,5 +1,20 @@
 # Verification
 
+The client-owned LLM history contract was checked with:
+
+- `pnpm test`: all 35 SDK, bridge, compiled-WASM/SQLite, JSON validation, and iOS preparation tests passed.
+- `cargo test -p apell-core -p apell --offline --locked`: all 85 tests passed, including 13 loopback LLM integration tests.
+- `cargo clippy --offline --locked -p apell-core -p apell --all-targets -- -D warnings`: passed.
+- `pnpm tauri ios build --debug --target aarch64-sim --no-sign --ci`: the native simulator bundle, frontend, and WASM sample built successfully.
+- `cargo check --offline --locked -p apell --lib --target aarch64-linux-android`: the native host and Tokn SDK passed with the installed NDK toolchain.
+- `pnpm format:check` and `git diff --check`: passed.
+
+The fixtures verify exact assistant-message metadata replay after closing a session and recreating the service, tool-result continuation without a host cache, explicit rejection of unsupported streaming metadata, buffered recovery without an automatic retry, request-scoped progress and cancellation, and authoritative partial text on failure. SDK tests cover concurrent requests, duplicate IDs, callback exceptions, abort and timeout cleanup, and rejection of the removed completion method. Compiled-WASM tests cover migration of the sample's existing SQLite schema, full message and provenance persistence across database reopen, and exclusion of interrupted or unhandled tool responses from replay.
+
+The rebuilt host was installed and relaunched in the iOS simulator; its installed executable matched the build output. Companion was updated separately to version 0.2.0 with existing chats intact. Simulator smoke checks verified the version in About, streamed local demo replies, cancellation preserving partial text with a “Reply interrupted” label, and persistence of both completed and interrupted replies after closing and reopening the applet.
+
+These checks use local fixtures and demo mode, not a live provider or physical device. The host still exposes the compatible Chat Completions connection through Tokn. The historical checks below describe earlier implementations; opaque host continuation handles and the legacy completion API have since been removed.
+
 The embedded Tokn Git integration resolves `main` to `d546ef2d306e9a952a17eae8a58366483832da05` in `Cargo.lock` and was checked with:
 
 - `pnpm test`: all 27 SDK, bridge, compiled-WASM/SQLite, JSON validation, and iOS preparation tests passed.

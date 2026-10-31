@@ -12,10 +12,8 @@ export interface QueryResult {
 
 export interface LlmEvent {
   request_id: string;
-  kind: 'started' | 'delta' | 'reasoning_delta' | 'tool_call' | 'terminal' | 'done' | 'error';
+  kind: 'started' | 'text_delta' | 'reasoning_delta';
   text: string;
-  result?: LlmResult;
-  tool_call?: LlmToolCall;
   provenance?: LlmProvenance;
 }
 
@@ -55,23 +53,25 @@ export interface LlmTool {
 
 export type LlmToolChoice = 'auto' | 'none' | 'required' | { name: string };
 
-export type LlmMessage =
-  | { role: 'system' | 'user'; content: string }
-  | {
-      role: 'assistant';
-      content: string;
-      tool_calls?: LlmToolCall[];
-      /** Opaque, transient host metadata; return unchanged during tool continuation. */
-      continuation_id?: string | null;
-    }
-  | { role: 'tool'; content: string; tool_call_id: string };
+/** Complete provider-compatible message. Preserve returned assistant fields on replay. */
+export type LlmMessage = {
+  role: 'system' | 'user' | 'assistant' | 'tool';
+  [key: string]: JsonValue;
+};
 
 export interface LlmRequest {
-  request_id: string;
+  request_id?: string;
   messages: LlmMessage[];
+  stream?: boolean;
+  max_output_tokens?: number;
   temperature?: number;
   tools?: LlmTool[];
   tool_choice?: LlmToolChoice;
+}
+
+export interface LlmGenerateOptions {
+  signal?: AbortSignal;
+  on_event?: (event: LlmEvent) => void;
 }
 
 export interface LlmProvenance {
@@ -95,7 +95,8 @@ export interface LlmResult {
   request_id: string;
   content: string;
   tool_calls: LlmToolCall[];
-  continuation_id: string | null;
+  /** Replayable assistant message, present only for completed or tool_calls results. */
+  message: LlmMessage | null;
   status: LlmStatus;
   finish_reason: string | null;
   provenance: LlmProvenance;
