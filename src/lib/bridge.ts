@@ -11,6 +11,7 @@ const methods = new Set([
   'sqlite.rollback',
   'llm.config',
   'llm.complete',
+  'llm.generate',
   'llm.cancel',
   'resources.download',
   'resources.read',
@@ -62,6 +63,11 @@ export function attachBridge(
     try {
       if (data.method === 'config.set') {
         assertJsonValue((data.params as Record<string, unknown>).value);
+      }
+      if (data.method === 'llm.generate') {
+        // Raw WASM callers bypass the SDK helper. Validate before native JSON
+        // serialization can silently turn NaN into null or omit undefined.
+        assertJsonValue(data.params);
       }
       const result = await call(data.method, data.params);
       if (!closed) port.postMessage({ type: 'response', request_id: data.request_id, result });

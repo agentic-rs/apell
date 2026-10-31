@@ -18,6 +18,13 @@ impl Drop for SendingGuard {
 #[derive(Deserialize)]
 struct Completion {
   content: String,
+  status: String,
+  error: Option<CompletionError>,
+}
+
+#[derive(Deserialize)]
+struct CompletionError {
+  message: String,
 }
 
 async fn prepare(
@@ -69,12 +76,19 @@ pub async fn send(conversation_id: &str, content: &str, request_id: &str) -> Res
   let assistant_id = bridge::create_id();
   let messages = prepare(conversation_id, content, request_id, &assistant_id).await?;
   let result: Result<Completion, JsValue> = bridge::call(
-    "llm.complete",
+    "llm.generate",
     json!({"request_id": request_id, "messages": messages}),
   )
   .await;
   let (content, status) = match &result {
-    Ok(completion) => (completion.content.clone(), "complete"),
+    Ok(completion) => (
+      completion.content.clone(),
+      if completion.status == "completed" {
+        "complete"
+      } else {
+        "interrupted"
+      },
+    ),
     Err(error) => (bridge::property(error, "partial_content"), "interrupted"),
   };
   storage::execute(
@@ -87,5 +101,22 @@ pub async fn send(conversation_id: &str, content: &str, request_id: &str) -> Res
     None,
   )
   .await?;
-  result.map(|_| ())
+  match result {
+    Ok(completion) if completion.status == "completed" => Ok(()),
+    Ok(completion) => Err(bridge::error(
+      completion
+        .error
+        .map(|error| error.message)
+        .unwrap_or_else(|| {
+          match completion.status.as_str() {
+            "cancelled" => "The reply was stopped.",
+            "truncated" => "The model reached its response limit before finishing.",
+            "tool_calls" => "This chatbot requires a text reply.",
+            _ => "The model did not complete its reply.",
+          }
+          .to_owned()
+        }),
+    )),
+    Err(error) => Err(error),
+  }
 }

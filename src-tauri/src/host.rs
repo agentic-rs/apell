@@ -57,17 +57,19 @@ impl Host {
   pub fn new(root: PathBuf) -> Result<Self, String> {
     std::fs::create_dir_all(&root).map_err(|_| "Could not create host storage.")?;
     let settings_path = root.join("llm.json");
-    let settings = if settings_path.exists() {
+    let settings: LlmConfig = if settings_path.exists() {
       serde_json::from_slice(
-        &std::fs::read(settings_path).map_err(|_| "Could not read LLM settings.")?,
+        &std::fs::read(&settings_path).map_err(|_| "Could not read LLM settings.")?,
       )
       .map_err(|_| "Invalid saved LLM settings.")?
     } else {
-      LlmConfig {
-        base_url: "demo".into(),
-        model_id: "local-demo".into(),
-      }
+      LlmConfig::default()
     };
+    // Persist the generated connection identity on first launch and when loading
+    // older settings, so request attribution remains stable across host restarts.
+    apell_core::llm::validate_config(&settings)?;
+    let encoded = serde_json::to_vec(&settings).map_err(|_| "Could not encode settings.")?;
+    atomic_write(&settings_path, &encoded)?;
     Ok(Self {
       host_key: format!("{}{}", Uuid::new_v4(), Uuid::new_v4()),
       bundles: Arc::new(BundleStore::new(root.join("bundles"))),
@@ -140,7 +142,22 @@ pub fn string<'a>(params: &'a Value, field: &str) -> Result<&'a str, String> {
 }
 
 pub fn public_config(config: &LlmConfig) -> Value {
-  json!({"model_id": config.model_id, "mode": if config.base_url == "demo" { "demo" } else { "provider" }})
+  json!({
+    "model_id": config.model_id,
+    "connection_id": config.connection_id,
+    "mode": if config.base_url == "demo" { "demo" } else { "provider" },
+    "capabilities": config.capabilities(),
+  })
+}
+
+pub fn update_connection_identity(config: &mut LlmConfig, previous: &LlmConfig) {
+  // A model selection or credential rotation belongs to the same connection.
+  // Switching endpoints creates a new public identity without disclosing URLs.
+  config.connection_id = if config.base_url == previous.base_url {
+    previous.connection_id.clone()
+  } else {
+    Uuid::new_v4().to_string()
+  };
 }
 
 pub fn credential_account(config: &LlmConfig) -> String {
@@ -159,6 +176,44 @@ mod tests {
     let directory = tempfile::tempdir().unwrap();
     let host = Host::new(directory.path().to_owned()).unwrap();
     (directory, host)
+  }
+
+  #[test]
+  fn upgrades_legacy_settings_with_a_persistent_public_connection_identity() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("llm.json");
+    std::fs::write(
+      &path,
+      br#"{"base_url":"https://provider.invalid/v1","model_id":"selected-model"}"#,
+    )
+    .unwrap();
+    let first = Host::new(directory.path().to_owned()).unwrap();
+    let first_config = first.settings.try_lock().unwrap().clone();
+    assert!(Uuid::parse_str(&first_config.connection_id).is_ok());
+    let second = Host::new(directory.path().to_owned()).unwrap();
+    let second_config = second.settings.try_lock().unwrap().clone();
+    assert_eq!(first_config.connection_id, second_config.connection_id);
+    let public = public_config(&second_config);
+    assert_eq!(public["connection_id"], first_config.connection_id);
+    assert_eq!(public["capabilities"]["tools"], "unknown");
+    assert!(public.get("base_url").is_none());
+    assert!(!public.to_string().contains("provider.invalid"));
+  }
+
+  #[test]
+  fn connection_identity_is_host_owned_and_changes_only_with_endpoint() {
+    let previous = LlmConfig::default();
+    let mut next = LlmConfig {
+      model_id: "different-model".into(),
+      connection_id: "untrusted-identity".into(),
+      ..previous.clone()
+    };
+    update_connection_identity(&mut next, &previous);
+    assert_eq!(next.connection_id, previous.connection_id);
+    next.base_url = "https://provider.invalid/v1".into();
+    update_connection_identity(&mut next, &previous);
+    assert_ne!(next.connection_id, previous.connection_id);
+    assert!(Uuid::parse_str(&next.connection_id).is_ok());
   }
 
   fn register(host: &Host, session_id: &str, permissions: &[&str]) -> Session {
@@ -193,6 +248,10 @@ mod tests {
     let (_directory, host) = fixture();
     register(&host, "unprivileged", &[]);
     let groups: &[(&str, &[&str])] = &[
+      (
+        "llm",
+        &["llm.config", "llm.generate", "llm.complete", "llm.cancel"],
+      ),
       ("http", &["http.request"]),
       (
         "fs",

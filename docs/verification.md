@@ -1,5 +1,16 @@
 # Verification
 
+The generic LLM contract update was checked with:
+
+- `pnpm test`: 27 SDK, bridge, compiled-WASM/SQLite, JSON validation, and iOS preparation tests passed.
+- `cargo test -p apell-core -p apell --offline`: 63 tests passed, including six real loopback HTTP integration tests for the LLM contract.
+- `pnpm tauri ios build --debug --target aarch64-sim --no-sign --ci`: the WASM sample, TypeScript frontend, and native iOS simulator bundle built successfully.
+- `pnpm format:check` and `git diff --check`: passed.
+
+The LLM tests cover tool definitions and choice on the wire, multi-turn tool results, replay of older assistant reasoning through opaque handles, cross-session and modified-message rejection, connection/model changes, cancellation with authoritative partial text, truncation versus premature EOF, missing or inconsistent model provenance, sanitized provider failures, and expired/evicted continuation state. Unit tests also cover interleaved tool fragments, required/none/named choice enforcement, refusal and finish reasons, session closure, early cancellation, and legacy text-only compatibility. SDK tests keep reasoning out of partial answers and isolate duplicate and concurrent requests. The compiled sample persists non-completed outcomes as interrupted.
+
+Provider tests use local fixtures, not a live model account. They establish the supported compatible-protocol behavior, not universal provider compatibility. Streaming `reasoning_details` remains explicitly unsupported; complete buffered metadata and text reasoning fields are covered. Physical-device testing of this extension has not been performed.
+
 The applet controls update passed all 21 existing TypeScript tests, formatting checks, and the native iOS simulator build. Simulator smoke checks covered the top-right capsule and menu in portrait and landscape, About details, reloading with the saved conversation intact, closing to the library, and opening the shared installation sheet. Reload replaces the native session and iframe; applet bundles need no changes to receive these host controls.
 
 The mobile launcher update was checked with:

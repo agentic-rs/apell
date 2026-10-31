@@ -2,11 +2,12 @@ import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
 import { afterAll, expect, it } from 'vitest';
+import type { LlmResult, LlmStatus } from '../../../packages/applet-sdk/src/types';
 import init, * as chatbot from '../pkg/chatbot.js';
 
 const database = new DatabaseSync(':memory:');
 database.exec('PRAGMA foreign_keys = ON');
-let failCompletion = false;
+let completionStatus: LlmStatus | 'bridge_failure' = 'completed';
 let sentMessages: { role: string; content: string }[] = [];
 
 function sqlValue(value: unknown): unknown {
@@ -57,12 +58,34 @@ Object.assign(globalThis, {
         last_insert_row_id: result.lastInsertRowid.toString(),
       };
     }
-    if (method === 'llm.complete') {
+    if (method === 'llm.generate') {
       sentMessages = params.messages as typeof sentMessages;
       expect(params).not.toHaveProperty('api_key');
-      if (failCompletion)
-        throw Object.assign(new Error('Reply stopped.'), { partial_content: 'Part of a reply' });
-      return { request_id: params.request_id, content: 'A helpful answer.' };
+      if (completionStatus === 'bridge_failure')
+        throw Object.assign(new Error('Bridge interrupted.'), {
+          partial_content: 'Received before bridge failure',
+        });
+      const result: LlmResult = {
+        request_id: String(params.request_id),
+        status: completionStatus,
+        content:
+          completionStatus === 'completed'
+            ? 'A helpful answer.'
+            : `Authoritative ${completionStatus} partial`,
+        tool_calls: [],
+        continuation_id: null,
+        finish_reason: completionStatus === 'completed' ? 'stop' : null,
+        provenance: {
+          connection_id: 'test_connection',
+          requested_model_id: 'requested_model',
+          model_id: 'reported_model',
+        },
+        error:
+          completionStatus === 'completed' || completionStatus === 'tool_calls'
+            ? null
+            : { code: completionStatus, message: `Reply ${completionStatus}.`, retryable: false },
+      };
+      return result;
     }
     throw new Error(`Unexpected host method: ${method}`);
   },
@@ -88,21 +111,33 @@ it('runs WASM schema, history, completion and interruption against host SQLite',
       status: 'complete',
     }),
   ]);
-  failCompletion = true;
-  await expect(chatbot.send_message(conversationId, 'What next?', 'second_reply')).rejects.toThrow(
-    'Reply stopped.',
-  );
-  expect(sentMessages.map((message) => message.role)).toEqual([
-    'system',
-    'user',
-    'assistant',
-    'user',
-  ]);
+  for (const status of ['cancelled', 'truncated', 'unsupported', 'failed', 'tool_calls'] as const) {
+    completionStatus = status;
+    await expect(
+      chatbot.send_message(conversationId, `Question with ${status} reply`, `${status}_reply`),
+    ).rejects.toThrow(
+      status === 'tool_calls' ? 'This chatbot requires a text reply.' : `Reply ${status}.`,
+    );
+    expect(await chatbot.load_messages(conversationId)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: 'assistant',
+          content: `Authoritative ${status} partial`,
+          status: 'interrupted',
+        }),
+      ]),
+    );
+    expect(sentMessages.some((message) => message.content.startsWith('Authoritative'))).toBe(false);
+  }
+  completionStatus = 'bridge_failure';
+  await expect(
+    chatbot.send_message(conversationId, 'Bridge failure question', 'bridge_reply'),
+  ).rejects.toThrow('Bridge interrupted.');
   expect(await chatbot.load_messages(conversationId)).toEqual(
     expect.arrayContaining([
       expect.objectContaining({
         role: 'assistant',
-        content: 'Part of a reply',
+        content: 'Received before bridge failure',
         status: 'interrupted',
       }),
     ]),

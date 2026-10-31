@@ -8,7 +8,10 @@ import type {
   HttpRequest,
   HttpResponse,
   JsonValue,
+  LlmConfiguration,
   LlmEvent,
+  LlmRequest,
+  LlmResult,
 } from './types';
 import { assertJsonValue } from './json';
 
@@ -65,7 +68,9 @@ function handleMessage(event: MessageEvent<unknown>): void {
       !value ||
       typeof value.request_id !== 'string' ||
       typeof value.text !== 'string' ||
-      !['delta', 'done', 'error'].includes(value.kind)
+      !['started', 'delta', 'reasoning_delta', 'tool_call', 'terminal', 'done', 'error'].includes(
+        value.kind,
+      )
     )
       return;
     if (value.kind === 'delta' && streams.has(value.request_id)) {
@@ -125,11 +130,13 @@ export async function hostCall<T = unknown>(
     if (timeout) clearTimeout(timeout);
   });
   const request_id = createId();
+  const is_llm_request = method === 'llm.complete' || method === 'llm.generate';
   const llm_request_id =
-    method === 'llm.complete' && typeof params.request_id === 'string'
-      ? params.request_id
-      : undefined;
-  if (llm_request_id) streams.set(llm_request_id, '');
+    is_llm_request && typeof params.request_id === 'string' ? params.request_id : undefined;
+  if (llm_request_id) {
+    if (streams.has(llm_request_id)) throw new HostError('This LLM request is already active.');
+    streams.set(llm_request_id, '');
+  }
   return new Promise<T>((resolve, reject) => {
     const request_timeout = setTimeout(
       () => {
@@ -141,7 +148,7 @@ export async function hostCall<T = unknown>(
         }
         reject(new HostError('The host request timed out.', partial));
       },
-      method === 'llm.complete'
+      is_llm_request
         ? 330_000
         : method === 'resources.download' || method === 'http.request'
           ? 135_000
@@ -153,7 +160,14 @@ export async function hostCall<T = unknown>(
       timeout: request_timeout,
       llm_request_id,
     });
-    channel.postMessage({ type: 'request', request_id, method, params });
+    try {
+      channel.postMessage({ type: 'request', request_id, method, params });
+    } catch (error) {
+      pending.delete(request_id);
+      clearTimeout(request_timeout);
+      if (llm_request_id) streams.delete(llm_request_id);
+      reject(new HostError(error instanceof Error ? error.message : String(error)));
+    }
   });
 }
 
@@ -169,6 +183,39 @@ export function onDownloadProgress(handler: (event: DownloadProgress) => void): 
   return () => {
     downloadSubscribers.delete(handler);
   };
+}
+
+/** Shared model access. Tools run only when the applet explicitly executes them. */
+export const llm = {
+  config(): Promise<LlmConfiguration> {
+    return hostCall('llm.config');
+  },
+  async generate(request: LlmRequest): Promise<LlmResult> {
+    const params = omitUndefined({ ...request }, ['temperature', 'tools', 'tool_choice']);
+    params.messages = request.messages.map((message) =>
+      message.role === 'assistant'
+        ? omitUndefined({ ...message }, ['tool_calls', 'continuation_id'])
+        : { ...message },
+    );
+    if (request.tools !== undefined) {
+      params.tools = request.tools.map((tool) => omitUndefined({ ...tool }, ['description']));
+    }
+    assertJsonValue(params);
+    return hostCall('llm.generate', params);
+  },
+  cancel(request_id: string): Promise<void> {
+    return hostCall('llm.cancel', { request_id });
+  },
+};
+
+function omitUndefined(
+  value: Record<string, unknown>,
+  optional_fields: string[],
+): Record<string, unknown> {
+  for (const field of optional_fields) {
+    if (value[field] === undefined) delete value[field];
+  }
+  return value;
 }
 
 /** Native HTTP; non-2xx statuses are returned for the applet to interpret. */

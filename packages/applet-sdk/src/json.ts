@@ -7,7 +7,7 @@ export function assertJsonValue(value: unknown): asserts value is JsonValue {
   const ancestors = new Set<object>();
   const invalid = () =>
     new TypeError(
-      'Configuration values must be plain JSON with finite numbers and no undefined values, cycles, or custom objects.',
+      'Values must be plain JSON with finite numbers and no undefined values, cycles, or custom objects.',
     );
 
   function visit(current: unknown, depth: number): void {
@@ -18,9 +18,7 @@ export function assertJsonValue(value: unknown): asserts value is JsonValue {
     }
     if (typeof current !== 'object') throw invalid();
     if (depth >= MAX_JSON_DEPTH) {
-      throw new TypeError(
-        `Configuration values may nest at most ${MAX_JSON_DEPTH} objects or arrays.`,
-      );
+      throw new TypeError(`JSON values may nest at most ${MAX_JSON_DEPTH} objects or arrays.`);
     }
     if (ancestors.has(current)) throw invalid();
     const array = Array.isArray(current);

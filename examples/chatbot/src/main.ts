@@ -5,13 +5,7 @@ import init, {
   load_messages,
   send_message,
 } from '../pkg/chatbot.js';
-import {
-  createId,
-  HostError,
-  hostCall,
-  onLlmEvent,
-  type LlmConfiguration,
-} from '../../../packages/applet-sdk/src';
+import { createId, HostError, hostCall, llm, onLlmEvent } from '../../../packages/applet-sdk/src';
 import './style.css';
 
 interface Conversation {
@@ -32,7 +26,7 @@ Object.assign(globalThis, {
   apellCreateId: createId,
   apellHostCall: (method: string, params: Record<string, unknown>) => {
     if (
-      method === 'llm.complete' &&
+      (method === 'llm.complete' || method === 'llm.generate') &&
       typeof params.request_id === 'string' &&
       canceled.has(params.request_id)
     ) {
@@ -267,7 +261,7 @@ stopButton.addEventListener('click', () => {
   if (!activeRequest) return;
   canceled.add(activeRequest);
   stopButton.disabled = true;
-  void hostCall('llm.cancel', { request_id: activeRequest }).catch((error) => {
+  void llm.cancel(activeRequest).catch((error) => {
     showError(error);
     stopButton.disabled = false;
   });
@@ -289,7 +283,7 @@ async function boot(): Promise<void> {
     ),
   });
   await initialize();
-  const configuration = await hostCall<LlmConfiguration>('llm.config');
+  const configuration = await llm.config();
   element<HTMLSpanElement>('.model-pill').textContent =
     configuration.mode === 'demo' ? 'Demo mode' : configuration.model_id;
   if (configuration.mode === 'demo') {

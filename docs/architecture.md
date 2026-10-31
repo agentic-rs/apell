@@ -70,7 +70,7 @@ type Response =
 type Event = { type: 'event'; event: unknown };
 ```
 
-The envelope `request_id` correlates a bridge call. Long-running operations also carry their own `request_id` inside `params`, which correlates progress and cancellation. All errors reject the request promise. The shell rejects duplicate in-flight envelope IDs and allows at most 32 concurrent calls per bridge.
+The envelope `request_id` correlates a bridge call. Long-running operations also carry their own `request_id` inside `params`, which correlates progress and cancellation. Bridge errors reject the request promise; `llm.generate` additionally returns explicit terminal outcomes for provider and generation failures. The shell rejects duplicate in-flight envelope IDs and allows at most 32 concurrent calls per bridge.
 
 WASM uses the same asynchronous transport. The chatbot's `bridge.rs` adapts `apellHostCall` into Rust futures with `wasm-bindgen-futures`; `serde-wasm-bindgen` maps serialized request and result values. The applet has no direct SQLite file access or provider credential access.
 
@@ -109,23 +109,57 @@ The host limits SQL to 64 KiB, 256 parameters, 1 MiB of parameter data, 1 MiB SQ
 
 ## Shared LLM access
 
-| Method         | Parameters                                       | Result                                                   |
-| -------------- | ------------------------------------------------ | -------------------------------------------------------- |
-| `llm.config`   | None                                             | `{ model_id, mode }`, where mode is `demo` or `provider` |
-| `llm.complete` | `request_id`, `messages`, optional `temperature` | `{ request_id, content }`                                |
-| `llm.cancel`   | `request_id`                                     | `null`                                                   |
+Apell owns provider connections, credentials, model selection, transport, cancellation, and provider-specific metadata. Applets own prompts, history and context selection, persistence, tool implementations, validation, and user review. The host never executes an applet's tools or interprets their domain meaning. Provider setup stays in the shell's Settings screen.
 
-Messages contain `role` (`system`, `user`, or `assistant`) and `content`. Applets construct prompts and conversation history. The host chooses the configured provider, endpoint, model, and credential; these cannot be overridden in an applet request.
+| Method         | Parameters                                                               | Result                                                     |
+| -------------- | ------------------------------------------------------------------------ | ---------------------------------------------------------- |
+| `llm.config`   | None                                                                     | `{ model_id, mode, connection_id, capabilities }`          |
+| `llm.generate` | `request_id`, `messages`, optional `temperature`, `tools`, `tool_choice` | `LlmResult` with an explicit terminal status               |
+| `llm.cancel`   | `request_id`                                                             | `null`                                                     |
+| `llm.complete` | Legacy text-only request                                                 | `{ request_id, content }` on completion; rejects otherwise |
 
-`onLlmEvent` subscribes to `{ request_id, kind, text }` events. `delta` carries incremental text and `done` marks successful completion. Failures and cancellation reject `hostCall`; the SDK's `HostError.partial_content` retains received text so an applet can save an interrupted response. Subscription cleanup is the applet's responsibility.
+The SDK exports `llm.config()`, `llm.generate(request)`, `llm.cancel(request_id)`, and `onLlmEvent(handler)`. New clients should use `generate`. The legacy `complete` method retains its success/rejection contract so installed applets cannot mistake a resolved partial outcome for a completed answer. It does not accept tools or continuation handles.
 
-Provider mode uses an OpenAI-compatible text chat-completion endpoint, supports SSE streaming and buffered JSON responses, and does not follow redirects. Provider URLs require HTTPS, except loopback HTTP during development, and cannot contain embedded credentials, query parameters, or fragments. Demo mode returns scripted local text and makes no model request.
+### Messages, tools, and continuation
 
-Provider requests, generic HTTP requests, and resource downloads share a TLS policy. Android uses bundled Mozilla root certificates with rustls certificate and hostname verification; device-installed private certificate authorities are not loaded. Updating Android's bundled roots requires rebuilding the shell. Apple platforms continue to use native certificate trust.
+Messages contain a `role` and string `content`. Roles are `system`, `user`, `assistant`, and `tool`. Assistant messages may contain `tool_calls: [{ id, name, arguments }]` and `continuation_id`; tool messages require `tool_call_id`. Tool arguments remain JSON text for the applet to parse and validate. Tool definitions are `{ name, description?, parameters }`, where `parameters` is a JSON Schema object. `tool_choice` accepts `auto`, `none`, `required`, or `{ name }`. Every outstanding tool call must receive exactly one tool result before generating the next response.
 
-The host accepts 1–256 messages, at most 512 KiB of input content, and temperature values from 0 to 2. It caps generated content at 1 MiB and raw provider responses at 8 MiB, with a 180-second request timeout and a 60-second network read timeout. At most four requests run per session and 16 across the service. History beyond these limits is rejected; there is no automatic truncation, summarization, tool calling, or multimodal support.
+A `tool_calls` outcome ends the current provider turn and hands control to the applet. Append the returned assistant content, calls, and continuation handle unchanged, execute or reject the proposed tools in applet code, append their tool results, and generate again. A required or named choice that the provider silently ignores is an error. The host does not enforce application-specific schemas or execute partial tool-call fragments. See the [tool continuation example](llm.md).
 
-The native shell owns global provider configuration. Non-secret settings live in its application data directory. Keys are scoped by endpoint and stored in Apple Keychain on iOS/macOS, or encrypted with an Android Keystore key on Android. Android ciphertext is excluded from device backup. Applets can read the selected model/mode, but cannot read keys, change shared settings, or access a generic credential store. Secure provider credentials are currently implemented for iOS, Android, and macOS.
+The opaque `continuation_id` belongs to one assistant message. It preserves supported provider-private metadata without exposing provider-specific fields to applets. Pass it back on that same message whenever retaining it in the next request's context, including older assistant messages. Handles bind the applet session, connection, requested model, and exact assistant content/tool calls. Expired, evicted, altered, or mismatched handles fail explicitly; Apell never silently drops their metadata or switches the continuation to another connection.
+
+Continuation data stays in memory, never in applet storage or host logs. It expires after 30 minutes, is cleared on applet close/reload, and is bounded to 16 entries per session, 64 globally, and 8 MiB of private metadata. Applets should keep handles transient and start a fresh context after expiry. The first adapter preserves `reasoning_content` and `reasoning` fields, plus complete `reasoning_details` from buffered JSON. Streaming `reasoning_details` and other metadata formats it cannot preserve losslessly fail as unsupported rather than being discarded. This is not a provider-independent durable conversation store.
+
+### Outcomes, events, and attribution
+
+Every `generate` outcome contains `request_id`, `status`, `content`, `tool_calls`, nullable `continuation_id`, nullable `finish_reason`, `provenance`, and nullable `error`. The native result is authoritative for partial answer text even if events arrive late or are missed.
+
+| Status        | Meaning                                                                                       |
+| ------------- | --------------------------------------------------------------------------------------------- |
+| `completed`   | The provider explicitly finished the answer.                                                  |
+| `tool_calls`  | Validated complete tool calls are ready for applet handling.                                  |
+| `cancelled`   | The request was stopped; the answer is partial.                                               |
+| `truncated`   | The provider reached its output limit; the answer is partial.                                 |
+| `unsupported` | A requested capability or continuation format is explicitly unsupported.                      |
+| `failed`      | Transport, protocol, validation, credential, refusal, or other failure; inspect `error.code`. |
+
+An error contains a stable `code`, sanitized `message`, `retryable`, and an optional `capability`. Do not infer status from text or auto-retry a tool execution based on `retryable`. A dropped stream, missing completion reason, malformed tool call, content filter, or unknown finish reason cannot become a completed answer. `tool_calls` is a handoff, not a final answer. Session authorization, malformed bridge envelopes, and unavailable host transport may still reject the bridge promise with `HostError`; its `partial_content` includes answer deltas only.
+
+Events carry `request_id`, `kind`, and `text`. `started` includes the configuration snapshot in `provenance`; `delta` carries answer text; `reasoning_delta` carries only provider-exposed reasoning; `tool_call` carries a finalized call; `terminal` includes the authoritative `result`. Use the final result's status before executing tools or saving a completed answer. Reasoning is transient event data, absent from final result content and the SDK's partial-answer buffer. It is not reconstructed if events are missed. Providers exposing no reasoning still work. Legacy `complete` emits only `delta` and successful `done` events. Remove event subscriptions when leaving the applet's view.
+
+`provenance` contains a non-secret `connection_id`, the captured `requested_model_id`, and nullable provider-reported `model_id`. Missing provider identity remains null; the requested alias is never passed off as the actual model. Save attribution from the result, not a prior `llm.config` read. Configuration and credential reads form one snapshot; settings changes cannot alter an in-flight request. Connection IDs are random host-generated values persisted across restarts. Selecting another model or rotating a key preserves the connection identity; switching endpoints creates a new identity. No endpoint or key is exposed to applets.
+
+Capabilities contain `tools`, `required_tool_choice`, and `exposed_reasoning`, each `supported`, `unsupported`, or `unknown`. An arbitrary OpenAI-compatible endpoint has no reliable standard model capability advertisement, so the initial adapter reports `unknown` and attempts the request. Demo mode reports these features `unsupported`. A generic HTTP 400 is a provider error, not proof of unsupported tools; only recognized explicit unsupported-feature errors are classified that way. Capability discovery is advisory; every request has its own outcome and provenance.
+
+### Transport and limits
+
+The first adapter uses OpenAI-compatible Chat Completions with SSE or buffered JSON, and does not follow redirects. It does not add native Anthropic/Gemini protocols, Responses API, schema-constrained answer generation, model catalog discovery, or multimodal input. Demo mode returns scripted local text without a model request. The protocol follows [Chat Completions tool and finish-reason fields](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create); assistant reasoning replay accommodates the [compatible reasoning-content contract](https://api-docs.deepseek.com/guides/thinking_mode/).
+
+Provider URLs require HTTPS, except loopback HTTP, and reject embedded credentials, query parameters, and fragments. Provider errors are sanitized before crossing the bridge. Provider, HTTP, and resource requests share a TLS policy: Android uses bundled Mozilla roots with rustls verification, while Apple platforms use native certificate trust. Android device-installed private certificate authorities are not loaded; updating its bundled roots requires rebuilding the shell.
+
+Requests allow 1–256 messages, up to 64 tool definitions/calls, at most 512 KiB of encoded input including schemas and private continuation data, and temperature from 0 to 2. Output and private metadata are bounded; generated output is capped at 1 MiB and raw provider responses at 8 MiB. The request timeout is 180 seconds, with a 60-second network read timeout. At most four requests run per session and 16 globally. The host rejects oversized context; it does not truncate history or summarize it for the applet.
+
+Non-secret settings live in host application data. Keys are scoped by endpoint and stored in Apple Keychain on iOS/macOS or encrypted with an Android Keystore key on Android. Android ciphertext is excluded from device backup. Applets cannot read keys, modify shared settings, or access a generic credential store. Secure provider credentials are currently implemented for iOS, Android, and macOS.
 
 ## Native HTTP
 
