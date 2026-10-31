@@ -21,6 +21,8 @@ Tauri is compiled natively for the host platform. An applet contains portable co
 | `examples/chatbot/`        | Sample interface and portable Rust conversation, schema, persistence, and prompt logic            |
 | `scripts/build-chatbot.ts` | WASM build and self-contained bundle packaging                                                    |
 
+The library presents an adaptive grid of applet icons, with installation in an Add sheet and shared model settings on a separate screen. Native window sizes are configured only for desktop; mobile uses device bounds, and the UI accounts for safe areas and the visible keyboard viewport. iOS declares a single scene in `Info.ios.plist` so UIKit supplies orientation-aware window geometry. Its WebView disables automatic scroll insets; the shell applies CSS safe-area padding once, including around the applet iframe.
+
 The UI exposes one foreground applet. Each launch creates a fresh host-owned session; durable data is scoped to its stable `applet_id`. Closing a session invalidates its SQLite and LLM registrations, rolls back open transactions, and cancels active LLM requests, HTTP requests, and resource downloads. Local file/config operations already in progress finish before session closure is acknowledged; queued calls cannot write afterward. Applets never supply their own authoritative identity to a storage or provider service.
 
 ## Applet isolation and installation
@@ -47,7 +49,7 @@ Bundles use this format:
 
 Applet IDs contain at most 80 lowercase ASCII letters, digits, hyphens, or underscores. The current host accepts only schema/API version 1 and rejects unknown or duplicate permissions. The sample embeds WASM bytes as base64 and instantiates them directly, so it needs no network fetch inside the sandbox.
 
-Installation verifies the expected SHA-256 before parsing or activation. A remote checksum must come from a trusted source; the local-file picker computes a checksum of the file the user chose. Neither flow authenticates a publisher. Verified bytes are stored in immutable files named by their checksum. An atomic active-version pointer selects the installed version. Reads verify integrity again and keep the manifest and checksum from one snapshot. Invalid updates preserve the current active version.
+Installation verifies the expected SHA-256 before parsing or activation. A remote checksum must come from a trusted source; the native host computes the checksum for local bundle content selected by the shell. Local installs may supply an expected checksum, which is still enforced; URL installs always require one. Neither flow authenticates a publisher. Verified bytes are stored in immutable files named by their checksum. An atomic active-version pointer selects the installed version. Reads verify integrity again and keep the manifest and checksum from one snapshot. Invalid updates preserve the current active version.
 
 There is no code-signature infrastructure, version ordering, or schema downgrade management. Old version files remain available on disk but have no management UI yet.
 

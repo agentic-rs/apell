@@ -1,5 +1,16 @@
 # Verification
 
+The mobile launcher update was checked with:
+
+- `pnpm test`: 21 bridge, SDK, WASM, and iOS preparation tests passed.
+- `cargo test -p apell --lib --offline`: eight host and installation tests passed, including native hashing of local bundles, enforcement of supplied checksums, required checksums for URL installs, and rejection of invalid or oversized sources.
+- `pnpm tauri ios build --debug --target aarch64-sim --no-sign --ci`: TypeScript, Rust WASM, production frontend, and native simulator builds passed.
+- `pnpm format:check`: formatting checks passed.
+
+The iPhone simulator reproduced the cropped desktop layout caused by explicit native window dimensions. Desktop sizing is now platform-specific, and the launcher uses one icon and label per applet with installation and settings behind header buttons. Smoke checks covered the launcher and Companion in portrait and landscape, settings, sample installation and update, opening and closing Companion, a streamed local demo reply, and conversation persistence after updating the sample. Keyboard checks covered the chat composer and revealing the focused checksum field inside the install sheet.
+
+iOS uses a single scene and disables automatic WebView scroll insets so CSS owns safe-area padding. Before scene support was enabled, the simulator's native window retained portrait safe-area values in landscape despite reporting landscape orientation. After enabling it, both the native insets and the visible layout adjusted correctly. Temporary geometry diagnostics were removed after verification.
+
 The HTTP, filesystem, and applet config extension was checked with:
 
 - `pnpm test`: 12 bridge, SDK, JSON validation, and compiled-WASM integration tests passed.

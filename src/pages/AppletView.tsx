@@ -2,11 +2,19 @@ import { useEffect, useRef, useState } from 'react';
 import { attachBridge } from '../lib/bridge';
 import { callApplet, onAppletEvent, message } from '../lib/tauri';
 import type { AppletSession } from '../lib/types';
+import { Icon } from '../components/Icon';
 
-export function AppletView({ session, onClose }: { session: AppletSession; onClose: () => void }) {
+export function AppletView({
+  session,
+  onClose,
+}: {
+  session: AppletSession;
+  onClose: () => Promise<void>;
+}) {
   const frame = useRef<HTMLIFrameElement>(null);
   const [ready, setReady] = useState(false);
   const [error, setError] = useState('');
+  const [closing, setClosing] = useState(false);
   useEffect(() => {
     let dispose: (() => void) | undefined;
     let unlisten: (() => void) | undefined;
@@ -64,13 +72,27 @@ export function AppletView({ session, onClose }: { session: AppletSession; onClo
   return (
     <section className="applet-view">
       <header className="applet-bar">
-        <button onClick={onClose}>← Library</button>
+        <button
+          className="icon-button"
+          aria-label="Back to applets"
+          disabled={closing}
+          onClick={async () => {
+            setClosing(true);
+            try {
+              await onClose();
+            } catch (error) {
+              setError(message(error));
+              setClosing(false);
+            }
+          }}
+        >
+          <Icon name="back" />
+        </button>
         <span>{session.manifest.name}</span>
-        <span className="subtle">v{session.manifest.version}</span>
       </header>
-      {!ready && (
-        <div className="applet-loading" role="status">
-          {error || 'Opening applet…'}
+      {(!ready || error || closing) && (
+        <div className={`applet-loading${error ? ' error' : ''}`} role={error ? 'alert' : 'status'}>
+          {error || (closing ? 'Closing applet…' : 'Opening applet…')}
         </div>
       )}
       <iframe

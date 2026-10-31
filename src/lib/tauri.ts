@@ -24,8 +24,11 @@ export function shellCall<T>(method: string, params: unknown = {}): Promise<T> {
   return invoke<T>('shell_command', { host_key: hostKey(), method, params });
 }
 export const listApplets = () => shellCall<InstalledApplet[]>('applets.list');
-export const installBundle = (params: { bundle?: string; url?: string; sha256: string }) =>
-  shellCall<InstalledApplet>('applets.install', params);
+export const installBundle = (
+  params:
+    | { bundle: string; sha256?: string; url?: never }
+    | { url: string; sha256: string; bundle?: never },
+) => shellCall<InstalledApplet>('applets.install', params);
 export const launchApplet = (applet_id: string) =>
   shellCall<AppletSession>('applets.launch', { applet_id });
 export const closeApplet = (session_id: string) => shellCall<void>('applets.close', { session_id });

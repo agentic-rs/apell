@@ -1,0 +1,26 @@
+import { useEffect } from 'react';
+
+/** Keep the applet and install sheet inside the visible area when the keyboard opens. */
+export function useViewportHeight(): void {
+  useEffect(() => {
+    const viewport = window.visualViewport;
+    const update = () => {
+      document.documentElement.style.setProperty(
+        '--viewport-height',
+        `${viewport?.height ?? window.innerHeight}px`,
+      );
+      document.documentElement.style.setProperty('--viewport-top', `${viewport?.offsetTop ?? 0}px`);
+    };
+    update();
+    viewport?.addEventListener('resize', update);
+    viewport?.addEventListener('scroll', update);
+    window.addEventListener('resize', update);
+    return () => {
+      viewport?.removeEventListener('resize', update);
+      viewport?.removeEventListener('scroll', update);
+      window.removeEventListener('resize', update);
+      document.documentElement.style.removeProperty('--viewport-height');
+      document.documentElement.style.removeProperty('--viewport-top');
+    };
+  }, []);
+}

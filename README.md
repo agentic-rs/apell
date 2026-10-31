@@ -19,9 +19,11 @@ The `wasm-bindgen` CLI version must match the chatbot's pinned Rust dependency. 
 
 In the shell:
 
-1. Select **Install sample**, then open **Companion**.
+1. Tap **+**, choose **Try Companion**, then tap the **Companion** icon.
 2. Start a conversation. The initial demo connection produces scripted replies locally, allowing streaming, cancellation, and persistence to be exercised without credentials.
-3. Open **Model connection** to configure an OpenAI-compatible API base URL, model ID, and optional key. The host appends `/chat/completions` to the base URL. Keys remain in native secure storage.
+3. Open **Settings → Model connection** to configure an OpenAI-compatible API base URL, model ID, and optional key. The host appends `/chat/completions` to the base URL. Keys remain in native secure storage.
+
+The library shows each applet as one icon and its name. Add and Settings stay in the header. To refresh the bundled sample after updating the shell, choose **+ → Update Companion**; existing chats are preserved.
 
 Closing and reopening the applet preserves conversations. A stopped reply is marked interrupted; interrupted replies are excluded from later model context. A pending reply left by an applet shutdown is marked interrupted when the applet next initializes.
 
@@ -75,7 +77,7 @@ pnpm build:chatbot
 
 This produces `artifacts/chatbot.apell.json` and `artifacts/chatbot.sha256`. The bundle is JSON containing a versioned manifest and a self-contained HTML document. CSS, JavaScript, and the compiled WASM bytes are embedded; installation does not need a separate asset server.
 
-Use **Choose bundle** for a local file. To download a bundle, provide its URL and the SHA-256 from a trusted copy of the build output. Downloads require HTTPS, with loopback HTTP allowed for local development. Remote redirects are not followed. No hosting or publication is performed by this project.
+Tap **+ → Choose a bundle** for a local file. Use **Install from a URL** to provide a URL and the SHA-256 from a trusted copy of the build output. Downloads require HTTPS, with loopback HTTP allowed for local development. Remote redirects are not followed. No hosting or publication is performed by this project.
 
 A checksum pins exact bytes; it is not a publisher signature. This version is for applets you build and trust. Installing another bundle with the same `applet_id` updates its code while retaining its local databases, resources, files, and config.
 
