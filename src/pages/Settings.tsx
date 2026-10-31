@@ -24,15 +24,8 @@ export function Settings() {
   }, []);
   return (
     <section className="settings panel">
-      <span className="eyebrow">SHARED SERVICES</span>
-      <h2>
-        One connection.
-        <br />
-        Every applet.
-      </h2>
-      <p className="muted">
-        Choose a model here. Applets send messages through Apell without handling your provider key.
-      </p>
+      <h2>Model connection</h2>
+      <p>Shared by all your applets. Your API key stays in Apell.</p>
       <form
         onSubmit={async (event) => {
           event.preventDefault();
@@ -57,68 +50,76 @@ export function Settings() {
           }
         }}
       >
-        <label>
-          Connection
-          <select value={mode} onChange={(event) => setMode(event.target.value)}>
-            <option value="demo">Local demo · no API key</option>
-            <option value="provider">OpenAI-compatible provider</option>
-          </select>
-        </label>
-        {mode === 'demo' ? (
-          <div className="notice">
-            Demo mode returns a scripted response to test streaming and persistence. It does not
-            call a language model.
-          </div>
-        ) : (
-          <>
-            <label>
-              API base URL
-              <input
-                type="url"
-                required
-                placeholder="https://api.example.com/v1"
-                value={base_url}
-                onChange={(event) => {
-                  setBaseUrl(event.target.value);
-                  setHasKey(false);
-                }}
-              />
-            </label>
-            <label>
-              Model ID
-              <input
-                required
-                placeholder="Your provider’s model ID"
-                value={model_id}
-                onChange={(event) => setModelId(event.target.value)}
-              />
-            </label>
-            <label>
-              API key
-              <input
-                type="password"
-                autoComplete="off"
-                placeholder={
-                  has_key
-                    ? 'Saved securely · leave blank to keep'
-                    : 'Enter a key if your provider requires one'
-                }
-                value={api_key}
-                onChange={(event) => setApiKey(event.target.value)}
-              />
-            </label>
-            <label className="check">
-              <input
-                type="checkbox"
-                checked={clear_key}
-                onChange={(event) => setClearKey(event.target.checked)}
-              />{' '}
-              Remove saved key for this endpoint
-            </label>
-          </>
-        )}
+        <fieldset disabled={busy}>
+          <label>
+            Connection
+            <select value={mode} onChange={(event) => setMode(event.target.value)}>
+              <option value="demo">Local demo · no API key</option>
+              <option value="provider">OpenAI-compatible provider</option>
+            </select>
+          </label>
+          {mode === 'demo' ? (
+            <div className="notice">
+              Demo mode returns a scripted response to test streaming and persistence. It does not
+              call a language model.
+            </div>
+          ) : (
+            <>
+              <label>
+                API base URL
+                <input
+                  type="url"
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  required
+                  placeholder="https://api.example.com/v1"
+                  value={base_url}
+                  onChange={(event) => {
+                    setBaseUrl(event.target.value);
+                    setHasKey(false);
+                  }}
+                />
+              </label>
+              <label>
+                Model ID
+                <input
+                  required
+                  placeholder="Your provider’s model ID"
+                  value={model_id}
+                  onChange={(event) => setModelId(event.target.value)}
+                />
+              </label>
+              <label>
+                API key
+                <input
+                  type="password"
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  autoComplete="off"
+                  placeholder={
+                    has_key
+                      ? 'Saved securely · leave blank to keep'
+                      : 'Enter a key if your provider requires one'
+                  }
+                  value={api_key}
+                  onChange={(event) => setApiKey(event.target.value)}
+                />
+              </label>
+              <label className="check">
+                <input
+                  type="checkbox"
+                  checked={clear_key}
+                  onChange={(event) => setClearKey(event.target.checked)}
+                />{' '}
+                Remove saved key for this endpoint
+              </label>
+            </>
+          )}
+        </fieldset>
         <button className="primary" disabled={busy}>
-          Save connection
+          {busy ? 'Please wait…' : 'Save connection'}
         </button>
         <p role="status" className="status">
           {status}

@@ -1,5 +1,7 @@
 mod commands;
 mod host;
+#[cfg(target_os = "ios")]
+mod ios;
 mod navigation;
 
 use tauri::Manager;
@@ -14,13 +16,19 @@ pub fn run() {
       let origins = navigation::trusted_origins(app.config().build.dev_url.as_ref());
       let boot = navigation::bootstrap(&host.host_key, &origins)?;
       app.manage(host);
-      tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("index.html".into()))
-        .title("Apell")
-        .inner_size(1100., 800.)
-        .min_inner_size(360., 560.)
-        .initialization_script(boot)
-        .on_navigation(move |url| navigation::allowed(url, &origins))
-        .build()?;
+      let window =
+        tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("index.html".into()))
+          .title("Apell")
+          .background_color(tauri::window::Color(247, 248, 243, 255))
+          .initialization_script(boot)
+          .on_navigation(move |url| navigation::allowed(url, &origins));
+      // On iOS an explicit inner size becomes the actual native view frame.
+      // Mobile must inherit the device bounds for responsive CSS and safe areas.
+      #[cfg(desktop)]
+      let window = window.inner_size(1100., 800.).min_inner_size(320., 480.);
+      let _window = window.build()?;
+      #[cfg(target_os = "ios")]
+      ios::configure_safe_area(&_window)?;
       let handle = app.handle().clone();
       tauri::async_runtime::spawn(async move {
         loop {

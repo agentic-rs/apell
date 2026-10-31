@@ -65,7 +65,7 @@ root.innerHTML = `
     </div>
     <form class="composer">
       <label class="sr-only" for="message">Message</label>
-      <textarea id="message" rows="2" maxlength="32768" placeholder="Ask a question, explore an idea…" disabled></textarea>
+      <textarea id="message" rows="2" maxlength="32768" enterkeyhint="send" placeholder="Ask a question, explore an idea…" disabled></textarea>
       <div class="composer-bottom"><span class="composer-hint">Enter to send · Shift + Enter for a new line</span><button class="send" type="submit" disabled>Send <span aria-hidden="true">↑</span></button><button class="stop" type="button" hidden>Stop reply <span aria-hidden="true">■</span></button></div>
     </form>
     <p class="footer-note">Your conversations stay here. Requests use your shell’s shared model.</p>
@@ -170,19 +170,20 @@ function renderMessages(messages: Message[]): void {
   if (messages.length === 0) {
     const empty = document.createElement('div');
     empty.className = 'empty-state';
-    empty.innerHTML = `<div class="empty-symbol" aria-hidden="true">✳</div><p class="eyebrow">A FRESH PERSPECTIVE</p><h2>What’s on your mind?</h2><p>Untangle a question, give an idea some shape,<br>or follow your curiosity.</p><div class="suggestions"><button type="button">Help me think through an idea</button><button type="button">Explain something simply</button><button type="button">Make a plan for today</button></div>`;
+    empty.innerHTML = `<div class="empty-symbol" aria-hidden="true">✳</div><h2>What’s on your mind?</h2><p>Ask a question or explore an idea.</p><div class="suggestions"><button type="button">Help me think through an idea</button><button type="button">Explain something simply</button><button type="button">Make a plan for today</button></div>`;
     for (const button of empty.querySelectorAll<HTMLButtonElement>('button')) {
       button.addEventListener('click', () => {
         textarea.value = button.textContent ?? '';
         setBusy(false);
-        textarea.focus();
+        textarea.focus({ preventScroll: true });
       });
     }
     messagesElement.appendChild(empty);
+    messagesElement.scrollTop = 0;
   } else {
     messages.forEach(appendMessage);
+    scrollToBottom();
   }
-  scrollToBottom();
 }
 
 async function refreshHistory(): Promise<void> {
@@ -205,7 +206,7 @@ async function newConversation(): Promise<void> {
   await refreshHistory();
   renderMessages([]);
   showError();
-  textarea.focus();
+  textarea.focus({ preventScroll: true });
 }
 
 async function send(): Promise<void> {
@@ -236,7 +237,7 @@ async function send(): Promise<void> {
       showError(error);
     }
     setBusy(false);
-    textarea.focus();
+    textarea.focus({ preventScroll: true });
   }
 }
 

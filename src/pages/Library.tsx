@@ -1,33 +1,60 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { installBundle, launchApplet, listApplets, message, onInstallProgress } from '../lib/tauri';
 import type { AppletSession, InstalledApplet } from '../lib/types';
+import { Icon } from '../components/Icon';
+import { InstallSheet } from '../components/InstallSheet';
 
-async function checksum(text: string): Promise<string> {
-  const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
-  return Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, '0')).join('');
+interface LibraryProps {
+  onLaunch: (session: AppletSession) => void;
+  onBusyChange: (busy: boolean) => void;
+  installOpen: boolean;
+  onInstallOpen: () => void;
+  onInstallClose: () => void;
 }
 
-export function Library({ onLaunch }: { onLaunch: (session: AppletSession) => void }) {
+export function Library({
+  onLaunch,
+  onBusyChange,
+  installOpen,
+  onInstallOpen,
+  onInstallClose,
+}: LibraryProps) {
   const [applets, setApplets] = useState<InstalledApplet[]>([]);
-  const [url, setUrl] = useState('');
-  const [sha256, setSha256] = useState('');
-  const [status, setStatus] = useState('Loading library…');
+  const [loading, setLoading] = useState(true);
+  const [status, setStatus] = useState('');
+  const [failed, setFailed] = useState(false);
   const [busy, setBusy] = useState(false);
-  const refresh = async () => {
-    setApplets(await listApplets());
-    setStatus('');
-  };
+  const [launching_id, setLaunchingId] = useState('');
+  const pending = useRef(false);
+
   useEffect(() => {
-    refresh().catch((error) => setStatus(message(error)));
+    let disposed = false;
+    listApplets()
+      .then((items) => {
+        if (!disposed) setApplets(items);
+      })
+      .catch((error) => {
+        if (!disposed) {
+          setStatus(message(error));
+          setFailed(true);
+        }
+      })
+      .finally(() => {
+        if (!disposed) setLoading(false);
+      });
+    return () => {
+      disposed = true;
+    };
   }, []);
   useEffect(() => {
     let stop: (() => void) | undefined;
     let disposed = false;
-    onInstallProgress((event) =>
-      setStatus(
-        `Downloading… ${Math.round(event.received_bytes / 1024)} KiB${event.total_bytes ? ` of ${Math.round(event.total_bytes / 1024)} KiB` : ''}`,
-      ),
-    )
+    onInstallProgress((event) => {
+      if (!disposed && pending.current)
+        setStatus(
+          `Downloading… ${Math.round(event.received_bytes / 1024)} KiB${event.total_bytes ? ` of ${Math.round(event.total_bytes / 1024)} KiB` : ''}`,
+        );
+    })
       .then((fn) => {
         if (disposed) fn();
         else stop = fn;
@@ -38,162 +65,113 @@ export function Library({ onLaunch }: { onLaunch: (session: AppletSession) => vo
       stop?.();
     };
   }, []);
-  const run = async (action: () => Promise<void>) => {
+
+  const run = async (action: () => Promise<void>, label: string) => {
+    if (pending.current) return;
+    pending.current = true;
+    onBusyChange(true);
     setBusy(true);
-    setStatus('Working…');
+    setFailed(false);
+    setStatus(label);
     try {
       await action();
     } catch (error) {
       setStatus(message(error));
+      setFailed(true);
     } finally {
+      pending.current = false;
+      onBusyChange(false);
       setBusy(false);
+      setLaunchingId('');
     }
   };
+  const installed = async () => {
+    setApplets(await listApplets());
+    setStatus('Applet added.');
+    onInstallClose();
+  };
   return (
-    <>
-      <section className="hero">
-        <div>
-          <span className="eyebrow">YOUR PERSONAL APPLET SPACE</span>
-          <h1>
-            Small apps.
-            <br />
-            <span>A shared foundation.</span>
-          </h1>
-          <p>
-            Your apps, together. Native storage and one model connection, ready whenever you are.
-          </p>
+    <section className="library" aria-label="Your applets" aria-busy={loading || busy}>
+      {loading && (
+        <p className="status" role="status">
+          Loading applets…
+        </p>
+      )}
+      <div className="applet-grid">
+        {applets.map((applet) => (
+          <button
+            className="applet-icon-button"
+            key={applet.applet_id}
+            disabled={busy}
+            aria-label={`Open ${applet.name}`}
+            onClick={() => {
+              if (pending.current) return;
+              setLaunchingId(applet.applet_id);
+              void run(
+                async () => onLaunch(await launchApplet(applet.applet_id)),
+                `Opening ${applet.name}…`,
+              );
+            }}
+          >
+            <span className="applet-icon" aria-hidden="true">
+              {launching_id === applet.applet_id ? (
+                <span className="spinner" />
+              ) : applet.applet_id === 'chatbot' ? (
+                <Icon name="chat" />
+              ) : (
+                <span className="applet-initial">
+                  {Array.from(applet.name.trim())[0]?.toLocaleUpperCase() || 'a'}
+                </span>
+              )}
+            </span>
+            <span className="applet-name">{applet.name}</span>
+          </button>
+        ))}
+      </div>
+      {!loading && !applets.length && (
+        <div className="empty-library">
+          <p>Add your first applet.</p>
+          <button className="primary" onClick={onInstallOpen}>
+            Add applet
+          </button>
         </div>
-        <div className="orb" aria-hidden="true">
-          <div className="orb-core">
-            a<span>·</span>
-          </div>
-          <span className="orb-tag">LOCAL BY DEFAULT</span>
-        </div>
-      </section>
-      <section className="library-section">
-        <div className="section-heading">
-          <h2>
-            Your applets <span>{applets.length.toString().padStart(2, '0')}</span>
-          </h2>
-          <span className="muted">On this device</span>
-        </div>
-        <div className="applet-grid">
-          {applets.map((applet) => (
-            <button
-              className="applet-card"
-              key={applet.applet_id}
-              disabled={busy}
-              onClick={() => run(async () => onLaunch(await launchApplet(applet.applet_id)))}
-            >
-              <div className="card-top">
-                <span className="chat-icon">↗</span>
-                <span className="pill">INSTALLED</span>
-              </div>
-              <h3>{applet.name}</h3>
-              <p>
-                {applet.applet_id === 'chatbot'
-                  ? 'A conversation, backed by Rust WASM and native SQLite.'
-                  : applet.applet_id}
-              </p>
-              <div className="card-bottom">
-                <span>v{applet.version}</span>
-                <span>Open applet ↗</span>
-              </div>
-            </button>
-          ))}
-          {!applets.some((applet) => applet.applet_id === 'chatbot') && (
-            <article className="applet-card sample">
-              <div className="card-top">
-                <span className="chat-icon">✳</span>
-                <span className="pill">START HERE</span>
-              </div>
-              <h3>Chatbot</h3>
-              <p>A sample applet with saved conversations and streaming replies.</p>
-              <button
-                className="primary"
-                disabled={busy}
-                onClick={() =>
-                  run(async () => {
-                    const { default: sample_bundle } =
-                      await import('../generated/chatbot.apell.json?raw');
-                    await installBundle({
-                      bundle: sample_bundle,
-                      sha256: await checksum(sample_bundle),
-                    });
-                    await refresh();
-                  })
-                }
-              >
-                Install sample ↗
-              </button>
-            </article>
-          )}
-        </div>
-      </section>
-      <section className="install-panel">
-        <div>
-          <span className="eyebrow">BRING YOUR OWN</span>
-          <h2>Install an applet</h2>
-          <p className="muted">
-            Use a bundle URL and its SHA-256 checksum, or choose a local bundle.
-          </p>
-          <label className="file-button">
-            Choose bundle
-            <input
-              type="file"
-              accept=".json,.apell"
-              disabled={busy}
-              onChange={(event) => {
-                const file = event.target.files?.[0];
-                if (!file) return;
-                run(async () => {
-                  if (file.size > 24 * 1024 * 1024) throw new Error('Bundle exceeds 24 MiB.');
-                  const bundle = await file.text();
-                  await installBundle({ bundle, sha256: await checksum(bundle) });
-                  await refresh();
-                });
-                event.target.value = '';
-              }}
-            />
-          </label>
-        </div>
-        <form
-          onSubmit={(event) => {
-            event.preventDefault();
-            run(async () => {
-              await installBundle({ url, sha256 });
-              await refresh();
-              setUrl('');
-              setSha256('');
-            });
-          }}
+      )}
+      {!installOpen && status && (
+        <p
+          className={`status library-status${failed ? ' error' : ''}`}
+          role={failed ? 'alert' : 'status'}
         >
-          <label>
-            Bundle URL
-            <input
-              type="url"
-              required
-              value={url}
-              placeholder="https://example.com/chatbot.apell.json"
-              onChange={(event) => setUrl(event.target.value)}
-            />
-          </label>
-          <label>
-            SHA-256
-            <input
-              required
-              pattern="[a-fA-F0-9]{64}"
-              value={sha256}
-              placeholder="64-character checksum"
-              onChange={(event) => setSha256(event.target.value.trim())}
-            />
-          </label>
-          <button disabled={busy}>Download & install ↓</button>
-        </form>
-      </section>
-      <p className="status" role="status">
-        {status}
-      </p>
-    </>
+          {status}
+        </p>
+      )}
+      <InstallSheet
+        open={installOpen}
+        onClose={onInstallClose}
+        busy={busy || loading}
+        hasSample={applets.some((applet) => applet.applet_id === 'chatbot')}
+        status={loading ? 'Loading applets…' : status}
+        failed={failed}
+        onSample={() =>
+          void run(async () => {
+            const { default: bundle } = await import('../generated/chatbot.apell.json?raw');
+            await installBundle({ bundle });
+            await installed();
+          }, 'Installing Companion…')
+        }
+        onFile={(file) =>
+          void run(async () => {
+            if (file.size > 24 * 1024 * 1024) throw new Error('Bundle exceeds 24 MiB.');
+            await installBundle({ bundle: await file.text() });
+            await installed();
+          }, 'Installing applet…')
+        }
+        onUrl={(url, sha256) =>
+          void run(async () => {
+            await installBundle({ url, sha256 });
+            await installed();
+          }, 'Downloading applet…')
+        }
+      />
+    </section>
   );
 }
