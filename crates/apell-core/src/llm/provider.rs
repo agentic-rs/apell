@@ -1,6 +1,9 @@
 use super::{
-  event, sse::SseParser, validation, Failure, LlmConfig, LlmEvent, LlmProvenance, LlmRequest,
-  LlmResult, LlmStatus, LlmToolCall, LlmToolChoice, MAX_INPUT_BYTES, MAX_OUTPUT_BYTES,
+  event,
+  platform::{ApellBody, ApellPlatform, PlatformError},
+  sse::SseParser,
+  tokn_config, validation, Failure, LlmConfig, LlmEvent, LlmProvenance, LlmRequest, LlmResult,
+  LlmStatus, LlmToolCall, LlmToolChoice, MAX_ERROR_BYTES, MAX_INPUT_BYTES, MAX_OUTPUT_BYTES,
   MAX_RESPONSE_BYTES, MAX_TOOLS,
 };
 use reqwest::Client;
@@ -552,82 +555,105 @@ pub(super) async fn remote(
       "The context including tool schemas and continuation data exceeds the size limit.",
     ));
   }
-  let url = validation::completion_url(config)
-    .map_err(|_| Failure::new("invalid_configuration", "The provider URL is invalid."))?;
-  let mut builder = client.post(url).json(&body);
+  let rules = tokn_config::execution_rules(config).map_err(|_| {
+    Failure::new(
+      "invalid_configuration",
+      "The LLM connection configuration is invalid.",
+    )
+  })?;
+  let sdk = tokn_sdk::Client::new(rules, Vec::new(), ApellPlatform::new(client.clone()))
+    .map_err(|_| {
+      Failure::new(
+        "invalid_configuration",
+        "Could not configure the LLM connection.",
+      )
+    })?
+    .with_limits(tokn_sdk::Limits {
+      max_response_bytes: MAX_RESPONSE_BYTES,
+      max_event_bytes: MAX_OUTPUT_BYTES,
+      max_error_body_bytes: MAX_ERROR_BYTES,
+    });
+  let mut options = tokn_sdk::RequestOptions::default().with_request_id(&request.request_id);
   if let Some(key) = api_key.filter(|key| !key.is_empty()) {
-    builder = builder.bearer_auth(key);
+    options = options.with_header("authorization", format!("Bearer {key}"));
   }
-  let mut response = builder
-    .send()
+  // The embedded fixed-provider relay preserves the compatible wire format.
+  // Friendly generation currently canonicalizes through Responses, which can
+  // discard provider-private assistant metadata required by continuation.
+  let response = sdk
+    .execute(tokn_sdk::Endpoint::ChatCompletions, body, options)
     .await
-    .map_err(|_| Failure::transport("Could not connect to the LLM provider."))?;
-  if !response.status().is_success() {
-    let status = response.status().as_u16();
-    let mut bytes = Vec::new();
-    while let Ok(Some(chunk)) = response.chunk().await {
-      if bytes.len().saturating_add(chunk.len()) > 64 * 1024 {
-        break;
+    .map_err(platform_failure)?;
+  let status = response.status();
+  let content_type = response.content_type().unwrap_or("").to_ascii_lowercase();
+  let response_body = response.into_body();
+  if !(200..300).contains(&status) {
+    let bytes = match response_body {
+      ApellBody::Buffered(bytes) => bytes,
+      ApellBody::Stream(mut stream) => {
+        let mut bytes = Vec::new();
+        while let Ok(Some(chunk)) = stream.next_chunk().await {
+          if bytes.len().saturating_add(chunk.len()) > MAX_ERROR_BYTES {
+            break;
+          }
+          bytes.extend_from_slice(&chunk);
+        }
+        bytes
       }
-      bytes.extend_from_slice(&chunk);
-    }
+    };
     return Err(provider_error(
-      &serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+      &if bytes.len() <= MAX_ERROR_BYTES {
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+      } else {
+        Value::Null
+      },
       Some(status),
     ));
   }
-  let content_type = response
-    .headers()
-    .get(reqwest::header::CONTENT_TYPE)
-    .and_then(|value| value.to_str().ok())
-    .unwrap_or("")
-    .to_ascii_lowercase();
-  if content_type.starts_with("application/json") {
-    let mut bytes = Vec::new();
-    while let Some(chunk) = response
-      .chunk()
-      .await
-      .map_err(|_| Failure::transport("The LLM response was interrupted."))?
-    {
-      if bytes.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES {
-        return Err(Failure::new(
-          "response_limit",
-          "The LLM response exceeded the size limit.",
-        ));
-      }
-      bytes.extend_from_slice(&chunk);
+  match response_body {
+    ApellBody::Buffered(bytes) if content_type.starts_with("application/json") => {
+      let value: Value = serde_json::from_slice(&bytes).map_err(|_| invalid_response())?;
+      output.consume(&value, false, emit)?;
     }
-    let value: Value = serde_json::from_slice(&bytes).map_err(|_| invalid_response())?;
-    output.consume(&value, false, emit)?;
-  } else if content_type.starts_with("text/event-stream") {
-    let mut parser = SseParser::default();
-    let mut received = 0usize;
-    'stream: while let Some(chunk) = response
-      .chunk()
-      .await
-      .map_err(|_| Failure::transport("The LLM response was interrupted."))?
-    {
-      received = received.saturating_add(chunk.len());
-      if received > MAX_RESPONSE_BYTES {
-        return Err(Failure::new(
-          "response_limit",
-          "The LLM response exceeded the size limit.",
-        ));
-      }
-      for data in parser.push(&chunk)? {
-        if data.trim() == "[DONE]" {
-          break 'stream;
+    ApellBody::Stream(mut stream) if content_type.starts_with("text/event-stream") => {
+      let mut parser = SseParser::default();
+      let mut received = 0usize;
+      // Opaque SDK chunks retain error envelopes and private metadata. Its
+      // semantic event API would consume in-stream errors before Apell could
+      // classify them and would require [DONE] even after an explicit finish.
+      'stream: while let Some(chunk) = stream.next_chunk().await.map_err(platform_failure)? {
+        received = received.saturating_add(chunk.len());
+        if received > MAX_RESPONSE_BYTES {
+          return Err(Failure::new(
+            "response_limit",
+            "The LLM response exceeded the size limit.",
+          ));
         }
-        let value: Value = serde_json::from_str(&data).map_err(|_| invalid_response())?;
-        output.consume(&value, true, emit)?;
+        for data in parser.push(&chunk)? {
+          if data.trim() == "[DONE]" {
+            break 'stream;
+          }
+          let value: Value = serde_json::from_str(&data).map_err(|_| invalid_response())?;
+          output.consume(&value, true, emit)?;
+        }
       }
+      // Unframed trailing records are discarded. [DONE] alone is not evidence
+      // of successful completion; the provider must supply a finish reason.
     }
-    // Unframed trailing records are discarded. [DONE] alone is not evidence
-    // of successful completion; the provider must supply a finish reason.
-  } else {
-    return Err(Failure::unsupported("response_format"));
+    _ => return Err(Failure::unsupported("response_format")),
   }
   output.finish(request)
+}
+
+fn platform_failure(error: PlatformError) -> Failure {
+  match error {
+    PlatformError::Transport => Failure::transport("The LLM request or response was interrupted."),
+    PlatformError::Limit => Failure::new(
+      "response_limit",
+      "The LLM response exceeded the size limit.",
+    ),
+    PlatformError::Protocol => invalid_response(),
+  }
 }
 
 #[cfg(test)]

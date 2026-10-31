@@ -370,6 +370,37 @@ mod tests {
   }
 
   #[tokio::test]
+  async fn compressed_responses_preserve_encoded_bytes_and_headers() {
+    // Valid gzip encoding of `applet response\0\xff`; decoding it changes both
+    // the body and response headers, so this catches feature-unification drift.
+    const GZIP: &[u8] = &[
+      31, 139, 8, 0, 0, 0, 0, 0, 2, 19, 75, 44, 40, 200, 73, 45, 81, 40, 74, 45, 46, 200, 207, 43,
+      78, 101, 248, 15, 0, 209, 12, 121, 31, 17, 0, 0, 0,
+    ];
+    let server = Server::start(|_| response("200 OK", "Content-Encoding: gzip\r\n", GZIP));
+    let output = HttpService::new()
+      .unwrap()
+      .request(request(&server.url))
+      .await
+      .unwrap();
+    assert_eq!(output.status, 200);
+    assert_eq!(output.body, GZIP);
+    assert!(output
+      .headers
+      .iter()
+      .any(|header| header.name == "content-encoding" && header.value == "gzip"));
+    assert!(output
+      .headers
+      .iter()
+      .any(|header| header.name == "content-length" && header.value == GZIP.len().to_string()));
+    let sent = server.finish();
+    let sent = String::from_utf8(sent).unwrap().to_ascii_lowercase();
+    assert!(!sent
+      .lines()
+      .any(|line| line.starts_with("accept-encoding:")));
+  }
+
+  #[tokio::test]
   async fn error_statuses_are_returned_and_redirects_are_not_followed() {
     let service = HttpService::new().unwrap();
     let missing = Server::start(|_| response("404 Not Found", "", b"missing"));

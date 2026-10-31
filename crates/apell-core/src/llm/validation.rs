@@ -1,6 +1,7 @@
 use super::{Failure, LlmConfig, LlmRequest, LlmToolChoice, MAX_INPUT_BYTES, MAX_TOOLS};
 use reqwest::Url;
 use std::collections::HashSet;
+use tokn_sdk::policy::{CanonicalAuthority, InvalidAuthority, InvalidHost};
 
 pub fn validate_config(config: &LlmConfig) -> Result<(), String> {
   if config.model_id.trim().is_empty()
@@ -13,7 +14,9 @@ pub fn validate_config(config: &LlmConfig) -> Result<(), String> {
     return Err("The connection identity is invalid.".into());
   }
   if config.base_url != "demo" {
-    completion_url(config)?;
+    // Settings and generation must admit the same endpoint. Compile only the
+    // in-memory rules here; this reads no credentials and performs no I/O.
+    super::tokn_config::execution_rules(config)?;
   }
   Ok(())
 }
@@ -45,11 +48,30 @@ pub(super) fn completion_url(config: &LlmConfig) -> Result<Url, String> {
       "Provider URLs must not include credentials, query parameters, or fragments.".into(),
     );
   }
+  CanonicalAuthority::parse(&url[url::Position::BeforeHost..url::Position::AfterPort])
+    .map_err(authority_error)?;
   url.set_path(&format!(
     "{}/chat/completions",
     url.path().trim_end_matches('/')
   ));
   Ok(url)
+}
+
+fn authority_error(error: InvalidAuthority) -> String {
+  match error {
+    InvalidAuthority::InvalidPort => "Provider URL ports must be between 1 and 65535.",
+    InvalidAuthority::Host(InvalidHost::TrailingDot) => {
+      "Provider hostnames must not end with a dot."
+    }
+    InvalidAuthority::Host(InvalidHost::InvalidDnsLabel) => {
+      "Provider hostnames must use DNS labels of 1 to 63 letters, digits, or interior hyphens."
+    }
+    InvalidAuthority::Host(InvalidHost::TooLong) => {
+      "Provider hostnames must be at most 253 characters."
+    }
+    _ => "Use a valid DNS hostname or IP address for the provider.",
+  }
+  .into()
 }
 
 pub(super) fn valid_id(value: &str) -> bool {
@@ -206,4 +228,94 @@ fn validate_json_depth(value: &serde_json::Value, depth: usize) -> Result<(), Fa
     _ => {}
   }
   Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  fn config(base_url: &str) -> LlmConfig {
+    LlmConfig {
+      base_url: base_url.into(),
+      model_id: "namespace/custom-model".into(),
+      connection_id: "test_connection".into(),
+    }
+  }
+
+  #[test]
+  fn settings_reject_incompatible_authorities_with_sanitized_reasons() {
+    let label_error =
+      "Provider hostnames must use DNS labels of 1 to 63 letters, digits, or interior hyphens.";
+    let mut cases = vec![
+      (
+        "https://example.invalid./v1".to_owned(),
+        "Provider hostnames must not end with a dot.",
+      ),
+      (
+        "https://example.invalid:0/v1".to_owned(),
+        "Provider URL ports must be between 1 and 65535.",
+      ),
+      (
+        "http://localhost:0/v1".to_owned(),
+        "Provider URL ports must be between 1 and 65535.",
+      ),
+      (
+        "http://[::1]:0/v1".to_owned(),
+        "Provider URL ports must be between 1 and 65535.",
+      ),
+    ];
+    for host in [
+      "bad_name.example".to_owned(),
+      "-edge.example".to_owned(),
+      "edge-.example".to_owned(),
+      "empty..example".to_owned(),
+      format!("{}.example", "x".repeat(64)),
+    ] {
+      cases.push((format!("https://{host}/v1"), label_error));
+    }
+    cases.push((
+      format!("https://{}/v1", vec!["x".repeat(63); 4].join(".")),
+      "Provider hostnames must be at most 253 characters.",
+    ));
+    for (url, expected) in cases {
+      // These inputs pass the old URL parser, but cannot be used by Tokn.
+      assert!(
+        Url::parse(&url).is_ok(),
+        "fixture does not exercise a compatibility gap"
+      );
+      assert_eq!(validate_config(&config(&url)).unwrap_err(), expected);
+      assert_eq!(
+        super::super::tokn_config::execution_rules(&config(&url)).unwrap_err(),
+        expected
+      );
+    }
+  }
+
+  #[test]
+  fn settings_preserve_normalized_urls_localhost_and_model_validation() {
+    for url in [
+      "demo",
+      "https://EXAMPLE.invalid:443/tenant/v1///",
+      "https://xn--bcher-kva.example/v1",
+      "https://bücher.example/v1",
+      "https://example.invalid/proxy%2Ftenant/v1",
+      "http://localhost:8000/v1",
+      "http://127.1:8000/v1",
+      "http://[::1]:8000/v1",
+    ] {
+      assert!(validate_config(&config(url)).is_ok(), "rejected {url}");
+    }
+    let mut invalid = config("https://example.invalid/v1");
+    invalid.model_id.clear();
+    assert_eq!(
+      validate_config(&invalid).unwrap_err(),
+      "Enter a valid model ID."
+    );
+    invalid.model_id = "model".into();
+    invalid.connection_id = "invalid connection".into();
+    assert_eq!(
+      validate_config(&invalid).unwrap_err(),
+      "The connection identity is invalid."
+    );
+  }
 }

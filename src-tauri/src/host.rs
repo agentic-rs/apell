@@ -57,19 +57,27 @@ impl Host {
   pub fn new(root: PathBuf) -> Result<Self, String> {
     std::fs::create_dir_all(&root).map_err(|_| "Could not create host storage.")?;
     let settings_path = root.join("llm.json");
-    let settings: LlmConfig = if settings_path.exists() {
-      serde_json::from_slice(
+    let (settings, persist_identity): (LlmConfig, bool) = if settings_path.exists() {
+      let saved: Value = serde_json::from_slice(
         &std::fs::read(&settings_path).map_err(|_| "Could not read LLM settings.")?,
       )
-      .map_err(|_| "Invalid saved LLM settings.")?
+      .map_err(|_| "Invalid saved LLM settings.")?;
+      let missing_identity = saved.get("connection_id").is_none();
+      (
+        serde_json::from_value(saved).map_err(|_| "Invalid saved LLM settings.")?,
+        missing_identity,
+      )
     } else {
-      LlmConfig::default()
+      (LlmConfig::default(), true)
     };
+    // A transport upgrade may reject an older endpoint. Keep parsed settings
+    // available for correction; requests and saves still validate them.
     // Persist the generated connection identity on first launch and when loading
     // older settings, so request attribution remains stable across host restarts.
-    apell_core::llm::validate_config(&settings)?;
-    let encoded = serde_json::to_vec(&settings).map_err(|_| "Could not encode settings.")?;
-    atomic_write(&settings_path, &encoded)?;
+    if persist_identity {
+      let encoded = serde_json::to_vec(&settings).map_err(|_| "Could not encode settings.")?;
+      atomic_write(&settings_path, &encoded)?;
+    }
     Ok(Self {
       host_key: format!("{}{}", Uuid::new_v4(), Uuid::new_v4()),
       bundles: Arc::new(BundleStore::new(root.join("bundles"))),
@@ -129,6 +137,7 @@ impl Host {
   }
 
   pub fn save_settings(&self, settings: &LlmConfig) -> Result<(), String> {
+    apell_core::llm::validate_config(settings)?;
     let data = serde_json::to_vec(settings).map_err(|_| "Could not encode settings.")?;
     atomic_write(&self.root.join("llm.json"), &data)
   }
@@ -198,6 +207,66 @@ mod tests {
     assert_eq!(public["capabilities"]["tools"], "unknown");
     assert!(public.get("base_url").is_none());
     assert!(!public.to_string().contains("provider.invalid"));
+  }
+
+  #[tokio::test]
+  async fn preserves_incompatible_saved_connection_for_correction_without_using_it() {
+    use apell_core::llm::{LlmMessage, LlmRequest, LlmStatus};
+
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("llm.json");
+    let saved = json!({
+      "base_url": "https://provider.invalid./custom/v1",
+      "model_id": "namespace/selected-model",
+      "connection_id": "stored_connection"
+    });
+    let original_bytes = serde_json::to_vec_pretty(&saved).unwrap();
+    std::fs::write(&path, &original_bytes).unwrap();
+
+    let host = Host::new(directory.path().to_owned()).unwrap();
+    let config = host.settings.lock().await.clone();
+    assert_eq!(serde_json::to_value(&config).unwrap(), saved);
+    assert_eq!(std::fs::read(&path).unwrap(), original_bytes);
+    assert_eq!(
+      host.save_settings(&config).unwrap_err(),
+      "Provider hostnames must not end with a dot."
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), original_bytes);
+
+    host.llm.register_session("recovery").unwrap();
+    let result = host
+      .llm
+      .generate(
+        "recovery",
+        LlmRequest {
+          request_id: "invalid_connection".into(),
+          messages: vec![LlmMessage {
+            role: "user".into(),
+            content: "Hello".into(),
+            ..Default::default()
+          }],
+          ..Default::default()
+        },
+        config.clone(),
+        None,
+        |_| {},
+      )
+      .await;
+    assert_eq!(result.status, LlmStatus::Failed);
+    assert_eq!(result.error.unwrap().code, "invalid_configuration");
+    assert!(result.content.is_empty());
+    assert_eq!(result.provenance.connection_id, config.connection_id);
+    assert_eq!(std::fs::read(&path).unwrap(), original_bytes);
+
+    let mut corrected = config.clone();
+    corrected.base_url = "https://provider.invalid/custom/v1".into();
+    update_connection_identity(&mut corrected, &config);
+    host.save_settings(&corrected).unwrap();
+    let reopened = Host::new(directory.path().to_owned()).unwrap();
+    assert_eq!(
+      serde_json::to_value(&*reopened.settings.lock().await).unwrap(),
+      serde_json::to_value(&corrected).unwrap()
+    );
   }
 
   #[test]

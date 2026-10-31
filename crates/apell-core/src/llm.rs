@@ -1,6 +1,8 @@
 mod continuation;
+mod platform;
 mod provider;
 mod sse;
+mod tokn_config;
 mod types;
 mod validation;
 
@@ -22,6 +24,7 @@ use uuid::Uuid;
 const MAX_INPUT_BYTES: usize = 512 * 1024;
 const MAX_OUTPUT_BYTES: usize = 1024 * 1024;
 const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+const MAX_ERROR_BYTES: usize = 64 * 1024;
 const MAX_TOOLS: usize = 64;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(180);
 

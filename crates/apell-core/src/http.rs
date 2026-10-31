@@ -1,8 +1,14 @@
 use reqwest::{Client, ClientBuilder};
 
-/// Keep the TLS policy shared by provider requests and resource downloads.
+/// Keep TLS and byte-preserving response behavior shared by native HTTP clients.
 pub(crate) fn client_builder() -> Result<ClientBuilder, String> {
-  let builder = Client::builder();
+  // Dependency features must not silently decode applet HTTP bodies or alter
+  // downloaded bytes used for resource and bundle integrity checks.
+  let builder = Client::builder()
+    .no_gzip()
+    .no_brotli()
+    .no_deflate()
+    .no_zstd();
   #[cfg(target_os = "android")]
   {
     // Reqwest's default Android verifier needs a separately initialized JVM
