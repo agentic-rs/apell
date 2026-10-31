@@ -21,7 +21,7 @@ In the shell:
 
 1. Tap **+**, choose **Try Companion**, then tap the **Companion** icon.
 2. Start a conversation. The initial demo connection produces scripted replies locally, allowing streaming, cancellation, and persistence to be exercised without credentials.
-3. Open **Settings → Model connection** to configure an OpenAI-compatible API base URL, model ID, and optional key. The host appends `/chat/completions` to the base URL. Keys remain in native secure storage.
+3. Open **Settings → Model connection** to configure an OpenAI-compatible API base URL, model ID, and optional key. The host uses the embedded [Tokn SDK](https://github.com/tokn-ai/tokn) and appends `/chat/completions` to the base URL. Keys remain in native secure storage.
 
 The library shows each applet as one icon and its name. Add and Settings stay in the header. To refresh the bundled sample after updating the shell, choose **+ → Update Companion**; existing chats are preserved.
 
@@ -95,7 +95,13 @@ A checksum pins exact bytes; it is not a publisher signature. This version is fo
 - Applet-private file operations and persistent JSON configuration.
 - A basic `device.info` API for platform and host API version.
 
-Cloud synchronization, provider model catalogs, schema-constrained answers, generic per-applet credential APIs, background applets, and additional device integrations are deferred. The current LLM adapter uses OpenAI-compatible Chat Completions; native Anthropic/Gemini protocols are not included. Version files are retained, but there is no rollback selector, uninstall flow, or automatic resource eviction yet. Reinstall a known bundle to select its code version; database downgrade compatibility remains the applet's responsibility.
+Cloud synchronization, provider model catalogs, schema-constrained answers, generic per-applet credential APIs, background applets, and additional device integrations are deferred. The current Tokn integration uses OpenAI-compatible Chat Completions; additional Tokn provider adapters, OAuth onboarding, and native Anthropic/Gemini protocols are not exposed by Apell. Version files are retained, but there is no rollback selector, uninstall flow, or automatic resource eviction yet. Reinstall a known bundle to select its code version; database downgrade compatibility remains the applet's responsibility.
+
+## Tokn development dependency
+
+Apell consumes `tokn-sdk` directly from Tokn's Git `main` branch. `Cargo.lock` records the exact revision so device builds stay reproducible. To dogfood the latest upstream changes, run `cargo update -p tokn-sdk`, run the checks and mobile build, then commit the updated lockfile. A normal locked build does not fetch a newer revision automatically.
+
+The SDK runs inside the native host with an in-memory configuration. No Tokn gateway process or separate Tokn configuration/auth files are required. See [the integration boundary](docs/architecture.md#shared-llm-access) for the current protocol and continuation limits.
 
 See [the architecture and API contract](docs/architecture.md) for migration guidance and limits, and [verification notes](docs/verification.md) for tested behavior.
 

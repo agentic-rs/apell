@@ -25,6 +25,8 @@ enum Reply {
   HttpError(u16, Value),
   Stream(String),
   HoldStream(String),
+  Redirect(String),
+  TruncatedHttpError(u16),
 }
 
 struct Server {
@@ -56,11 +58,32 @@ impl Server {
             "error": { "message": "Unexpected request in test." }
           }))
         });
+        if let Reply::Redirect(location) = &reply {
+          stream
+            .write_all(
+              format!("HTTP/1.1 307 Test\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+          continue;
+        }
+        if let Reply::TruncatedHttpError(status) = &reply {
+          stream
+            .write_all(
+              format!("HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: 1000\r\nConnection: close\r\n\r\n{{\"error\":")
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+          continue;
+        }
         let (status, content_type, body, hold) = match reply {
           Reply::Json(body) => (200, "application/json", body.to_string(), false),
           Reply::HttpError(status, body) => (status, "application/json", body.to_string(), false),
           Reply::Stream(body) => (200, "text/event-stream", body, false),
           Reply::HoldStream(body) => (200, "text/event-stream", body, true),
+          Reply::Redirect(_) | Reply::TruncatedHttpError(_) => unreachable!(),
         };
         let length = if hold {
           String::new()
@@ -68,7 +91,10 @@ impl Server {
           format!("Content-Length: {}\r\n", body.len())
         };
         let response = format!("HTTP/1.1 {status} Test\r\nContent-Type: {content_type}\r\n{length}Connection: close\r\n\r\n{body}");
-        stream.write_all(response.as_bytes()).await.unwrap();
+        // Bounded reads and cancellation can close before the fixture finishes.
+        if stream.write_all(response.as_bytes()).await.is_err() {
+          continue;
+        }
         if hold {
           // Keep the response incomplete until cancellation closes the connection.
           // This synchronizes on the real transport instead of timing a sleep.
@@ -514,4 +540,211 @@ async fn explicit_unsupported_parameters_are_distinct_from_generic_provider_reje
     .requests()
     .iter()
     .all(|request| request.body["tool_choice"] == "required"));
+}
+
+#[tokio::test]
+async fn tokn_preserves_keyless_localhost_prefix_and_qualified_model_ids() {
+  let mut server = Server::start(vec![Reply::Json(completion(
+    json!({ "role": "assistant", "content": "Keyless answer." }),
+    "stop",
+  ))])
+  .await;
+  server.config.base_url = server.config.base_url.replace("127.0.0.1", "localhost");
+  server.config.base_url.push_str("/nested/");
+  server.config.model_id = "organization/model-revision".into();
+  let service = LlmService::new().unwrap();
+  service.register_session("session").unwrap();
+  let result = tokio::time::timeout(
+    DEADLINE,
+    service.generate(
+      "session",
+      input("keyless"),
+      server.config.clone(),
+      None,
+      |_| {},
+    ),
+  )
+  .await
+  .unwrap();
+  assert_eq!(result.status, LlmStatus::Completed, "{:?}", result.error);
+  assert_eq!(
+    result.provenance.requested_model_id,
+    "organization/model-revision"
+  );
+  let requests = server.requests();
+  assert_eq!(requests.len(), 1);
+  assert!(requests[0]
+    .headers
+    .starts_with("POST /v1/nested/chat/completions HTTP/1.1\r\n"));
+  assert_eq!(requests[0].body["model"], "organization/model-revision");
+  assert_eq!(requests[0].body["stream"], true);
+  let headers = requests[0].headers.to_ascii_lowercase();
+  assert!(!headers.contains("authorization:"));
+  assert!(!headers.contains("x-api-key:"));
+  assert!(!headers.contains("x-project-cwd:"));
+  assert!(!headers.contains("x-tokn-"));
+  assert!(headers.contains("accept-encoding: identity\r\n"));
+}
+
+#[tokio::test]
+async fn tokn_does_not_retry_rate_limits_or_server_errors() {
+  let server = Server::start(vec![
+    Reply::HttpError(
+      429,
+      json!({ "error": { "message": "private-rate-detail" } }),
+    ),
+    Reply::HttpError(
+      503,
+      json!({ "error": { "message": "private-service-detail" } }),
+    ),
+  ])
+  .await;
+  let service = LlmService::new().unwrap();
+  service.register_session("session").unwrap();
+  for (index, status) in [429, 503].into_iter().enumerate() {
+    let (result, _) = generate(
+      &service,
+      "session",
+      input(&format!("failure_{index}")),
+      &server.config,
+    )
+    .await;
+    assert_eq!(result.status, LlmStatus::Failed);
+    let error = result.error.unwrap();
+    assert_eq!(error.code, "provider_error");
+    assert!(error.retryable);
+    assert_eq!(
+      error.message,
+      format!("The LLM provider returned HTTP {status}.")
+    );
+    assert_eq!(server.requests().len(), index + 1);
+  }
+}
+
+#[tokio::test]
+async fn tokn_does_not_forward_credentials_to_redirect_targets() {
+  let destination = Server::start(vec![]).await;
+  let server = Server::start(vec![Reply::Redirect(format!(
+    "{}/chat/completions",
+    destination.config.base_url
+  ))])
+  .await;
+  let service = LlmService::new().unwrap();
+  service.register_session("session").unwrap();
+  let (result, _) = generate(&service, "session", input("redirect"), &server.config).await;
+  assert_eq!(result.status, LlmStatus::Failed);
+  assert_eq!(
+    result.error.unwrap().message,
+    "The LLM provider returned HTTP 307."
+  );
+  assert_eq!(server.requests().len(), 1);
+  assert!(destination.requests().is_empty());
+}
+
+#[tokio::test]
+async fn tokn_preserves_stream_errors_and_explicit_finish_without_done_marker() {
+  let partial = sse(json!({
+    "model": "stream-model",
+    "choices": [{ "index": 0, "delta": { "content": "Partial answer." }, "finish_reason": null }]
+  }));
+  let unsupported = sse(json!({ "error": {
+    "code": "unsupported_parameter", "param": "tools", "message": "private-stream-detail"
+  }}));
+  let finished = sse(json!({
+    "model": "stream-model",
+    "choices": [{ "index": 0, "delta": { "content": "Finished answer." }, "finish_reason": "stop" }]
+  }));
+  let server = Server::start(vec![
+    Reply::Stream(partial + &unsupported),
+    Reply::Stream(finished),
+  ])
+  .await;
+  let service = LlmService::new().unwrap();
+  service.register_session("session").unwrap();
+  let (failed, _) = generate(&service, "session", input("stream_error"), &server.config).await;
+  assert_eq!(failed.status, LlmStatus::Unsupported);
+  assert_eq!(failed.content, "Partial answer.");
+  assert_eq!(failed.error.unwrap().capability.as_deref(), Some("tools"));
+  let (finished, _) = generate(&service, "session", input("finished"), &server.config).await;
+  assert_eq!(finished.status, LlmStatus::Completed);
+  assert_eq!(finished.content, "Finished answer.");
+  assert_eq!(
+    finished.provenance.model_id.as_deref(),
+    Some("stream-model")
+  );
+}
+
+#[tokio::test]
+async fn tokn_bounds_cumulative_stream_bytes_even_when_events_are_only_comments() {
+  let partial = sse(json!({
+    "model": "stream-model",
+    "choices": [{ "index": 0, "delta": { "content": "Bounded partial." }, "finish_reason": null }]
+  }));
+  let server = Server::start(vec![Reply::Stream(
+    partial + &": ignored\n\n".repeat(900_000),
+  )])
+  .await;
+  let service = LlmService::new().unwrap();
+  service.register_session("session").unwrap();
+  let (result, _) = generate(&service, "session", input("too_large"), &server.config).await;
+  assert_eq!(result.status, LlmStatus::Failed);
+  assert_eq!(result.content, "Bounded partial.");
+  assert_eq!(result.error.unwrap().code, "response_limit");
+  assert!(result.continuation_id.is_none());
+}
+
+#[tokio::test]
+async fn invalid_credentials_fail_before_network_instead_of_becoming_keyless() {
+  let server = Server::start(vec![]).await;
+  let service = LlmService::new().unwrap();
+  service.register_session("session").unwrap();
+  let result = tokio::time::timeout(
+    DEADLINE,
+    service.generate(
+      "session",
+      input("invalid_key"),
+      server.config.clone(),
+      Some("private-invalid-key\r\nx-extra: forbidden".into()),
+      |_| {},
+    ),
+  )
+  .await
+  .unwrap();
+  assert_eq!(result.status, LlmStatus::Failed);
+  assert!(server.requests().is_empty());
+  assert!(!serde_json::to_string(&result)
+    .unwrap()
+    .contains("private-invalid-key"));
+}
+
+#[tokio::test]
+async fn http_failures_keep_status_when_error_bodies_are_oversized_or_interrupted() {
+  let server = Server::start(vec![
+    Reply::HttpError(
+      429,
+      json!({ "error": { "message": "x".repeat(9 * 1024 * 1024) } }),
+    ),
+    Reply::TruncatedHttpError(400),
+  ])
+  .await;
+  let service = LlmService::new().unwrap();
+  service.register_session("session").unwrap();
+  for (index, status) in [429, 400].into_iter().enumerate() {
+    let (result, _) = generate(
+      &service,
+      "session",
+      input(&format!("error_body_{index}")),
+      &server.config,
+    )
+    .await;
+    assert_eq!(result.status, LlmStatus::Failed);
+    let error = result.error.unwrap();
+    assert_eq!(error.code, "provider_error");
+    assert_eq!(
+      error.message,
+      format!("The LLM provider returned HTTP {status}.")
+    );
+    assert_eq!(error.retryable, status == 429);
+  }
+  assert_eq!(server.requests().len(), 2);
 }

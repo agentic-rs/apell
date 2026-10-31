@@ -1,5 +1,18 @@
 # Verification
 
+The embedded Tokn Git integration resolves `main` to `d546ef2d306e9a952a17eae8a58366483832da05` in `Cargo.lock` and was checked with:
+
+- `pnpm test`: all 27 SDK, bridge, compiled-WASM/SQLite, JSON validation, and iOS preparation tests passed.
+- `cargo test -p apell-core -p apell --offline --locked`: all 82 tests passed, including 13 loopback LLM integration tests.
+- `cargo clippy --offline --locked -p apell-core -p apell --all-targets -- -D warnings`: passed.
+- `pnpm tauri ios build --debug --target aarch64-sim --no-sign --ci`: the final native iOS simulator bundle, frontend, and WASM sample built successfully.
+- `cargo check --offline --locked -p apell --lib --target aarch64-linux-android`: the native host and Tokn SDK passed with the installed NDK toolchain.
+- `pnpm format:check` and `git diff --check`: passed.
+
+The new fixtures cover keyless localhost endpoints, exact URL prefixes and qualified model IDs, optional credentials, rejected invalid headers, no generation retries, redirect credential isolation, structured SSE errors, explicit completion without a `[DONE]` marker, cumulative stream bounds, and HTTP status preservation with oversized or interrupted error bodies. Existing tool/reasoning continuation and cancellation tests run through Tokn. Config tests use Tokn's authority rules; a host test verifies that an incompatible saved connection survives startup unchanged and can be corrected. A gzip fixture verifies that dependency feature unification does not silently decompress generic HTTP or download bytes.
+
+These tests use local fixtures and do not establish live provider or physical-device behavior. This integration exposes the existing compatible Chat Completions connection; Tokn's other adapters and OAuth flows remain outside the current Apell UI.
+
 The generic LLM contract update was checked with:
 
 - `pnpm test`: 27 SDK, bridge, compiled-WASM/SQLite, JSON validation, and iOS preparation tests passed.
