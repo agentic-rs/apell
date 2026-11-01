@@ -1,9 +1,7 @@
-use crate::host::{
-  credential_account, public_config, string, update_connection_identity, Host, Session,
-};
+use crate::host::{public_config, string, Host, Session};
 use apell_core::{
   bundles::{digest, sandbox_document, valid_hash, MAX_BUNDLE_BYTES},
-  llm::{validate_config, LlmConfig, LlmEvent, LlmFailure, LlmRequest, LlmResult, LlmStatus},
+  llm::{LlmEvent, LlmFailure, LlmRequest, LlmResult, LlmStatus},
 };
 use serde_json::{json, Value};
 use std::sync::{
@@ -119,59 +117,8 @@ pub async fn shell_command(
       })
       .await
     }
-    "llm.settings" => {
-      let config = host.settings.lock().await;
-      let mut value = serde_json::to_value(&*config).map_err(|_| "Could not encode settings.")?;
-      let account = credential_account(&config);
-      let is_demo = config.base_url == "demo";
-      value["has_api_key"] = if is_demo {
-        json!(false)
-      } else {
-        blocking(move || {
-          Ok(json!(
-            tauri_plugin_apell_credentials::read(&app, &account)?.is_some()
-          ))
-        })
-        .await?
-      };
-      Ok(value)
-    }
-    "llm.save_settings" => {
-      let mut config: LlmConfig =
-        serde_json::from_value(params.get("config").cloned().ok_or("Missing config.")?)
-          .map_err(|_| "Invalid LLM settings.")?;
-      validate_config(&config)?;
-      let key = params
-        .get("api_key")
-        .and_then(Value::as_str)
-        .map(str::to_owned);
-      if key
-        .as_ref()
-        .is_some_and(|k| k.len() > 8192 || k.chars().any(char::is_control))
-      {
-        return Err("Invalid API key.".into());
-      }
-      let mut current = host.settings.lock().await;
-      update_connection_identity(&mut config, &current);
-      let account = credential_account(&config);
-      let saved_config = config.clone();
-      blocking(move || {
-        let changes_key = key.is_some() && saved_config.base_url != "demo";
-        let previous = if changes_key { tauri_plugin_apell_credentials::read(&app, &account)? } else { None };
-        if changes_key {
-          let key = key.as_deref().filter(|key| !key.is_empty());
-          tauri_plugin_apell_credentials::write(&app, &account, key)?;
-        }
-        if let Err(error) = app.state::<Host>().save_settings(&saved_config) {
-          if changes_key && tauri_plugin_apell_credentials::write(&app, &account, previous.as_deref()).is_err() {
-            return Err("Settings could not be saved and the previous credential could not be restored. Re-enter the key.".into());
-          }
-          return Err(error);
-        }
-        Ok(Value::Null)
-      }).await?;
-      *current = config;
-      Ok(Value::Null)
+    method if method.starts_with("llm.") => {
+      crate::provider_commands::dispatch(app, &host, method, params).await
     }
     _ => Err("Unknown shell operation.".into()),
   }
@@ -226,25 +173,11 @@ pub async fn applet_call(
         response = host.http.request(request) => serde_json::to_value(response?).map_err(|_| "Could not encode HTTP response.".into()),
       }
     }
-    "llm.config" => Ok(public_config(&*host.settings.lock().await)),
+    "llm.config" => Ok(public_config(&host.settings.lock().await.active().config())),
     "llm.generate" => {
       let request: LlmRequest =
         serde_json::from_value(params).map_err(|_| "Invalid LLM request.")?;
-      let current = host.settings.lock().await;
-      let config = current.clone();
-      let account = credential_account(&config);
-      let app_for_key = app.clone();
-      let key_result = if config.base_url == "demo" {
-        Ok(None)
-      } else {
-        tauri::async_runtime::spawn_blocking(move || {
-          tauri_plugin_apell_credentials::read(&app_for_key, &account)
-        })
-        .await
-        .map_err(|_| "Credential read interrupted.".to_owned())
-        .and_then(|result| result)
-      };
-      drop(current);
+      let (config, key_result) = crate::provider_commands::snapshot(&app, &host, None).await;
       if !session.alive.load(Ordering::SeqCst) {
         return Err("Applet session is closed.".into());
       }
@@ -269,7 +202,8 @@ pub async fn applet_call(
             provenance: config.provenance(),
             error: Some(LlmFailure {
               code: "credential_unavailable".into(),
-              message: "The host could not read the provider credential.".into(),
+              message: "The provider credential is unavailable or needs sign-in. Check Settings."
+                .into(),
               capability: None,
               retryable: true,
             }),

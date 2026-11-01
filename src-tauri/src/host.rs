@@ -1,5 +1,6 @@
+use crate::{provider_commands::ProviderJobs, settings::Settings};
 use apell_core::{
-  bundles::{atomic_write, BundleStore, Manifest},
+  bundles::{BundleStore, Manifest},
   config::ConfigStore,
   filesystem::FileStore,
   http_request::HttpService,
@@ -48,46 +49,33 @@ pub struct Host {
   pub http: Arc<HttpService>,
   pub files: Arc<FileStore>,
   pub config: Arc<ConfigStore>,
-  pub settings: tokio::sync::Mutex<LlmConfig>,
+  pub settings: tokio::sync::Mutex<Settings>,
+  pub credential_gate: tokio::sync::Mutex<()>,
+  pub provider_http: apell_core::providers::Client,
+  pub provider_jobs: ProviderJobs,
   pub sessions: Mutex<HashMap<String, Session>>,
-  root: PathBuf,
+  pub root: PathBuf,
 }
 
 impl Host {
   pub fn new(root: PathBuf) -> Result<Self, String> {
     std::fs::create_dir_all(&root).map_err(|_| "Could not create host storage.")?;
-    let settings_path = root.join("llm.json");
-    let (settings, persist_identity): (LlmConfig, bool) = if settings_path.exists() {
-      let saved: Value = serde_json::from_slice(
-        &std::fs::read(&settings_path).map_err(|_| "Could not read LLM settings.")?,
-      )
-      .map_err(|_| "Invalid saved LLM settings.")?;
-      let missing_identity = saved.get("connection_id").is_none();
-      (
-        serde_json::from_value(saved).map_err(|_| "Invalid saved LLM settings.")?,
-        missing_identity,
-      )
-    } else {
-      (LlmConfig::default(), true)
-    };
-    // A transport upgrade may reject an older endpoint. Keep parsed settings
-    // available for correction; requests and saves still validate them.
-    // Persist the generated connection identity on first launch and when loading
-    // older settings, so request attribution remains stable across host restarts.
-    if persist_identity {
-      let encoded = serde_json::to_vec(&settings).map_err(|_| "Could not encode settings.")?;
-      atomic_write(&settings_path, &encoded)?;
-    }
+    let settings = Settings::load(&root)?;
+    let llm = Arc::new(LlmService::new()?);
+    llm.register_session("shell-settings")?;
     Ok(Self {
       host_key: format!("{}{}", Uuid::new_v4(), Uuid::new_v4()),
       bundles: Arc::new(BundleStore::new(root.join("bundles"))),
       sqlite: Arc::new(SqliteService::new(root.join("databases"))),
       resources: Arc::new(ResourceStore::new(root.join("resources"))?),
-      llm: Arc::new(LlmService::new()?),
+      llm,
       http: Arc::new(HttpService::new()?),
       files: Arc::new(FileStore::new(root.join("files"))),
       config: Arc::new(ConfigStore::new(root.join("config"))),
       settings: tokio::sync::Mutex::new(settings),
+      credential_gate: tokio::sync::Mutex::new(()),
+      provider_http: apell_core::providers::http_client()?,
+      provider_jobs: ProviderJobs::default(),
       sessions: Mutex::new(HashMap::new()),
       root,
     })
@@ -135,12 +123,6 @@ impl Host {
     self.sqlite.close_session(session_id);
     Ok(())
   }
-
-  pub fn save_settings(&self, settings: &LlmConfig) -> Result<(), String> {
-    apell_core::llm::validate_config(settings)?;
-    let data = serde_json::to_vec(settings).map_err(|_| "Could not encode settings.")?;
-    atomic_write(&self.root.join("llm.json"), &data)
-  }
 }
 
 pub fn string<'a>(params: &'a Value, field: &str) -> Result<&'a str, String> {
@@ -159,20 +141,6 @@ pub fn public_config(config: &LlmConfig) -> Value {
   })
 }
 
-pub fn update_connection_identity(config: &mut LlmConfig, previous: &LlmConfig) {
-  // A model selection or credential rotation belongs to the same connection.
-  // Switching endpoints creates a new public identity without disclosing URLs.
-  config.connection_id = if config.base_url == previous.base_url {
-    previous.connection_id.clone()
-  } else {
-    Uuid::new_v4().to_string()
-  };
-}
-
-pub fn credential_account(config: &LlmConfig) -> String {
-  apell_core::bundles::digest(config.base_url.as_bytes())
-}
-
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -188,97 +156,21 @@ mod tests {
   }
 
   #[test]
-  fn upgrades_legacy_settings_with_a_persistent_public_connection_identity() {
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("llm.json");
-    std::fs::write(
-      &path,
-      br#"{"base_url":"https://provider.invalid/v1","model_id":"selected-model"}"#,
-    )
-    .unwrap();
-    let first = Host::new(directory.path().to_owned()).unwrap();
-    let first_config = first.settings.try_lock().unwrap().clone();
-    assert!(Uuid::parse_str(&first_config.connection_id).is_ok());
-    let second = Host::new(directory.path().to_owned()).unwrap();
-    let second_config = second.settings.try_lock().unwrap().clone();
-    assert_eq!(first_config.connection_id, second_config.connection_id);
-    let public = public_config(&second_config);
-    assert_eq!(public["connection_id"], first_config.connection_id);
-    assert_eq!(public["capabilities"]["tools"], "unknown");
-    assert!(public.get("base_url").is_none());
-    assert!(!public.to_string().contains("provider.invalid"));
-  }
-
-  #[tokio::test]
-  async fn preserves_incompatible_saved_connection_for_correction_without_using_it() {
-    use apell_core::llm::{LlmRequest, LlmStatus};
-
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("llm.json");
-    let saved = json!({
-      "base_url": "https://provider.invalid./custom/v1",
-      "model_id": "namespace/selected-model",
-      "connection_id": "stored_connection"
-    });
-    let original_bytes = serde_json::to_vec_pretty(&saved).unwrap();
-    std::fs::write(&path, &original_bytes).unwrap();
-
-    let host = Host::new(directory.path().to_owned()).unwrap();
-    let config = host.settings.lock().await.clone();
-    assert_eq!(serde_json::to_value(&config).unwrap(), saved);
-    assert_eq!(std::fs::read(&path).unwrap(), original_bytes);
-    assert_eq!(
-      host.save_settings(&config).unwrap_err(),
-      "Provider hostnames must not end with a dot."
-    );
-    assert_eq!(std::fs::read(&path).unwrap(), original_bytes);
-
-    host.llm.register_session("recovery").unwrap();
-    let result = host
-      .llm
-      .generate(
-        "recovery",
-        LlmRequest {
-          request_id: "invalid_connection".into(),
-          messages: vec![json!({"role": "user", "content": "Hello"})],
-          ..Default::default()
-        },
-        config.clone(),
-        None,
-        |_| {},
-      )
-      .await;
-    assert_eq!(result.status, LlmStatus::Failed);
-    assert_eq!(result.error.unwrap().code, "invalid_configuration");
-    assert!(result.content.is_empty());
-    assert_eq!(result.provenance.connection_id, config.connection_id);
-    assert_eq!(std::fs::read(&path).unwrap(), original_bytes);
-
-    let mut corrected = config.clone();
-    corrected.base_url = "https://provider.invalid/custom/v1".into();
-    update_connection_identity(&mut corrected, &config);
-    host.save_settings(&corrected).unwrap();
-    let reopened = Host::new(directory.path().to_owned()).unwrap();
-    assert_eq!(
-      serde_json::to_value(&*reopened.settings.lock().await).unwrap(),
-      serde_json::to_value(&corrected).unwrap()
-    );
-  }
-
-  #[test]
-  fn connection_identity_is_host_owned_and_changes_only_with_endpoint() {
-    let previous = LlmConfig::default();
-    let mut next = LlmConfig {
-      model_id: "different-model".into(),
-      connection_id: "untrusted-identity".into(),
-      ..previous.clone()
-    };
-    update_connection_identity(&mut next, &previous);
-    assert_eq!(next.connection_id, previous.connection_id);
-    next.base_url = "https://provider.invalid/v1".into();
-    update_connection_identity(&mut next, &previous);
-    assert_ne!(next.connection_id, previous.connection_id);
-    assert!(Uuid::parse_str(&next.connection_id).is_ok());
+  fn active_configuration_exposes_no_connection_administration() {
+    let (_directory, host) = fixture();
+    let configuration = host.settings.try_lock().unwrap().active().config();
+    let public = public_config(&configuration);
+    assert_eq!(public["connection_id"], "local-demo");
+    assert_eq!(public["mode"], "demo");
+    for private in [
+      "base_url",
+      "name",
+      "credential",
+      "provider_id",
+      "connections",
+    ] {
+      assert!(public.get(private).is_none());
+    }
   }
 
   fn register(host: &Host, session_id: &str, permissions: &[&str]) -> Session {

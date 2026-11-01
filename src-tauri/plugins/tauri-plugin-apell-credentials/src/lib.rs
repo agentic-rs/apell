@@ -75,6 +75,9 @@ pub fn write<R: Runtime>(
   account: &str,
   value: Option<&str>,
 ) -> Result<(), String> {
+  if value.is_some_and(|value| value.len() > 128 * 1024) {
+    return Err("The secure credential exceeds its size limit.".into());
+  }
   #[cfg(any(target_os = "macos", target_os = "ios"))]
   {
     let entry = entry(account)?;

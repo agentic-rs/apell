@@ -23,12 +23,11 @@ pub fn validate_config(config: &LlmConfig) -> Result<(), String> {
   Ok(())
 }
 
-pub(super) fn completion_url(config: &LlmConfig) -> Result<Url, String> {
+pub(super) fn base_url(config: &LlmConfig) -> Result<Url, String> {
   if config.base_url.len() > 2048 {
     return Err("The provider URL is too long.".into());
   }
-  let mut url =
-    Url::parse(&config.base_url).map_err(|_| "Enter a valid provider URL.".to_owned())?;
+  let url = Url::parse(&config.base_url).map_err(|_| "Enter a valid provider URL.".to_owned())?;
   let host = url.host_str().unwrap_or("");
   let loopback = host == "localhost"
     || host
@@ -52,6 +51,12 @@ pub(super) fn completion_url(config: &LlmConfig) -> Result<Url, String> {
   }
   CanonicalAuthority::parse(&url[url::Position::BeforeHost..url::Position::AfterPort])
     .map_err(authority_error)?;
+  Ok(url)
+}
+
+#[cfg(test)]
+pub(super) fn completion_url(config: &LlmConfig) -> Result<Url, String> {
+  let mut url = base_url(config)?;
   url.set_path(&format!(
     "{}/chat/completions",
     url.path().trim_end_matches('/')
@@ -317,6 +322,7 @@ mod tests {
 
   fn config(base_url: &str) -> LlmConfig {
     LlmConfig {
+      provider_id: "custom".into(),
       base_url: base_url.into(),
       model_id: "namespace/custom-model".into(),
       connection_id: "test_connection".into(),

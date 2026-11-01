@@ -1,5 +1,22 @@
 # Verification
 
+Provider connections and device sign-in use Tokn Git `main` at `552dfd60ee9bc333118f11fdc1bc3ad951c32b7e`. The update was checked with:
+
+- `pnpm test`: all 43 SDK, bridge, compiled-WASM/SQLite, provider-settings, JSON validation, and iOS preparation tests passed.
+- `cargo test -p apell-core -p apell --offline --locked`: all 123 native tests passed, including 25 loopback LLM integration tests.
+- `cargo clippy --offline --locked -p apell-core -p apell --all-targets -- -D warnings`: passed.
+- `pnpm tauri ios build --debug --target aarch64-sim --ci`: the bundled frontend, WASM sample, and native simulator app built successfully with local simulator signing.
+- `cargo check --offline --locked -p apell --lib --target aarch64-linux-android`: passed with the installed NDK toolchain.
+- `pnpm format:check`, `git diff --check`, and the staged privacy scan passed.
+
+Fixtures cover provider-specific requests and headers, Responses/Messages/Chat streaming and buffered results, complete native replay metadata, tool-result continuation, strict completion and interruption handling, discovery limits and endpoint normalization, credential isolation, secure-store rollback, published-settings consistency, and cancellation of both pending and polling sign-in attempts. They also verify that authentication tracing does not expose codes or tokens and that applets cannot call provider administration methods. Settings regressions cover stale async responses and preserving credentials when only endpoint trailing slashes change.
+
+Simulator smoke checks verified the provider picker, API-key versus account-sign-in forms, saving a Codex draft before choosing a model, and preserving Local demo as the active connection. An initial unsigned build exposed a Keychain access error: it lacked the simulator app identity entitlements. The normal locally signed build embeds both XML and DER entitlements and allows the connection to be saved without that error. The runnable simulator instructions now keep signing enabled.
+
+The final app was installed and relaunched; its installed executable matched the build output. The Codex draft and active demo selection survived reinstall and relaunch, and the existing Companion applet remained installed.
+
+These checks use fixtures and local demo mode. Live Codex/Copilot authorization, authenticated model discovery, live model generation, physical devices, and Android APK packaging were not exercised. No account credentials were entered during simulator verification. The historical checks below describe earlier implementations and their then-current limitations.
+
 The client-owned LLM history contract was checked with:
 
 - `pnpm test`: all 35 SDK, bridge, compiled-WASM/SQLite, JSON validation, and iOS preparation tests passed.
@@ -13,7 +30,7 @@ The fixtures verify exact assistant-message metadata replay after closing a sess
 
 The rebuilt host was installed and relaunched in the iOS simulator; its installed executable matched the build output. Companion was updated separately to version 0.2.0 with existing chats intact. Simulator smoke checks verified the version in About, streamed local demo replies, cancellation preserving partial text with a “Reply interrupted” label, and persistence of both completed and interrupted replies after closing and reopening the applet.
 
-These checks use local fixtures and demo mode, not a live provider or physical device. The host still exposes the compatible Chat Completions connection through Tokn. The historical checks below describe earlier implementations; opaque host continuation handles and the legacy completion API have since been removed.
+Those checks used local fixtures and demo mode, not a live provider or physical device. At that revision the host exposed the compatible Chat Completions connection through Tokn. Opaque host continuation handles and the legacy completion API had been removed.
 
 The embedded Tokn Git integration resolves `main` to `d546ef2d306e9a952a17eae8a58366483832da05` in `Cargo.lock` and was checked with:
 

@@ -2,9 +2,9 @@ use super::{
   event,
   platform::{ApellBody, ApellPlatform, PlatformError},
   sse::SseParser,
-  tokn_config, validation, Failure, LlmConfig, LlmEvent, LlmProvenance, LlmRequest, LlmResult,
-  LlmStatus, LlmToolCall, LlmToolChoice, MAX_ERROR_BYTES, MAX_INPUT_BYTES, MAX_OUTPUT_BYTES,
-  MAX_RESPONSE_BYTES, MAX_TOOLS,
+  tokn_config, validation, wire, Failure, LlmConfig, LlmEvent, LlmProvenance, LlmRequest,
+  LlmResult, LlmStatus, LlmToolCall, LlmToolChoice, MAX_ERROR_BYTES, MAX_INPUT_BYTES,
+  MAX_OUTPUT_BYTES, MAX_RESPONSE_BYTES, MAX_TOOLS,
 };
 use reqwest::Client;
 use serde_json::{json, Map, Value};
@@ -24,6 +24,7 @@ pub(super) struct Output {
   calls: BTreeMap<usize, Value>,
   used_bytes: usize,
   refusal: bool,
+  native: native::NativeOutput,
 }
 
 impl Output {
@@ -42,6 +43,7 @@ impl Output {
       calls: BTreeMap::new(),
       used_bytes: 0,
       refusal: false,
+      native: native::NativeOutput::default(),
     }
   }
 
@@ -139,6 +141,12 @@ impl Output {
       {
         emit(event(&self.request_id, "reasoning_delta", text));
       }
+    }
+    if object.contains_key("provider_state") {
+      return Err(Failure {
+        message: "The Chat provider returned provider_state, which is reserved for Apell's native replay envelope.".into(),
+        ..Failure::unsupported("reserved_provider_state")
+      });
     }
     if let Some(calls) = object.get("tool_calls").filter(|value| !value.is_null()) {
       if calls.as_array().is_none_or(|calls| calls.len() > MAX_TOOLS) {
@@ -481,7 +489,7 @@ fn provider_error(value: &Value, status: Option<u16>) -> Failure {
       "tools" | "tools.function" => Some("tools"),
       "tool_choice" => Some("required_tool_choice"),
       "reasoning" | "reasoning_content" => Some("exposed_reasoning"),
-      "max_tokens" | "max_completion_tokens" => Some("max_output_tokens"),
+      "max_tokens" | "max_completion_tokens" | "max_output_tokens" => Some("max_output_tokens"),
       _ => None,
     };
     if let Some(capability) = capability {
@@ -531,44 +539,17 @@ pub(super) async fn remote(
   client: &Client,
   request: &LlmRequest,
   config: &LlmConfig,
-  api_key: Option<String>,
+  account: Option<tokn_sdk::account::AccountConfig>,
   output: &mut Output,
   emit: &impl Fn(LlmEvent),
 ) -> Result<LlmStatus, Failure> {
-  let mut body =
-    json!({"model": config.model_id, "messages": request.messages, "stream": request.stream});
-  if let Some(limit) = request.max_output_tokens {
-    body["max_tokens"] = json!(limit);
-  }
+  let protocol = wire::protocol(config)?;
+  let body = wire::request(request, config, protocol)?;
   let progress = |event| {
     if request.stream {
       emit(event);
     }
   };
-  if let Some(temperature) = request.temperature {
-    body["temperature"] = json!(temperature);
-  }
-  if !request.tools.is_empty() {
-    body["tools"] = Value::Array(
-      request
-        .tools
-        .iter()
-        .map(|tool| {
-          let mut function = json!({"name": tool.name, "parameters": tool.parameters});
-          if let Some(description) = &tool.description {
-            function["description"] = json!(description);
-          }
-          json!({"type": "function", "function": function})
-        })
-        .collect(),
-    );
-  }
-  if let Some(choice) = &request.tool_choice {
-    body["tool_choice"] = match choice {
-      LlmToolChoice::Mode(mode) => json!(mode),
-      LlmToolChoice::Named { name } => json!({"type": "function", "function": {"name": name}}),
-    };
-  }
   if serde_json::to_vec(&body)
     .map_err(|_| Failure::new("invalid_request", "The LLM request is not valid JSON."))?
     .len()
@@ -597,15 +578,20 @@ pub(super) async fn remote(
       max_event_bytes: MAX_OUTPUT_BYTES,
       max_error_body_bytes: MAX_ERROR_BYTES,
     });
-  let mut options = tokn_sdk::RequestOptions::default().with_request_id(&request.request_id);
-  if let Some(key) = api_key.filter(|key| !key.is_empty()) {
-    options = options.with_header("authorization", format!("Bearer {key}"));
-  }
+  let options = tokn_config::options(
+    config,
+    account.as_ref(),
+    protocol,
+    &body,
+    &request.request_id,
+    tokn_core::util::initiator::classify_initiator(&json!({ "messages": request.messages }))
+      .unwrap_or(""),
+  )?;
   // The embedded fixed-provider relay preserves the compatible wire format.
   // Friendly generation currently canonicalizes through Responses, which can
   // discard assistant metadata the applet needs to preserve in its history.
   let response = sdk
-    .execute(tokn_sdk::Endpoint::ChatCompletions, body, options)
+    .execute(protocol.endpoint(), body, options)
     .await
     .map_err(platform_failure)?;
   let status = response.status();
@@ -637,7 +623,11 @@ pub(super) async fn remote(
   match response_body {
     ApellBody::Buffered(bytes) if content_type.starts_with("application/json") => {
       let value: Value = serde_json::from_slice(&bytes).map_err(|_| invalid_response())?;
-      output.consume(&value, false, &progress)?;
+      match protocol {
+        wire::Protocol::ChatCompletions => output.consume(&value, false, &progress)?,
+        wire::Protocol::Responses => output.responses(&value, false, config, &progress)?,
+        wire::Protocol::Messages => output.messages(&value, false, config, &progress)?,
+      }
     }
     ApellBody::Stream(mut stream) if content_type.starts_with("text/event-stream") => {
       let mut parser = SseParser::default();
@@ -658,7 +648,14 @@ pub(super) async fn remote(
             break 'stream;
           }
           let value: Value = serde_json::from_str(&data).map_err(|_| invalid_response())?;
-          output.consume(&value, true, &progress)?;
+          match protocol {
+            wire::Protocol::ChatCompletions => output.consume(&value, true, &progress)?,
+            wire::Protocol::Responses => output.responses(&value, true, config, &progress)?,
+            wire::Protocol::Messages => output.messages(&value, true, config, &progress)?,
+          }
+          if output.native.terminal {
+            break 'stream;
+          }
         }
       }
       // Unframed trailing records are discarded. [DONE] alone is not evidence
@@ -679,6 +676,8 @@ fn platform_failure(error: PlatformError) -> Failure {
     PlatformError::Protocol => invalid_response(),
   }
 }
+
+mod native;
 
 #[cfg(test)]
 mod tests;

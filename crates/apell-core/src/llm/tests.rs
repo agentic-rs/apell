@@ -19,6 +19,7 @@ fn validates_urls_schema_budget_and_tool_history() {
     "https://provider.invalid/v1#fragment",
   ] {
     assert!(validate_config(&LlmConfig {
+      provider_id: "custom".into(),
       base_url: base_url.into(),
       ..Default::default()
     })
@@ -30,6 +31,7 @@ fn validates_urls_schema_budget_and_tool_history() {
     "http://[::1]:8000/v1",
   ] {
     let config = LlmConfig {
+      provider_id: "custom".into(),
       base_url: base_url.into(),
       ..Default::default()
     };

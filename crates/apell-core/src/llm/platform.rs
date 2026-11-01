@@ -248,7 +248,10 @@ impl ApellExchange {
         .map_err(|_| PlatformError::Protocol)?;
       let mut value = reqwest::header::HeaderValue::from_str(value.as_str())
         .map_err(|_| PlatformError::Protocol)?;
-      if name == reqwest::header::AUTHORIZATION || name == reqwest::header::PROXY_AUTHORIZATION {
+      if name == reqwest::header::AUTHORIZATION
+        || name == reqwest::header::PROXY_AUTHORIZATION
+        || name == "x-api-key"
+      {
         value.set_sensitive(true);
       }
       headers.append(name, value);
@@ -382,10 +385,12 @@ mod tests {
     input
       .headers
       .insert("authorization", "Bearer fixture-secret");
+    input.headers.insert("x-api-key", "fixture-secret");
     input.headers.insert("host", "different.invalid");
     input.headers.insert("content-length", "999");
     let prepared = exchange.prepare_request(input).unwrap().build().unwrap();
     assert!(prepared.headers()["authorization"].is_sensitive());
+    assert!(prepared.headers()["x-api-key"].is_sensitive());
     assert!(!format!("{:?}", prepared.headers()).contains("fixture-secret"));
     assert!(!prepared.headers().contains_key("host"));
     assert_ne!(

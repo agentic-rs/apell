@@ -8,6 +8,10 @@ On success, save and append `result.message` unchanged. It contains the complete
 
 Messages currently use the text Chat Completions shape: `role`, string or null `content`, optional raw `tool_calls`, `tool_call_id`, and additional JSON fields. Raw calls have `{ id, type: 'function', function: { name, arguments } }`; `result.tool_calls` is a normalized convenience view for execution. Extra fields stay attached to their original messages. There is no opaque host handle or session-bound cache to expire after reopening an applet.
 
+For native Responses and Messages providers, the returned assistant message also carries `provider_state`: the complete native output items or message, with protocol, connection, provider, and requested-model identifiers. This is data owned and persisted by the applet. Apell reconstructs the native request from that data without keeping a conversation cache. Save the entire message unchanged, including encrypted reasoning or thinking signatures; the applet does not need provider-specific parsing. Changing the connection/model or altering its projected text/tool calls causes an explicit `provider_state_mismatch`. The applet decides how to start or rebuild context after a switch. Portable text messages can be translated; unknown metadata cannot be silently converted across protocols.
+
+`provider_state` is reserved for Apell's native replay record. A Chat Completions provider that returns a conflicting field fails explicitly as unsupported, so Apell never reports a successful message that it cannot replay.
+
 ```ts
 import {
   llm,
@@ -80,6 +84,6 @@ try {
 
 The application functions above validate and present a draft; they do not save an annotation automatically. Persist model attribution from each result's `provenance`, preserving a missing actual `model_id` as unknown. The applet also decides whether saved history can be reused with a different configured connection or model; Apell does not manage a conversation target or silently adapt provider-specific metadata.
 
-Streaming is enabled by default. Use `stream: false` for a complete buffered response when a provider's structured metadata cannot be assembled safely from deltas. Buffered assistant metadata is returned intact. Unsupported stream metadata produces an explicit `unsupported` result; Apell does not silently discard it or automatically repeat a generation. Optional `max_output_tokens` maps to the compatible endpoint's `max_tokens` field.
+Streaming is enabled by default. Use `stream: false` to suppress progress and request complete buffered metadata when supported. Codex requires streaming upstream; Apell still collects its complete output and suppresses deltas for `stream: false`. Unknown Chat metadata or Messages deltas that cannot be reconstructed produce an explicit `unsupported` result; Apell does not silently discard them or automatically repeat a generation. Responses uses its authoritative final output items. Optional `max_output_tokens` maps to the selected protocol's token limit; Codex rejects this option explicitly because its upstream API does not support it.
 
 This contract intentionally replaces the earlier completion API. Rebuild applets against the current SDK; `llm.complete`, global LLM event subscriptions, and continuation IDs are removed.

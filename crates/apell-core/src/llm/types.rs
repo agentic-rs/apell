@@ -5,11 +5,17 @@ use uuid::Uuid;
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct LlmConfig {
+  #[serde(default = "default_provider")]
+  pub provider_id: String,
   pub base_url: String,
   pub model_id: String,
   /// Host-generated public identity, independent of endpoint and credentials.
   #[serde(default = "new_connection_id")]
   pub connection_id: String,
+}
+
+fn default_provider() -> String {
+  "custom".into()
 }
 
 fn new_connection_id() -> String {
@@ -19,6 +25,7 @@ fn new_connection_id() -> String {
 impl Default for LlmConfig {
   fn default() -> Self {
     Self {
+      provider_id: "demo".into(),
       base_url: "demo".into(),
       model_id: "local-demo".into(),
       connection_id: new_connection_id(),
