@@ -1,5 +1,9 @@
 # Verification
 
+Provider setup now supports authentication and model selection before Save. The update passed all 48 frontend/SDK/WASM tests and 130 native tests, TypeScript checking, strict Clippy, formatting checks, the signed iOS simulator build, and the Android native check. Draft regressions cover RAM-only OAuth, request-local discovery keys, failed-save rollback and retry, inherited credential references, destination isolation, expiry, late responses, and Save/discard ordering. Applets remain unable to call the draft administration operations.
+
+The final simulator executable matched the build output. A local HTTP fixture returned two models to an unsaved compatible connection; selecting a model enabled Save, and leaving setup returned to the unchanged connection list. A new Codex setup showed Sign in enabled before saving. No provider account credentials were entered, no live OAuth authorization or live model request was exercised, and no fixture connection was persisted. The verification notes below describe earlier flows, including the superseded requirement to save before authentication.
+
 The credential-form simplification passed all 44 frontend/SDK/WASM tests, TypeScript checking, formatting checks, and the signed iOS simulator build. Regression cases cover clearing a replacement key, undoing removal, preserving an unavailable credential, provider changes, and optional-key entry. Simulator smoke checks verified direct required and optional key fields without a credential-action dropdown. The rebuilt app was installed and relaunched, and its executable matched the build output. No credentials were entered or provider requests made for this check.
 
 Provider connections and device sign-in use Tokn Git `main` at `552dfd60ee9bc333118f11fdc1bc3ad951c32b7e`. The update was checked with:

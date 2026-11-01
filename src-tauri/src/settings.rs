@@ -10,21 +10,21 @@ use uuid::Uuid;
 pub const DEMO_ID: &str = "local-demo";
 const MAX_CONNECTIONS: usize = 32;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CredentialFormat {
   ApiKey,
   Account,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct CredentialRef {
   pub account: String,
   pub format: CredentialFormat,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Connection {
   pub connection_id: String,
@@ -304,7 +304,6 @@ pub struct SaveConnection {
   pub base_url: String,
   pub model_id: String,
   pub key_action: KeyAction,
-  pub api_key: Option<String>,
 }
 
 #[cfg(test)]
@@ -366,7 +365,6 @@ mod tests {
       base_url: "https://example.invalid/v1".into(),
       model_id: "test-model".into(),
       key_action: KeyAction::Keep,
-      api_key: None,
     }
   }
 

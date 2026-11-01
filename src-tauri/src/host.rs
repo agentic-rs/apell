@@ -52,7 +52,7 @@ pub struct Host {
   pub settings: tokio::sync::Mutex<Settings>,
   pub credential_gate: tokio::sync::Mutex<()>,
   pub provider_http: apell_core::providers::Client,
-  pub provider_jobs: ProviderJobs,
+  pub provider_jobs: Arc<ProviderJobs>,
   pub sessions: Mutex<HashMap<String, Session>>,
   pub root: PathBuf,
 }
@@ -75,7 +75,7 @@ impl Host {
       settings: tokio::sync::Mutex::new(settings),
       credential_gate: tokio::sync::Mutex::new(()),
       provider_http: apell_core::providers::http_client()?,
-      provider_jobs: ProviderJobs::default(),
+      provider_jobs: Arc::new(ProviderJobs::default()),
       sessions: Mutex::new(HashMap::new()),
       root,
     })

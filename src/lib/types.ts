@@ -35,14 +35,23 @@ export interface LlmSettings {
   connections: LlmConnection[];
   providers: LlmProvider[];
 }
-export interface SaveConnection {
+export interface CreateConnectionDraft {
   connection_id?: string;
-  name: string;
   provider_id: string;
   base_url: string;
-  model_id: string;
+}
+export interface NativeConnectionDraft {
+  draft_id: string;
+  credential_status: CredentialStatus;
+}
+export interface DraftCredential {
   key_action: 'keep' | 'replace' | 'remove';
   api_key?: string;
+}
+export interface SaveConnection extends DraftCredential {
+  draft_id: string;
+  name: string;
+  model_id: string;
 }
 export interface LlmModel {
   model_id: string;

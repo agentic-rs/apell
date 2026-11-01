@@ -4,28 +4,38 @@ import {
   beginLogin,
   cancelConnectionTest,
   cancelLogin,
+  createConnectionDraft,
   deleteConnection,
-  discoverModels,
-  getSettings,
+  discardConnectionDraft,
+  discoverDraftModels,
   message,
   openLogin,
   pollLogin,
   saveConnection,
   testConnection,
 } from '../../lib/tauri';
-import type { LlmConnection, LlmModels, LlmProvider, LoginChallenge } from '../../lib/types';
+import type {
+  LlmConnection,
+  LlmModels,
+  LlmProvider,
+  LoginChallenge,
+  NativeConnectionDraft,
+} from '../../lib/types';
 import { Icon } from '../Icon';
 import { ApiKeyField } from './ApiKeyField';
 import { ModelPicker } from './ModelPicker';
 import {
   changeProvider,
+  canSaveDraft,
   connectionDraft,
+  credentialPayload,
   destinationChanged,
+  draftPayload,
+  DraftSession,
   hasChanges,
   OperationScope,
   requestId,
   savePayload,
-  stopLogin,
   type Operation,
 } from './state';
 
@@ -44,23 +54,42 @@ export function ConnectionEditor(props: EditorProps) {
   const [draft, setDraft] = useState(() => connectionDraft(props.connection, props.providers));
   const [models, setModels] = useState<LlmModels>();
   const [login, setLogin] = useState<LoginChallenge>();
+  const [native_draft, setNativeDraft] = useState<NativeConnectionDraft>();
+  const [staged_login, setStagedLogin] = useState(false);
   const [busy, setBusy] = useState('');
   const [status, setStatus] = useState('');
   const [failed, setFailed] = useState(false);
   const [confirm_delete, setConfirmDelete] = useState(false);
   const scope = useRef(new OperationScope());
+  const drafts = useRef(new DraftSession(createConnectionDraft, discardConnectionDraft));
   const login_operation = useRef<Operation | undefined>(undefined);
-  const login_begin = useRef<Promise<LoginChallenge> | undefined>(undefined);
   const provider = props.providers.find((item) => item.provider_id === draft.provider_id);
   const is_demo = draft.provider_id === 'demo';
   const device_login = provider?.auth_methods.includes('device_code') ?? false;
   const accepts_key = provider?.auth_methods.includes('api_key') ?? false;
   const changed_destination = destinationChanged(draft, saved);
-  const dirty = hasChanges(draft, saved);
+  const dirty = hasChanges(draft, saved, staged_login);
   const can_probe = !!saved && !dirty && !busy;
   const active = saved?.connection_id === props.active_connection_id;
+  const inherited_status = !changed_destination ? saved?.credential_status : undefined;
+  const credential_status = native_draft?.credential_status ?? inherited_status;
+  const can_discover =
+    !busy &&
+    !!provider &&
+    !!draft.base_url.trim() &&
+    (provider.auth_methods.includes('none') ||
+      (!draft.remove_credential &&
+        (!!draft.api_key ||
+          credential_status === 'present' ||
+          credential_status === 'unavailable')));
 
-  useEffect(() => () => scope.current.cancel(), []);
+  useEffect(
+    () => () => {
+      scope.current.cancel();
+      void drafts.current.discard().catch(() => {});
+    },
+    [],
+  );
 
   const announce = (text: string, error = false) => {
     setStatus(text);
@@ -70,6 +99,8 @@ export function ConnectionEditor(props: EditorProps) {
     props.onSaved(connection, saved?.connection_id);
     setSaved(connection);
     setDraft(connectionDraft(connection, props.providers));
+    setNativeDraft(undefined);
+    setStagedLogin(false);
   };
   const run = async (kind: string, action: (operation: Operation) => Promise<void>) => {
     const operation = scope.current.start();
@@ -87,13 +118,11 @@ export function ConnectionEditor(props: EditorProps) {
         setBusy('');
         setLogin(undefined);
         login_operation.current = undefined;
-        login_begin.current = undefined;
       }
     }
   };
   const cancel = () => {
     const was_login = busy === 'login';
-    const pending_begin = login_begin.current;
     scope.current.cancel();
     login_operation.current = undefined;
     setBusy('');
@@ -103,32 +132,69 @@ export function ConnectionEditor(props: EditorProps) {
       return;
     }
     void run('cancel_login', async (operation) => {
-      // A finished sign-in may win the cancellation race. Wait for the native
-      // acknowledgement, then read its authoritative credential status.
-      const settings = await stopLogin(pending_begin, cancelLogin, getSettings);
+      const disposal = drafts.current.discard();
+      setNativeDraft(undefined);
+      setStagedLogin(false);
+      setModels(undefined);
+      await disposal;
       if (!operation.isCurrent()) return;
-      const connection = settings.connections.find(
-        (item) => item.connection_id === saved?.connection_id,
-      );
-      if (connection) acceptSaved(connection);
-      announce('Sign-in stopped. Saved credential status refreshed.');
+      announce('Sign-in cancelled. No credential was saved.');
     });
+  };
+  const resetDestination = () => {
+    scope.current.cancel();
+    void drafts.current.discard().catch(() => {});
+    setNativeDraft(undefined);
+    setStagedLogin(false);
+    setModels(undefined);
+    setLogin(undefined);
+  };
+  const ensureDraft = async (operation: Operation) => {
+    const value = await drafts.current.ensure(draftPayload(draft, saved));
+    if (operation.isCurrent()) setNativeDraft(value);
+    return value;
+  };
+  const loadModels = async (
+    operation: Operation,
+    value: NativeConnectionDraft,
+    signed_in = false,
+  ) => {
+    const result = await discoverDraftModels(
+      value.draft_id,
+      signed_in ? { key_action: 'keep' } : credentialPayload(draft),
+    );
+    if (!operation.isCurrent()) return;
+    setModels(result);
+    announce(
+      result.models.length
+        ? `${signed_in ? 'Signed in for this setup. ' : ''}Choose a model, then save.`
+        : `${signed_in ? 'Signed in for this setup. ' : ''}No model list is available. Enter a model ID, then save.`,
+    );
   };
   const signIn = () =>
     void run('login', async (operation) => {
-      const pending = beginLogin(saved!.connection_id);
-      login_begin.current = pending;
-      const challenge = await pending;
+      const value = await ensureDraft(operation);
+      if (!operation.isCurrent()) return;
+      const challenge = await beginLogin(value.draft_id);
       operation.setCancellation(() => {
         void cancelLogin(challenge.login_id).catch(() => {});
       });
       if (!operation.isCurrent()) return;
       login_operation.current = operation;
       setLogin(challenge);
-      const connection = await pollLogin(challenge.login_id);
+      const authenticated = await pollLogin(challenge.login_id);
       if (!operation.isCurrent()) return;
-      acceptSaved(connection);
-      announce('Signed in. Refresh models to choose a model.');
+      drafts.current.update(authenticated);
+      setNativeDraft(authenticated);
+      setStagedLogin(true);
+      setDraft((current) => ({ ...current, remove_credential: false, api_key: '' }));
+      setLogin(undefined);
+      setBusy('models');
+      try {
+        await loadModels(operation, authenticated, true);
+      } catch (error) {
+        if (operation.isCurrent()) announce(`Signed in for this setup. ${message(error)}`, true);
+      }
     });
   const openSignIn = async () => {
     const operation = login_operation.current;
@@ -157,13 +223,18 @@ export function ConnectionEditor(props: EditorProps) {
       <p>
         {active
           ? 'New requests use this connection.'
-          : 'Save a connection, then choose when to use it.'}
+          : 'Choose a provider, connect your account, and select a model.'}
       </p>
       <form
         onSubmit={(event) => {
           event.preventDefault();
           void run('save', async (operation) => {
-            const connection = await saveConnection(savePayload(draft, saved));
+            const value = await ensureDraft(operation);
+            if (!operation.isCurrent()) return;
+            const connection = await saveConnection(
+              savePayload(draft, value.draft_id, provider?.name ?? draft.provider_id),
+            );
+            drafts.current.consume(value.draft_id);
             if (!operation.isCurrent()) return;
             acceptSaved(connection);
             if (changed_destination) setModels(undefined);
@@ -172,17 +243,6 @@ export function ConnectionEditor(props: EditorProps) {
         }}
       >
         <fieldset disabled={!!busy}>
-          <label>
-            Name
-            <input
-              required
-              maxLength={80}
-              disabled={is_demo}
-              value={draft.name}
-              autoComplete="off"
-              onChange={(event) => setDraft({ ...draft, name: event.target.value })}
-            />
-          </label>
           <label>
             Provider
             <select
@@ -193,11 +253,11 @@ export function ConnectionEditor(props: EditorProps) {
                   (item) => item.provider_id === event.target.value,
                 );
                 if (!next) return;
+                resetDestination();
                 setDraft({
                   ...changeProvider(draft, next),
                   name: draft.name === provider?.name ? next.name : draft.name,
                 });
-                setModels(undefined);
                 announce('');
               }}
             >
@@ -219,76 +279,7 @@ export function ConnectionEditor(props: EditorProps) {
             </div>
           ) : (
             <>
-              {accepts_key && (
-                <ApiKeyField
-                  credential_status={!changed_destination ? saved?.credential_status : undefined}
-                  optional={provider?.auth_methods.includes('none') ?? false}
-                  value={draft.api_key}
-                  removing={draft.remove_credential}
-                  onChange={(api_key) => setDraft({ ...draft, api_key, remove_credential: false })}
-                  onRemove={() => setDraft({ ...draft, remove_credential: true, api_key: '' })}
-                  onUndo={() => setDraft({ ...draft, remove_credential: false })}
-                />
-              )}
-              {device_login && (
-                <div className="credential-fields">
-                  <p className="status">
-                    {saved?.credential_status === 'present' && !changed_destination
-                      ? 'Signed in securely.'
-                      : saved?.credential_status === 'unavailable'
-                        ? 'The secure credential store is unavailable.'
-                        : 'Sign in with your account using a one-time code.'}
-                  </p>
-                  <button type="button" disabled={!can_probe} onClick={signIn}>
-                    {saved?.credential_status === 'present' ? 'Sign in again' : 'Sign in'}
-                  </button>
-                  {saved?.credential_status === 'present' && !changed_destination && (
-                    <button
-                      type="button"
-                      className={`text-button${draft.remove_credential ? '' : ' danger'}`}
-                      onClick={() => {
-                        setDraft({
-                          ...draft,
-                          remove_credential: !draft.remove_credential,
-                          api_key: '',
-                        });
-                        announce(
-                          draft.remove_credential ? '' : 'Save to remove the saved sign-in.',
-                        );
-                      }}
-                    >
-                      {draft.remove_credential ? 'Undo removal' : 'Remove sign-in'}
-                    </button>
-                  )}
-                </div>
-              )}
-              <ModelPicker
-                model_id={draft.model_id}
-                models={models}
-                disabled={!!busy}
-                onChange={(model_id) => setDraft({ ...draft, model_id })}
-              />
-              <button
-                type="button"
-                disabled={!can_probe}
-                onClick={() =>
-                  void run('models', async (operation) => {
-                    const result = await discoverModels(saved!.connection_id);
-                    if (!operation.isCurrent()) return;
-                    setModels(result);
-                    announce(
-                      result.models.length
-                        ? 'Choose a model below or enter its ID.'
-                        : 'No model list is available. Enter a model ID manually.',
-                    );
-                  })
-                }
-              >
-                {busy === 'models' ? 'Refreshing models…' : 'Refresh models'}
-              </button>
-              {device_login ? (
-                <p className="status">The sign-in provider manages its API endpoint.</p>
-              ) : (
+              {!device_login && (
                 <details
                   className="connection-advanced"
                   open={draft.provider_id === 'custom' || !draft.base_url || undefined}
@@ -305,64 +296,159 @@ export function ConnectionEditor(props: EditorProps) {
                       spellCheck={false}
                       placeholder="https://api.example.com/v1"
                       onChange={(event) => {
-                        setDraft({ ...draft, base_url: event.target.value });
-                        setModels(undefined);
+                        const next = { ...draft, base_url: event.target.value };
+                        if (
+                          draftPayload(next, saved).base_url !== draftPayload(draft, saved).base_url
+                        )
+                          resetDestination();
+                        setDraft(next);
                       }}
                     />
                   </label>
                 </details>
               )}
-              {changed_destination && (
-                <p className="status">
-                  This is a different destination. The previous credential will not be reused.
-                </p>
+              {accepts_key && (
+                <ApiKeyField
+                  credential_status={credential_status}
+                  optional={provider?.auth_methods.includes('none') ?? false}
+                  value={draft.api_key}
+                  removing={draft.remove_credential}
+                  onChange={(api_key) => {
+                    setDraft({ ...draft, api_key, remove_credential: false });
+                    setModels(undefined);
+                  }}
+                  onRemove={() => {
+                    setDraft({ ...draft, remove_credential: true, api_key: '' });
+                    setModels(undefined);
+                  }}
+                  onUndo={() => {
+                    setDraft({ ...draft, remove_credential: false });
+                    setModels(undefined);
+                  }}
+                />
+              )}
+              {device_login && (
+                <div className="credential-fields">
+                  <p className="status">
+                    {staged_login
+                      ? draft.remove_credential
+                        ? 'This sign-in will be discarded when you save.'
+                        : 'Signed in for this setup. Save to keep this account.'
+                      : credential_status === 'present'
+                        ? 'Signed in securely.'
+                        : credential_status === 'unavailable'
+                          ? 'The secure credential store is unavailable.'
+                          : 'Sign in with your account using a one-time code.'}
+                  </p>
+                  <button type="button" disabled={!!busy} onClick={signIn}>
+                    {credential_status === 'present' ? 'Sign in again' : 'Sign in'}
+                  </button>
+                  {credential_status === 'present' && (
+                    <button
+                      type="button"
+                      className={`text-button${draft.remove_credential ? '' : ' danger'}`}
+                      onClick={() => {
+                        setDraft({
+                          ...draft,
+                          remove_credential: !draft.remove_credential,
+                          api_key: '',
+                        });
+                        setModels(undefined);
+                        announce(draft.remove_credential ? '' : 'Save to remove the sign-in.');
+                      }}
+                    >
+                      {draft.remove_credential ? 'Undo removal' : 'Remove sign-in'}
+                    </button>
+                  )}
+                </div>
               )}
             </>
           )}
         </fieldset>
-        {dirty && !is_demo && (
-          <p className="status">
-            Save changes before signing in, refreshing models, or testing. You can select a model
-            later.
+        {login && (
+          <div className="device-login" role="region" aria-label="Device sign-in">
+            <p>Enter this code on the sign-in page:</p>
+            <code>{login.user_code}</code>
+            <p className="status">{login.verification_uri}</p>
+            <p className="status">
+              The code expires in about {Math.max(1, Math.ceil(login.expires_in / 60))} minutes.
+              Return here after signing in.
+            </p>
+            <button type="button" className="primary" onClick={() => void openSignIn()}>
+              Open sign-in page
+            </button>
+            <p className="status" role="status">
+              Waiting for sign-in…
+            </p>
+          </div>
+        )}
+        {busy === 'login' && !login && (
+          <p className="status connection-status" role="status">
+            Requesting a sign-in code…
           </p>
         )}
+        {busy === 'cancel_login' && (
+          <p className="status connection-status" role="status">
+            Stopping sign-in…
+          </p>
+        )}
+        {busy === 'login' && (
+          <button type="button" className="cancel-operation" onClick={cancel}>
+            Cancel sign-in
+          </button>
+        )}
         {!is_demo && (
-          <button className="primary" disabled={!!busy || !dirty || !provider}>
+          <fieldset disabled={!!busy}>
+            <ModelPicker
+              model_id={draft.model_id}
+              models={models}
+              disabled={!!busy}
+              required
+              onChange={(model_id) => setDraft({ ...draft, model_id })}
+            />
+            <button
+              type="button"
+              disabled={!can_discover}
+              onClick={() =>
+                void run('models', async (operation) => {
+                  const value = await ensureDraft(operation);
+                  if (!operation.isCurrent()) return;
+                  await loadModels(operation, value);
+                })
+              }
+            >
+              {busy === 'models' ? 'Loading models…' : models ? 'Refresh models' : 'Load models'}
+            </button>
+            <label>
+              Name (optional)
+              <input
+                maxLength={80}
+                value={draft.name}
+                placeholder={provider?.name}
+                autoComplete="off"
+                onChange={(event) => setDraft({ ...draft, name: event.target.value })}
+              />
+            </label>
+            {changed_destination && (
+              <p className="status">
+                This is a different destination. The previous credential will not be reused.
+              </p>
+            )}
+          </fieldset>
+        )}
+        {!is_demo && (
+          <button
+            className="primary"
+            disabled={!!busy || !dirty || !canSaveDraft(draft, provider, saved, staged_login)}
+          >
             {busy === 'save' ? 'Saving…' : 'Save connection'}
           </button>
         )}
       </form>
 
-      {login && (
-        <div className="device-login" role="region" aria-label="Device sign-in">
-          <p>Enter this code on the sign-in page:</p>
-          <code>{login.user_code}</code>
-          <p className="status">{login.verification_uri}</p>
-          <p className="status">
-            The code expires in about {Math.max(1, Math.ceil(login.expires_in / 60))} minutes.
-            Return here after signing in.
-          </p>
-          <button type="button" className="primary" onClick={() => void openSignIn()}>
-            Open sign-in page
-          </button>
-          <p className="status" role="status">
-            Waiting for sign-in…
-          </p>
-        </div>
-      )}
-      {busy === 'login' && !login && (
-        <p className="status connection-status" role="status">
-          Requesting a sign-in code…
-        </p>
-      )}
-      {busy === 'cancel_login' && (
-        <p className="status connection-status" role="status">
-          Stopping sign-in…
-        </p>
-      )}
-      {(busy === 'login' || busy === 'test') && (
+      {busy === 'test' && (
         <button type="button" className="cancel-operation" onClick={cancel}>
-          Cancel {busy === 'login' ? 'sign-in' : 'test'}
+          Cancel test
         </button>
       )}
       {saved && (

@@ -17,6 +17,8 @@ use tauri_plugin_opener::OpenerExt;
 
 const MAX_VAULT_BYTES: usize = 128 * 1024;
 
+mod drafts;
+
 struct Login {
   connection_id: String,
   provider_id: String,
@@ -46,6 +48,7 @@ impl Drop for LoginReservation<'_> {
 
 #[derive(Default)]
 pub struct ProviderJobs {
+  drafts: Mutex<HashMap<String, drafts::Draft>>,
   // When both maps are needed, lock pending before logins. The reservation ID
   // is also the final login ID, so late completion/drop cannot affect a newer job.
   pending: Mutex<HashMap<String, PendingLogin>>,
@@ -333,58 +336,6 @@ fn commit_with_vault(
   Ok(())
 }
 
-fn credential_updates(
-  input: &SaveConnection,
-  connection: &mut Connection,
-  previous: Option<&Connection>,
-) -> Result<Vec<(String, Option<String>)>, String> {
-  let mut updates = Vec::new();
-  match input.key_action {
-    KeyAction::Keep => {
-      if input.api_key.is_some() {
-        return Err("Choose replace to save a new API key.".into());
-      }
-      if let Some(previous) = previous {
-        connection.credential = previous.credential.clone();
-      }
-    }
-    KeyAction::Replace => {
-      if connection.is_oauth() {
-        return Err("Use sign-in for this provider.".into());
-      }
-      let key = input
-        .api_key
-        .as_deref()
-        .filter(|key| !key.is_empty())
-        .ok_or("Enter the replacement API key.")?;
-      let account = providers::static_account(
-        &connection.provider_id,
-        &connection.connection_id,
-        Some(key),
-      )?;
-      updates.push((
-        connection.credential.account.clone(),
-        Some(encode_account(&account)?),
-      ));
-    }
-    KeyAction::Remove => {
-      if input.api_key.is_some() {
-        return Err("A removed credential cannot include an API key.".into());
-      }
-    }
-  }
-  if let Some(previous) = previous {
-    if matches!(input.key_action, KeyAction::Remove)
-      || previous.credential.account != connection.credential.account
-    {
-      updates.push((previous.credential.account.clone(), None));
-    }
-  }
-  // A newly allocated slot has never held a credential. Saving an unsigned-in
-  // draft must not require the secure store to remove a nonexistent value.
-  Ok(updates)
-}
-
 pub async fn dispatch(
   app: AppHandle,
   host: &Host,
@@ -400,31 +351,21 @@ pub async fn dispatch(
         "providers": providers::presets(),
       }))).await
     }
+    "llm.create_draft" => {
+      let input = serde_json::from_value(params).map_err(|_| "Invalid connection draft.")?;
+      drafts::create(app, host, input).await
+    }
+    "llm.discard_draft" => {
+      drafts::discard(&host.provider_jobs, string(&params, "draft_id")?).await?;
+      Ok(Value::Null)
+    }
     "llm.save_connection" => {
-      let input: SaveConnection =
-        serde_json::from_value(params).map_err(|_| "Invalid connection settings.")?;
-      let _gate = host.credential_gate.lock().await;
-      let mut current = host.settings.lock().await;
-      let mut connection = current.prepare_save(&input)?;
-      let previous = input
-        .connection_id
-        .as_deref()
-        .map(|id| current.connection(id).cloned())
-        .transpose()?;
-      let updates = credential_updates(&input, &mut connection, previous.as_ref())?;
-      let mut next = current.clone();
-      next.replace(input.connection_id.as_deref(), connection.clone());
-      let persist = next.clone();
-      let root = host.root.clone();
-      let app_write = app.clone();
-      blocking(move || commit_settings(&app_write, &root, &persist, updates)).await?;
-      *current = next;
-      if let Some(previous) = previous {
-        host
-          .provider_jobs
-          .cancel_connection(&previous.connection_id);
-      }
-      blocking(move || Ok(connection.public(credential_status(&app, &connection)))).await
+      let input = serde_json::from_value(params).map_err(|_| "Invalid connection settings.")?;
+      drafts::save(app, host, input).await
+    }
+    "llm.discover_draft_models" => {
+      let input = serde_json::from_value(params).map_err(|_| "Invalid model discovery request.")?;
+      drafts::discover(app, host, input).await
     }
     "llm.activate_connection" => {
       let id = string(&params, "connection_id")?;
@@ -479,16 +420,8 @@ pub async fn dispatch(
       })
       .await?;
       *current = next;
-      host.provider_jobs.cancel_connection(id);
+      drafts::invalidate_source(&host.provider_jobs, id, None);
       Ok(Value::Null)
-    }
-    "llm.discover_models" => {
-      let id = string(&params, "connection_id")?;
-      let (config, account) = snapshot(&app, host, Some(id)).await;
-      serde_json::to_value(
-        providers::discover_models(&host.provider_http, &config, account?).await?,
-      )
-      .map_err(|_| "Could not encode the model list.".into())
     }
     "llm.test_connection" => {
       let id = string(&params, "connection_id")?;
@@ -514,15 +447,10 @@ pub async fn dispatch(
         .cancel("shell-settings", string(&params, "request_id")?)?;
       Ok(Value::Null)
     }
-    "llm.begin_login" => begin_login(host, string(&params, "connection_id")?).await,
-    "llm.poll_login" => poll_login(app, host, string(&params, "login_id")?).await,
+    "llm.begin_login" => drafts::begin_login(host, string(&params, "draft_id")?).await,
+    "llm.poll_login" => drafts::poll_login(host, string(&params, "login_id")?).await,
     "llm.cancel_login" => {
-      // If completion has started writing the vault, wait for that commit.
-      // Once cancellation returns, no credential can appear from this login.
-      let _gate = host.credential_gate.lock().await;
-      host
-        .provider_jobs
-        .cancel_login(string(&params, "login_id")?)?;
+      drafts::cancel_login(host, string(&params, "login_id")?).await?;
       Ok(Value::Null)
     }
     "llm.open_login" => {
@@ -548,145 +476,10 @@ pub async fn dispatch(
   }
 }
 
-async fn begin_login(host: &Host, id: &str) -> Result<Value, String> {
-  let (connection, reservation, mut cancellation) = {
-    let settings = host.settings.lock().await;
-    let connection = settings.connection(id)?.clone();
-    if !connection.is_oauth() {
-      return Err("This provider does not use sign-in.".into());
-    }
-    let (reservation, cancellation) = host.provider_jobs.reserve(id)?;
-    (connection, reservation, cancellation)
-  };
-  let handle = tokio::select! {
-    biased;
-    _ = cancellation.changed() => return Err("Sign-in was cancelled or replaced.".into()),
-    result = providers::begin_login(&connection.provider_id, &host.provider_http) => result?,
-  };
-  let current = host.settings.lock().await;
-  let still_current = current.connection(id)?;
-  if still_current.provider_id != connection.provider_id
-    || still_current.base_url != connection.base_url
-  {
-    return Err("The connection changed. Start sign-in again.".into());
-  }
-  let result = json!({
-    "login_id": reservation.login_id,
-    "user_code": handle.user_code,
-    "verification_uri": handle.verification_uri,
-    "expires_in": handle.expires_in,
-    "interval": handle.interval,
-  });
-  host
-    .provider_jobs
-    .publish(&reservation, &connection.provider_id, handle)?;
-  Ok(result)
-}
-
-async fn poll_login(app: AppHandle, host: &Host, login_id: &str) -> Result<Value, String> {
-  let (connection_id, provider_id, handle, expires_at, mut cancellation) = {
-    let mut logins = host
-      .provider_jobs
-      .logins
-      .lock()
-      .map_err(|_| "Sign-in state is unavailable.")?;
-    let login = logins
-      .get_mut(login_id)
-      .ok_or("This sign-in attempt no longer exists.")?;
-    if login.polling {
-      return Err("This sign-in attempt is already waiting for authorization.".into());
-    }
-    if login.expires_at <= Instant::now() {
-      return Err("This sign-in attempt has expired. Start again.".into());
-    }
-    login.polling = true;
-    (
-      login.connection_id.clone(),
-      login.provider_id.clone(),
-      login.handle.clone(),
-      login.expires_at,
-      login.cancel.subscribe(),
-    )
-  };
-  let outcome = tokio::select! {
-    biased;
-    _ = cancellation.changed() => Err("Sign-in was cancelled.".to_owned()),
-    result = tokio::time::timeout_at(tokio::time::Instant::from_std(expires_at), providers::poll_login(&provider_id, &host.provider_http, handle)) => {
-      result.map_err(|_| "This sign-in attempt has expired. Start again.".to_owned()).and_then(|result| result)
-    }
-  };
-  if outcome.is_err() {
-    host
-      .provider_jobs
-      .logins
-      .lock()
-      .map_err(|_| "Sign-in state is unavailable.")?
-      .remove(login_id);
-  }
-  let outcome = outcome?;
-  let _gate = host.credential_gate.lock().await;
-  let settings = host.settings.lock().await;
-  let connection = settings.connection(&connection_id)?.clone();
-  // The final authorization is checked under the same lock as cancellation.
-  // This prevents a finished poll from resurrecting deleted/replaced credentials.
-  let login = host
-    .provider_jobs
-    .logins
-    .lock()
-    .map_err(|_| "Sign-in state is unavailable.")?
-    .remove(login_id)
-    .filter(|login| !*login.cancel.borrow() && login.expires_at > Instant::now())
-    .ok_or("This sign-in attempt was cancelled or expired.")?;
-  if connection.provider_id != login.provider_id || !connection.is_oauth() {
-    return Err("The connection changed. Sign in again.".into());
-  }
-  let account = providers::device_account(&provider_id, &connection_id, outcome)?;
-  let value = encode_account(&account)?;
-  let slot = connection.credential.account.clone();
-  blocking(move || {
-    commit_with_vault(
-      |slot| tauri_plugin_apell_credentials::read(&app, slot),
-      |slot, value| tauri_plugin_apell_credentials::write(&app, slot, value),
-      || Ok(()),
-      vec![(slot, Some(value))],
-    )
-  })
-  .await?;
-  Ok(connection.public("present"))
-}
-
 #[cfg(test)]
 mod tests {
   use super::*;
   use std::cell::{Cell, RefCell};
-
-  #[test]
-  fn unsigned_in_drafts_save_without_accessing_an_unavailable_vault() {
-    let mut settings = Settings::default();
-    let input = SaveConnection {
-      connection_id: None,
-      name: "ChatGPT (Codex)".into(),
-      provider_id: "codex".into(),
-      base_url: providers::default_base_url("codex").unwrap().into(),
-      model_id: String::new(),
-      key_action: KeyAction::Remove,
-      api_key: None,
-    };
-    let mut connection = settings.prepare_save(&input).unwrap();
-    let updates = credential_updates(&input, &mut connection, None).unwrap();
-    settings.replace(None, connection);
-    let directory = tempfile::tempdir().unwrap();
-    commit_with_vault(
-      |_| Err("vault unavailable".into()),
-      |_, _| Err("vault unavailable".into()),
-      || settings.persist(directory.path()),
-      updates,
-    )
-    .unwrap();
-    let loaded = Settings::load(directory.path()).unwrap();
-    assert_eq!(loaded.active_connection_id, DEMO_ID);
-    assert_eq!(loaded.connections.len(), 2);
-  }
 
   #[test]
   fn config_failure_restores_both_retired_and_replaced_credentials() {
