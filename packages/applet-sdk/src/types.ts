@@ -53,7 +53,7 @@ export interface LlmTool {
 
 export type LlmToolChoice = 'auto' | 'none' | 'required' | { name: string };
 
-/** Complete provider-compatible message. Preserve returned assistant fields on replay. */
+/** Applet-owned message. Preserve all returned fields, including native provider_state, on replay. */
 export type LlmMessage = {
   role: 'system' | 'user' | 'assistant' | 'tool';
   [key: string]: JsonValue;

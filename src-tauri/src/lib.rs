@@ -3,6 +3,8 @@ mod host;
 #[cfg(target_os = "ios")]
 mod ios;
 mod navigation;
+mod provider_commands;
+mod settings;
 
 use tauri::Manager;
 
@@ -10,6 +12,11 @@ use tauri::Manager;
 pub fn run() {
   tauri::Builder::default()
     .plugin(tauri_plugin_apell_credentials::init())
+    .plugin(
+      tauri_plugin_opener::Builder::new()
+        .open_js_links_on_click(false)
+        .build(),
+    )
     .setup(|app| {
       let root = app.path().app_data_dir()?;
       let host = host::Host::new(root).map_err(std::io::Error::other)?;

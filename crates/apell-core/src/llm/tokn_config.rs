@@ -1,4 +1,4 @@
-use super::{validation::completion_url, LlmConfig};
+use super::{validation::base_url, wire, Failure, LlmConfig};
 use serde_json::json;
 use tokn_sdk::{config::v2::compile_execution, policy::ExecutionRules};
 
@@ -9,15 +9,9 @@ pub(super) fn execution_rules(config: &LlmConfig) -> Result<ExecutionRules, Stri
     return Err("Demo mode does not use provider routing.".into());
   }
 
-  // Start with Apell's effective URL so URL normalization and removal of trailing
-  // slashes remain identical to the existing compatible-provider transport.
-  let mut base_url = completion_url(config)?;
-  let prefix = base_url
-    .path()
-    .strip_suffix("/chat/completions")
-    .ok_or_else(|| "Could not prepare the model connection.".to_owned())?
-    .to_owned();
-  base_url.set_path(&prefix);
+  let mut base_url = base_url(config)?;
+  base_url.set_path(&format!("{}/", base_url.path().trim_end_matches('/')));
+  let driver = wire::driver(config)?;
   // Tokn's default HTTP admission recognizes numeric loopback only. Apell has
   // already admitted this exact URL using its localhost-or-loopback policy.
   let allow_insecure_http = base_url.scheme() == "http";
@@ -37,7 +31,7 @@ pub(super) fn execution_rules(config: &LlmConfig) -> Result<ExecutionRules, Stri
     },
     "providers": {
       "apell": {
-        "driver": "openai",
+        "driver": driver,
         "base_url": base_url.as_str(),
         "allow_insecure_http": allow_insecure_http
       }
@@ -47,8 +41,127 @@ pub(super) fn execution_rules(config: &LlmConfig) -> Result<ExecutionRules, Stri
   compile_execution(&raw).map_err(|_| "Could not configure the model connection.".to_owned())
 }
 
+pub(super) fn validate_account(
+  config: &LlmConfig,
+  account: Option<&tokn_sdk::account::AccountConfig>,
+) -> Result<(), Failure> {
+  if config.base_url == "demo" {
+    return Ok(());
+  }
+  let driver = wire::driver(config)
+    .map_err(|_| Failure::new("invalid_configuration", "The provider is invalid."))?;
+  let Some(account) = account else {
+    return if matches!(config.provider_id.as_str(), "custom" | "llama-cpp") {
+      Ok(())
+    } else {
+      Err(Failure::new(
+        "missing_credential",
+        "Connect this provider before generating a reply.",
+      ))
+    };
+  };
+  if account.id != config.connection_id || account.provider != driver || !account.enabled {
+    return Err(Failure::new(
+      "credential_mismatch",
+      "The credential does not belong to this connection.",
+    ));
+  }
+  for value in [
+    &account.api_key,
+    &account.access_token,
+    &account.refresh_token,
+    &account.id_token,
+  ]
+  .into_iter()
+  .flatten()
+  {
+    let value = value.expose();
+    if value.len() > 32 * 1024 || value.chars().any(char::is_control) {
+      return Err(Failure::new(
+        "invalid_credential",
+        "The provider credential is invalid.",
+      ));
+    }
+  }
+  Ok(())
+}
+
+pub(super) fn options(
+  config: &LlmConfig,
+  account: Option<&tokn_sdk::account::AccountConfig>,
+  protocol: wire::Protocol,
+  body: &serde_json::Value,
+  request_id: &str,
+  initiator: &str,
+) -> Result<tokn_sdk::RequestOptions, Failure> {
+  use tokn_core::{
+    headers::{AgentId, HeaderMap, TemplateVars},
+    provider::{HeaderPatchCtx, ProviderRequestKind},
+  };
+  let mut options = tokn_sdk::RequestOptions::default().with_request_id(request_id);
+  let Some(account) = account else {
+    return Ok(options);
+  };
+  let driver = wire::driver(config)
+    .map_err(|_| Failure::new("invalid_configuration", "The provider is invalid."))?;
+  if matches!(config.provider_id.as_str(), "custom" | "llama-cpp")
+    && tokn_accounts::native::credential(driver, account).is_none_or(str::is_empty)
+  {
+    return Ok(options);
+  }
+  let stream = body["stream"].as_bool().unwrap_or(false);
+  let mut headers = if driver == "github-copilot" {
+    let identity =
+      tokn_provider_copilot::config::CopilotHeaders::from_account(account).map_err(|_| {
+        Failure::new(
+          "invalid_configuration",
+          "The Copilot connection settings are invalid.",
+        )
+      })?;
+    let token = tokn_accounts::native::credential(driver, account).unwrap_or("");
+    tokn_provider_copilot::headers::copilot_request_headers(token, &identity, stream, "user")
+      .map_err(|_| {
+        Failure::new(
+          "invalid_credential",
+          "Could not prepare Copilot credentials.",
+        )
+      })?
+  } else {
+    HeaderMap::new()
+  };
+  let agent_id = AgentId::provider_default(driver).unwrap_or_else(|| AgentId::from("apell"));
+  let vars = TemplateVars {
+    request_id: Some(request_id.into()),
+    ..Default::default()
+  };
+  let ctx = HeaderPatchCtx {
+    request_kind: ProviderRequestKind::Operation(protocol.endpoint()),
+    body,
+    bearer_token: None,
+    content_encoding: None,
+    stream,
+    // Classify the applet messages before native projection: Messages encodes
+    // tool results as user-role blocks, losing that signal for role classifiers.
+    initiator,
+    inbound_headers: &HeaderMap::new(),
+    vars: &vars,
+    agent_id: &agent_id,
+  };
+  tokn_accounts::native::patch_headers(driver, &mut headers, &ctx, account).map_err(|_| {
+    Failure::new(
+      "invalid_credential",
+      "Could not prepare the provider credentials.",
+    )
+  })?;
+  for (name, value) in &headers {
+    options = options.with_header(name.as_str(), value.as_str());
+  }
+  Ok(options)
+}
+
 #[cfg(test)]
 mod tests {
+  use super::super::validation::completion_url;
   use super::*;
   use serde_json::Value;
   use std::{cell::RefCell, time::Duration};
@@ -60,6 +173,7 @@ mod tests {
 
   fn config(base_url: &str) -> LlmConfig {
     LlmConfig {
+      provider_id: "custom".into(),
       base_url: base_url.into(),
       model_id: "namespace/custom-model:variant".into(),
       connection_id: "test_connection".into(),

@@ -61,7 +61,7 @@ pnpm android:dev
 Build commands are available through the local Tauri CLI:
 
 ```sh
-pnpm tauri ios build --debug --target aarch64-sim --no-sign
+pnpm tauri ios build --debug --target aarch64-sim
 pnpm tauri android build --debug --target aarch64
 ```
 
@@ -70,12 +70,14 @@ Choose a target supported by the local toolchain. Physical iOS devices require l
 After each completed app change, update the running simulator as well as building it. On Apple Silicon with one simulator booted:
 
 ```sh
-pnpm tauri ios build --debug --target aarch64-sim --no-sign --ci
+pnpm tauri ios build --debug --target aarch64-sim --ci
 xcrun simctl install booted src-tauri/gen/apple/build/arm64-sim/Apell.app
 xcrun simctl launch --terminate-running-process booted dev.apell.shell
 ```
 
 Verify the installed executable matches the build before reporting the simulator updated. Reinstalling the shell retains applet data. If the bundled Companion code changed, use **+ → Update Companion** and reopen it; rebuilding the host alone does not update an installed applet bundle.
+
+Keep signing enabled for runnable simulator builds. Xcode's local simulator signing embeds the app identity required by Keychain; `--no-sign` is suitable only for compile checks and cannot verify provider credentials or sign-in.
 
 For installation from Xcode, run `pnpm tauri ios build --debug --open`, keep that terminal running, select the `apell_iOS` target, enable automatic signing with your development team, select the connected iPhone, and Run. This builds a bundled frontend that works without the development server once installed.
 
@@ -99,13 +101,18 @@ A checksum pins exact bytes; it is not a publisher signature. This version is fo
 - Native SQLite with applet-owned schemas and SQL, typed parameters, and transaction handles.
 - Shared LLM configuration, tool calling, separate answer/reasoning events, and cancellation.
 - Client-owned complete assistant messages, explicit generation outcomes, and per-request model attribution.
-- Provider keys in Apple Keychain or Android Keystore-backed encrypted storage.
+- Saved provider connections, model discovery, and Codex/GitHub Copilot device sign-in.
+- Provider keys and refreshed tokens in Apple Keychain or Android Keystore-backed encrypted storage.
 - Applet-scoped resource downloads and bounded binary reads.
 - Native HTTP requests with binary bodies, headers, timeouts, and session cancellation.
 - Applet-private file operations and persistent JSON configuration.
 - A basic `device.info` API for platform and host API version.
 
-Cloud synchronization, provider model catalogs, schema-constrained answers, generic per-applet credential APIs, background applets, and additional device integrations are deferred. The current Tokn integration uses OpenAI-compatible Chat Completions; additional Tokn provider adapters, OAuth onboarding, and native Anthropic/Gemini protocols are not exposed by Apell. Version files are retained, but there is no rollback selector, uninstall flow, or automatic resource eviction yet. Reinstall a known bundle to select its code version; database downgrade compatibility remains the applet's responsibility.
+In Settings, add a connection, enter its API key or sign in, refresh its models (or enter a model ID), and choose **Use connection**. Connections remain saved when switching the active model. **Test connection** sends a short model request and can be cancelled; saving or discovering models does not generate an answer.
+
+Tokn-backed providers include OpenAI, Codex, GitHub Copilot, DeepSeek, OpenCode Go, llama.cpp, Z.ai/Zhipu and their coding plans, plus custom OpenAI-compatible endpoints. OpenAI/Codex use Responses; Copilot/OpenCode use their model's supported protocol; compatible endpoints retain Chat Completions. See the [provider settings and protocol details](docs/architecture.md#provider-settings).
+
+Cloud synchronization, schema-constrained answers, generic per-applet credential APIs, background applets, direct Anthropic/Gemini drivers, and additional device integrations are deferred. Version files are retained, but there is no rollback selector, uninstall flow, or automatic resource eviction yet. Reinstall a known bundle to select its code version; database downgrade compatibility remains the applet's responsibility.
 
 ## Tokn development dependency
 

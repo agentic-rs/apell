@@ -389,6 +389,185 @@ svg {
 .settings .primary {
   justify-self: stretch;
 }
+.settings-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.settings-heading h2 {
+  margin: 0;
+}
+.connection-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 24px;
+}
+.connection-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 14px 4px 0;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: #fff;
+}
+.connection-row.active {
+  border-color: #91ad8c;
+  background: #f0f5ea;
+}
+.connection-detail {
+  display: grid;
+  flex: 1;
+  gap: 5px;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  padding: 14px;
+}
+.connection-detail strong {
+  font-size: 16px;
+  font-weight: 600;
+}
+.connection-detail span,
+.connection-detail small {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 400;
+  overflow-wrap: anywhere;
+}
+.connection-badge {
+  flex: none;
+  border-radius: 20px;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  background: #e0ebd9;
+}
+.connection-use {
+  flex: none;
+  padding: 10px 12px;
+  font-size: 14px;
+}
+.text-button,
+.add-connection {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 0;
+  background: transparent;
+  padding-left: 0;
+  padding-right: 0;
+}
+.add-connection {
+  margin-top: 16px;
+}
+.connection-editor form {
+  margin-top: 24px;
+}
+.credential-fields,
+.model-picker {
+  display: grid;
+  gap: 12px;
+}
+.credential-fields .text-button {
+  justify-self: start;
+}
+.connection-advanced summary,
+.model-browser summary {
+  cursor: pointer;
+  min-height: 44px;
+  padding: 12px 0;
+  font-size: 14px;
+}
+.model-browser {
+  min-width: 0;
+}
+.model-options {
+  display: grid;
+  gap: 4px;
+  max-height: 240px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  margin: 8px 0;
+}
+.model-options button {
+  display: grid;
+  gap: 4px;
+  text-align: left;
+  padding: 12px;
+}
+.model-options button[aria-pressed='true'] {
+  border-color: #91ad8c;
+  background: #eaf1e4;
+}
+.model-options strong {
+  font-weight: 500;
+  font-size: 14px;
+}
+.model-options small {
+  font-size: 12px;
+  color: var(--muted);
+}
+.device-login {
+  display: grid;
+  gap: 14px;
+  margin-top: 24px;
+  padding: 20px;
+  border: 1px solid #91ad8c;
+  border-radius: 16px;
+  background: #f0f5ea;
+}
+.device-login p {
+  margin: 0;
+}
+.device-login code {
+  font-size: 26px;
+  font-weight: 650;
+  letter-spacing: 2px;
+  user-select: all;
+  -webkit-user-select: all;
+}
+.cancel-operation {
+  width: 100%;
+  margin-top: 16px;
+}
+.connection-actions {
+  display: grid;
+  gap: 12px;
+  margin-top: 24px;
+}
+.connection-status {
+  margin-top: 20px;
+}
+.delete-connection {
+  margin-top: 28px;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+  font-size: 14px;
+}
+.danger {
+  color: #984b35;
+}
+.button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.button-row button {
+  flex: 1;
+}
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
 .applet-view {
   position: fixed;
   top: var(--viewport-top, 0px);

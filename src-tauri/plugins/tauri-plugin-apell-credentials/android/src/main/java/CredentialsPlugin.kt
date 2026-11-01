@@ -51,6 +51,7 @@ class CredentialsPlugin(private val activity: Activity) : Plugin(activity) {
       val file = file(args.account)
       val response = JSObject()
       if (file.exists()) {
+        require(file.length() <= 256 * 1024)
         val parts = file.readText().split(":")
         require(parts.size == 2)
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
@@ -73,7 +74,7 @@ class CredentialsPlugin(private val activity: Activity) : Plugin(activity) {
       if (value == null) {
         require(!file.exists() || file.delete())
       } else {
-        require(value.length <= 8192)
+        require(value.toByteArray(Charsets.UTF_8).size <= 128 * 1024)
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, key())
         cipher.updateAAD(args.account.toByteArray(Charsets.UTF_8))

@@ -1,11 +1,16 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import type { LlmResult } from '../../packages/applet-sdk/src/types';
 import type {
   AppletEvent,
   AppletSession,
   InstalledApplet,
   InstallProgress,
+  LlmConnection,
+  LlmModels,
   LlmSettings,
+  LoginChallenge,
+  SaveConnection,
 } from './types';
 
 declare global {
@@ -33,10 +38,24 @@ export const launchApplet = (applet_id: string) =>
   shellCall<AppletSession>('applets.launch', { applet_id });
 export const closeApplet = (session_id: string) => shellCall<void>('applets.close', { session_id });
 export const getSettings = () => shellCall<LlmSettings>('llm.settings');
-export const saveSettings = (
-  config: Pick<LlmSettings, 'base_url' | 'model_id'>,
-  api_key: string | null,
-) => shellCall<void>('llm.save_settings', { config, api_key });
+export const saveConnection = (params: SaveConnection) =>
+  shellCall<LlmConnection>('llm.save_connection', params);
+export const activateConnection = (connection_id: string) =>
+  shellCall<void>('llm.activate_connection', { connection_id });
+export const deleteConnection = (connection_id: string) =>
+  shellCall<void>('llm.delete_connection', { connection_id });
+export const discoverModels = (connection_id: string) =>
+  shellCall<LlmModels>('llm.discover_models', { connection_id });
+export const testConnection = (connection_id: string, request_id: string) =>
+  shellCall<LlmResult>('llm.test_connection', { connection_id, request_id });
+export const cancelConnectionTest = (request_id: string) =>
+  shellCall<void>('llm.cancel_test', { request_id });
+export const beginLogin = (connection_id: string) =>
+  shellCall<LoginChallenge>('llm.begin_login', { connection_id });
+export const pollLogin = (login_id: string) =>
+  shellCall<LlmConnection>('llm.poll_login', { login_id });
+export const cancelLogin = (login_id: string) => shellCall<void>('llm.cancel_login', { login_id });
+export const openLogin = (login_id: string) => shellCall<void>('llm.open_login', { login_id });
 export const callApplet = (session_id: string, method: string, params: unknown) =>
   invoke('applet_call', { host_key: hostKey(), session_id, method, params });
 export const onAppletEvent = (handler: (event: AppletEvent) => void) =>

@@ -1,130 +1,210 @@
-import { useEffect, useState } from 'react';
-import { getSettings, message, saveSettings } from '../lib/tauri';
+import { useEffect, useRef, useState } from 'react';
+import { activateConnection, getSettings, message } from '../lib/tauri';
+import type { LlmConnection, LlmSettings } from '../lib/types';
+import { ConnectionEditor } from '../components/providers/ConnectionEditor';
+import { OperationScope } from '../components/providers/state';
+import { Icon } from '../components/Icon';
 
 export function Settings() {
-  const [mode, setMode] = useState('demo');
-  const [base_url, setBaseUrl] = useState('');
-  const [model_id, setModelId] = useState('');
-  const [api_key, setApiKey] = useState('');
-  const [has_key, setHasKey] = useState(false);
-  const [clear_key, setClearKey] = useState(false);
-  const [status, setStatus] = useState('Loading settings…');
-  const [busy, setBusy] = useState(true);
+  const [settings, setSettings] = useState<LlmSettings>();
+  const [editor, setEditor] = useState<{ connection?: LlmConnection }>();
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState('');
+  const scope = useRef(new OperationScope());
+
+  const load = async () => {
+    const operation = scope.current.start();
+    if (!operation) return;
+    setLoading(true);
+    setStatus('');
+    try {
+      const result = await getSettings();
+      if (operation.isCurrent()) setSettings(result);
+    } catch (error) {
+      if (operation.isCurrent()) setStatus(message(error));
+    } finally {
+      if (operation.isCurrent()) {
+        operation.finish();
+        setLoading(false);
+      }
+    }
+  };
   useEffect(() => {
-    getSettings()
-      .then((settings) => {
-        setMode(settings.base_url === 'demo' ? 'demo' : 'provider');
-        setBaseUrl(settings.base_url === 'demo' ? '' : settings.base_url);
-        setModelId(settings.base_url === 'demo' ? '' : settings.model_id);
-        setHasKey(settings.has_api_key);
-        setStatus('');
-      })
-      .catch((error) => setStatus(message(error)))
-      .finally(() => setBusy(false));
+    void load();
+    return () => scope.current.cancel();
   }, []);
-  return (
-    <section className="settings panel">
-      <h2>Model connection</h2>
-      <p>Shared by all your applets. Your API key stays in Apell.</p>
-      <form
-        onSubmit={async (event) => {
-          event.preventDefault();
-          setBusy(true);
-          setStatus('Saving…');
-          try {
-            await saveSettings(
-              {
-                base_url: mode === 'demo' ? 'demo' : base_url.trim(),
-                model_id: mode === 'demo' ? 'local-demo' : model_id.trim(),
-              },
-              clear_key ? '' : api_key || null,
-            );
-            setApiKey('');
-            setClearKey(false);
-            setStatus('Settings saved. New requests use this connection.');
-            setHasKey((await getSettings()).has_api_key);
-          } catch (error) {
-            setStatus(message(error));
-          } finally {
-            setBusy(false);
-          }
+
+  if (editor && settings)
+    return (
+      <ConnectionEditor
+        connection={editor.connection}
+        providers={settings.providers}
+        active_connection_id={settings.active_connection_id}
+        onBack={() => {
+          setEditor(undefined);
+          setStatus('');
         }}
-      >
-        <fieldset disabled={busy}>
-          <label>
-            Connection
-            <select value={mode} onChange={(event) => setMode(event.target.value)}>
-              <option value="demo">Local demo · no API key</option>
-              <option value="provider">OpenAI-compatible provider</option>
-            </select>
-          </label>
-          {mode === 'demo' ? (
-            <div className="notice">
-              Demo mode returns a scripted response to test streaming and persistence. It does not
-              call a language model.
-            </div>
-          ) : (
-            <>
-              <label>
-                API base URL
-                <input
-                  type="url"
-                  autoCapitalize="none"
-                  autoCorrect="off"
-                  spellCheck={false}
-                  required
-                  placeholder="https://api.example.com/v1"
-                  value={base_url}
-                  onChange={(event) => {
-                    setBaseUrl(event.target.value);
-                    setHasKey(false);
-                  }}
-                />
-              </label>
-              <label>
-                Model ID
-                <input
-                  required
-                  placeholder="Your provider’s model ID"
-                  value={model_id}
-                  onChange={(event) => setModelId(event.target.value)}
-                />
-              </label>
-              <label>
-                API key
-                <input
-                  type="password"
-                  autoCapitalize="none"
-                  autoCorrect="off"
-                  spellCheck={false}
-                  autoComplete="off"
-                  placeholder={
-                    has_key
-                      ? 'Saved securely · leave blank to keep'
-                      : 'Enter a key if your provider requires one'
-                  }
-                  value={api_key}
-                  onChange={(event) => setApiKey(event.target.value)}
-                />
-              </label>
-              <label className="check">
-                <input
-                  type="checkbox"
-                  checked={clear_key}
-                  onChange={(event) => setClearKey(event.target.checked)}
-                />{' '}
-                Remove saved key for this endpoint
-              </label>
-            </>
-          )}
-        </fieldset>
-        <button className="primary" disabled={busy}>
-          {busy ? 'Please wait…' : 'Save connection'}
+        onSaved={(connection, previous_id) =>
+          setSettings((current) => {
+            if (!current) return current;
+            return {
+              ...current,
+              active_connection_id:
+                current.active_connection_id === previous_id
+                  ? connection.connection_id
+                  : current.active_connection_id,
+              connections: previous_id
+                ? current.connections.map((item) =>
+                    item.connection_id === previous_id ? connection : item,
+                  )
+                : [...current.connections, connection],
+            };
+          })
+        }
+        onActivated={(connection_id) =>
+          setSettings(
+            (current) =>
+              current && {
+                ...current,
+                active_connection_id: connection_id,
+              },
+          )
+        }
+        onDeleted={(connection_id) => {
+          setSettings(
+            (current) =>
+              current && {
+                ...current,
+                connections: current.connections.filter(
+                  (item) => item.connection_id !== connection_id,
+                ),
+                active_connection_id:
+                  current.active_connection_id === connection_id
+                    ? (current.connections.find((item) => item.provider_id === 'demo')
+                        ?.connection_id ?? '')
+                    : current.active_connection_id,
+              },
+          );
+          setEditor(undefined);
+          setStatus('');
+          void load();
+        }}
+      />
+    );
+
+  return (
+    <section className="settings panel" aria-busy={loading || busy}>
+      <div className="settings-heading">
+        <h2>Connections</h2>
+        <button
+          type="button"
+          className="icon-button"
+          aria-label="Add connection"
+          disabled={loading || busy || !settings?.providers.length}
+          onClick={() => setEditor({})}
+        >
+          <Icon name="add" />
         </button>
-        <p role="status" className="status">
+      </div>
+      <p>One active model, shared by your applets. Credentials stay in Apell.</p>
+      {loading && (
+        <p className="status connection-status" role="status">
+          Loading connections…
+        </p>
+      )}
+      {settings && (
+        <div className="connection-list">
+          {settings.connections.map((connection) => {
+            const active = settings.active_connection_id === connection.connection_id;
+            const provider = settings.providers.find(
+              (item) => item.provider_id === connection.provider_id,
+            );
+            return (
+              <div
+                className={`connection-row${active ? ' active' : ''}`}
+                key={connection.connection_id}
+              >
+                <button
+                  type="button"
+                  className="connection-detail"
+                  disabled={busy || loading}
+                  aria-label={`Edit ${connection.name}`}
+                  onClick={() => {
+                    setEditor({ connection });
+                    setStatus('');
+                  }}
+                >
+                  <strong>{connection.name}</strong>
+                  <span>{connection.model_id || 'Choose a model'}</span>
+                  <small>
+                    {provider?.name ?? connection.provider_id}
+                    {connection.credential_status === 'unavailable'
+                      ? ' · Credential unavailable'
+                      : ''}
+                  </small>
+                </button>
+                {active ? (
+                  <span className="connection-badge">Active</span>
+                ) : (
+                  <button
+                    type="button"
+                    className="connection-use"
+                    disabled={busy || loading || !connection.model_id}
+                    aria-label={`Use ${connection.name}`}
+                    onClick={async () => {
+                      const operation = scope.current.start();
+                      if (!operation) return;
+                      setBusy(true);
+                      setStatus('');
+                      try {
+                        await activateConnection(connection.connection_id);
+                        if (operation.isCurrent())
+                          setSettings(
+                            (current) =>
+                              current && {
+                                ...current,
+                                active_connection_id: connection.connection_id,
+                              },
+                          );
+                      } catch (error) {
+                        if (operation.isCurrent()) setStatus(message(error));
+                      } finally {
+                        if (operation.isCurrent()) {
+                          operation.finish();
+                          setBusy(false);
+                        }
+                      }
+                    }}
+                  >
+                    Use
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {status && (
+        <p className="status connection-status error" role="alert">
           {status}
         </p>
-      </form>
+      )}
+      {!loading && !settings && (
+        <button type="button" onClick={() => void load()}>
+          Try again
+        </button>
+      )}
+      {!loading && settings && (
+        <button
+          type="button"
+          className="add-connection"
+          disabled={busy}
+          onClick={() => setEditor({})}
+        >
+          <Icon name="add" /> Add connection
+        </button>
+      )}
     </section>
   );
 }

@@ -1,0 +1,867 @@
+use crate::{
+  host::{string, Host},
+  settings::{Connection, CredentialFormat, KeyAction, SaveConnection, Settings, DEMO_ID},
+};
+use apell_core::{
+  llm::{validate_config, LlmConfig, LlmRequest},
+  providers::{self, AccountConfig, DeviceCodeHandle},
+};
+use serde_json::{json, Value};
+use std::{
+  collections::HashMap,
+  sync::Mutex,
+  time::{Duration, Instant},
+};
+use tauri::AppHandle;
+use tauri_plugin_opener::OpenerExt;
+
+const MAX_VAULT_BYTES: usize = 128 * 1024;
+
+struct Login {
+  connection_id: String,
+  provider_id: String,
+  handle: DeviceCodeHandle,
+  expires_at: Instant,
+  polling: bool,
+  cancel: tokio::sync::watch::Sender<bool>,
+}
+
+struct PendingLogin {
+  connection_id: String,
+  cancel: tokio::sync::watch::Sender<bool>,
+}
+
+struct LoginReservation<'a> {
+  jobs: &'a ProviderJobs,
+  login_id: String,
+}
+
+impl Drop for LoginReservation<'_> {
+  fn drop(&mut self) {
+    if let Ok(mut pending) = self.jobs.pending.lock() {
+      pending.remove(&self.login_id);
+    }
+  }
+}
+
+#[derive(Default)]
+pub struct ProviderJobs {
+  // When both maps are needed, lock pending before logins. The reservation ID
+  // is also the final login ID, so late completion/drop cannot affect a newer job.
+  pending: Mutex<HashMap<String, PendingLogin>>,
+  logins: Mutex<HashMap<String, Login>>,
+}
+
+impl ProviderJobs {
+  fn reserve(
+    &self,
+    connection_id: &str,
+  ) -> Result<(LoginReservation<'_>, tokio::sync::watch::Receiver<bool>), String> {
+    let mut pending = self
+      .pending
+      .lock()
+      .map_err(|_| "Sign-in state is unavailable.")?;
+    let mut logins = self
+      .logins
+      .lock()
+      .map_err(|_| "Sign-in state is unavailable.")?;
+    pending.retain(|_, login| {
+      if login.connection_id == connection_id {
+        login.cancel.send_replace(true);
+        false
+      } else {
+        true
+      }
+    });
+    logins.retain(|_, login| {
+      let keep = login.connection_id != connection_id && login.expires_at > Instant::now();
+      if !keep {
+        login.cancel.send_replace(true);
+      }
+      keep
+    });
+    if pending.len() + logins.len() >= 4 {
+      return Err("Too many sign-in attempts are active. Cancel one first.".into());
+    }
+    let login_id = uuid::Uuid::new_v4().to_string();
+    let (cancel, receiver) = tokio::sync::watch::channel(false);
+    pending.insert(
+      login_id.clone(),
+      PendingLogin {
+        connection_id: connection_id.into(),
+        cancel,
+      },
+    );
+    Ok((
+      LoginReservation {
+        jobs: self,
+        login_id,
+      },
+      receiver,
+    ))
+  }
+
+  fn publish(
+    &self,
+    reservation: &LoginReservation<'_>,
+    provider_id: &str,
+    handle: DeviceCodeHandle,
+  ) -> Result<(), String> {
+    let mut pending = self
+      .pending
+      .lock()
+      .map_err(|_| "Sign-in state is unavailable.")?;
+    let mut logins = self
+      .logins
+      .lock()
+      .map_err(|_| "Sign-in state is unavailable.")?;
+    let pending = pending
+      .remove(&reservation.login_id)
+      .filter(|login| !*login.cancel.borrow())
+      .ok_or("This sign-in attempt was cancelled or replaced.")?;
+    logins.insert(
+      reservation.login_id.clone(),
+      Login {
+        connection_id: pending.connection_id,
+        provider_id: provider_id.into(),
+        expires_at: Instant::now() + Duration::from_secs(handle.expires_in),
+        handle,
+        polling: false,
+        cancel: pending.cancel,
+      },
+    );
+    Ok(())
+  }
+
+  fn cancel_login(&self, id: &str) -> Result<(), String> {
+    let mut pending = self
+      .pending
+      .lock()
+      .map_err(|_| "Sign-in state is unavailable.")?;
+    let mut logins = self
+      .logins
+      .lock()
+      .map_err(|_| "Sign-in state is unavailable.")?;
+    if let Some(login) = pending.remove(id) {
+      login.cancel.send_replace(true);
+    }
+    if let Some(login) = logins.remove(id) {
+      login.cancel.send_replace(true);
+    }
+    Ok(())
+  }
+
+  fn cancel_connection(&self, id: &str) {
+    // Settings mutations hold the settings lock, as does initial reservation.
+    // Invalidate requests still obtaining a device code as well as active polls.
+    let Ok(mut pending) = self.pending.lock() else {
+      return;
+    };
+    pending.retain(|_, login| {
+      if login.connection_id == id {
+        login.cancel.send_replace(true);
+        false
+      } else {
+        true
+      }
+    });
+    if let Ok(mut logins) = self.logins.lock() {
+      logins.retain(|_, login| {
+        if login.connection_id == id {
+          login.cancel.send_replace(true);
+          false
+        } else {
+          true
+        }
+      });
+    }
+  }
+}
+
+fn read_account(app: &AppHandle, connection: &Connection) -> Result<Option<AccountConfig>, String> {
+  if connection.is_demo() {
+    return Ok(None);
+  }
+  let saved = tauri_plugin_apell_credentials::read(app, &connection.credential.account)?;
+  let Some(saved) = saved else {
+    return Ok(None);
+  };
+  if saved.len() > MAX_VAULT_BYTES {
+    return Err("The saved credential exceeds its size limit.".into());
+  }
+  let account = match connection.credential.format {
+    CredentialFormat::ApiKey => providers::static_account(
+      &connection.provider_id,
+      &connection.connection_id,
+      Some(&saved),
+    )?,
+    CredentialFormat::Account => serde_json::from_str::<AccountConfig>(&saved)
+      .map_err(|_| "The saved credential is invalid. Enter it again.".to_owned())?,
+  };
+  let expected_provider = if connection.provider_id == "custom" {
+    "openai"
+  } else {
+    &connection.provider_id
+  };
+  if account.id != connection.connection_id || account.provider != expected_provider {
+    return Err("The saved credential belongs to another connection.".into());
+  }
+  Ok(Some(account))
+}
+
+fn encode_account(account: &AccountConfig) -> Result<String, String> {
+  let value =
+    serde_json::to_string(account).map_err(|_| "Could not encode provider credentials.")?;
+  if value.len() > MAX_VAULT_BYTES {
+    return Err("The provider credential exceeds its size limit.".into());
+  }
+  Ok(value)
+}
+
+fn credential_status(app: &AppHandle, connection: &Connection) -> &'static str {
+  match read_account(app, connection) {
+    Ok(Some(_)) => "present",
+    Ok(None) => "absent",
+    Err(_) => "unavailable",
+  }
+}
+
+async fn blocking<T: Send + 'static>(
+  operation: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+  tauri::async_runtime::spawn_blocking(operation)
+    .await
+    .map_err(|_| "The provider settings operation was interrupted.".to_owned())?
+}
+
+/// Capture the selected connection and its credential together. Credential
+/// mutations and token refresh serialize, while the settings UI remains readable.
+pub async fn snapshot(
+  app: &AppHandle,
+  host: &Host,
+  id: Option<&str>,
+) -> (LlmConfig, Result<Option<AccountConfig>, String>) {
+  let _gate = host.credential_gate.lock().await;
+  let connection = {
+    let settings = host.settings.lock().await;
+    match id.map(|id| settings.connection(id)).transpose() {
+      Ok(Some(connection)) => connection.clone(),
+      Ok(None) => settings.active().clone(),
+      Err(error) => return (settings.active().config(), Err(error)),
+    }
+  };
+  let config = connection.config();
+  let app_read = app.clone();
+  let read_connection = connection.clone();
+  let mut account = match blocking(move || read_account(&app_read, &read_connection)).await {
+    Ok(account) => account,
+    Err(error) => return (config, Err(error)),
+  };
+  if let Some(current) = account.as_mut() {
+    match providers::refresh_account(&host.provider_http, current).await {
+      Ok(true) => {
+        let saved = match encode_account(current) {
+          Ok(saved) => saved,
+          Err(error) => return (config, Err(error)),
+        };
+        let app_write = app.clone();
+        let slot = connection.credential.account.clone();
+        if let Err(error) =
+          blocking(move || tauri_plugin_apell_credentials::write(&app_write, &slot, Some(&saved)))
+            .await
+        {
+          return (config, Err(error));
+        }
+      }
+      Ok(false) => {}
+      Err(error) => return (config, Err(error)),
+    }
+  } else if !connection.is_demo() {
+    // Keyless compatible/local connections still need an explicit account
+    // identity for provider-aware request preparation.
+    match providers::static_account(&connection.provider_id, &connection.connection_id, None) {
+      Ok(value) => account = Some(value),
+      Err(error) => return (config, Err(error)),
+    }
+  }
+  (config, Ok(account))
+}
+
+fn commit_settings(
+  app: &AppHandle,
+  root: &std::path::Path,
+  settings: &Settings,
+  updates: Vec<(String, Option<String>)>,
+) -> Result<(), String> {
+  commit_with_vault(
+    |slot| tauri_plugin_apell_credentials::read(app, slot),
+    |slot, value| tauri_plugin_apell_credentials::write(app, slot, value),
+    || settings.persist(root),
+    updates,
+  )
+}
+
+fn commit_with_vault(
+  read: impl Fn(&str) -> Result<Option<String>, String>,
+  write: impl Fn(&str, Option<&str>) -> Result<(), String>,
+  save: impl FnOnce() -> Result<(), String>,
+  updates: Vec<(String, Option<String>)>,
+) -> Result<(), String> {
+  let mut previous = Vec::new();
+  for (slot, _) in &updates {
+    previous.push((slot.clone(), read(slot)?));
+  }
+  let mut changed = 0;
+  let result = (|| {
+    for (slot, value) in &updates {
+      // A failed platform write can itself have partially completed.
+      changed += 1;
+      write(slot, value.as_deref())?;
+    }
+    save()
+  })();
+  if let Err(error) = result {
+    let mut restored = true;
+    for (slot, value) in previous.into_iter().take(changed).rev() {
+      restored &= write(&slot, value.as_deref()).is_ok();
+    }
+    if !restored {
+      return Err("Saving failed and credentials could not be fully restored. Re-enter the affected credentials.".into());
+    }
+    return Err(error);
+  }
+  Ok(())
+}
+
+fn credential_updates(
+  input: &SaveConnection,
+  connection: &mut Connection,
+  previous: Option<&Connection>,
+) -> Result<Vec<(String, Option<String>)>, String> {
+  let mut updates = Vec::new();
+  match input.key_action {
+    KeyAction::Keep => {
+      if input.api_key.is_some() {
+        return Err("Choose replace to save a new API key.".into());
+      }
+      if let Some(previous) = previous {
+        connection.credential = previous.credential.clone();
+      }
+    }
+    KeyAction::Replace => {
+      if connection.is_oauth() {
+        return Err("Use sign-in for this provider.".into());
+      }
+      let key = input
+        .api_key
+        .as_deref()
+        .filter(|key| !key.is_empty())
+        .ok_or("Enter the replacement API key.")?;
+      let account = providers::static_account(
+        &connection.provider_id,
+        &connection.connection_id,
+        Some(key),
+      )?;
+      updates.push((
+        connection.credential.account.clone(),
+        Some(encode_account(&account)?),
+      ));
+    }
+    KeyAction::Remove => {
+      if input.api_key.is_some() {
+        return Err("A removed credential cannot include an API key.".into());
+      }
+    }
+  }
+  if let Some(previous) = previous {
+    if matches!(input.key_action, KeyAction::Remove)
+      || previous.credential.account != connection.credential.account
+    {
+      updates.push((previous.credential.account.clone(), None));
+    }
+  }
+  // A newly allocated slot has never held a credential. Saving an unsigned-in
+  // draft must not require the secure store to remove a nonexistent value.
+  Ok(updates)
+}
+
+pub async fn dispatch(
+  app: AppHandle,
+  host: &Host,
+  method: &str,
+  params: Value,
+) -> Result<Value, String> {
+  match method {
+    "llm.settings" => {
+      let saved = host.settings.lock().await.clone();
+      blocking(move || Ok(json!({
+        "active_connection_id": saved.active_connection_id,
+        "connections": saved.connections.iter().map(|connection| connection.public(credential_status(&app, connection))).collect::<Vec<_>>(),
+        "providers": providers::presets(),
+      }))).await
+    }
+    "llm.save_connection" => {
+      let input: SaveConnection =
+        serde_json::from_value(params).map_err(|_| "Invalid connection settings.")?;
+      let _gate = host.credential_gate.lock().await;
+      let mut current = host.settings.lock().await;
+      let mut connection = current.prepare_save(&input)?;
+      let previous = input
+        .connection_id
+        .as_deref()
+        .map(|id| current.connection(id).cloned())
+        .transpose()?;
+      let updates = credential_updates(&input, &mut connection, previous.as_ref())?;
+      let mut next = current.clone();
+      next.replace(input.connection_id.as_deref(), connection.clone());
+      let persist = next.clone();
+      let root = host.root.clone();
+      let app_write = app.clone();
+      blocking(move || commit_settings(&app_write, &root, &persist, updates)).await?;
+      *current = next;
+      if let Some(previous) = previous {
+        host
+          .provider_jobs
+          .cancel_connection(&previous.connection_id);
+      }
+      blocking(move || Ok(connection.public(credential_status(&app, &connection)))).await
+    }
+    "llm.activate_connection" => {
+      let id = string(&params, "connection_id")?;
+      let _gate = host.credential_gate.lock().await;
+      let mut current = host.settings.lock().await;
+      let connection = current.connection(id)?.clone();
+      validate_config(&connection.config())?;
+      let app_read = app.clone();
+      let checked = connection.clone();
+      blocking(move || {
+        if !checked.is_demo()
+          && !matches!(checked.provider_id.as_str(), "custom" | "llama-cpp")
+          && read_account(&app_read, &checked)?.is_none()
+        {
+          return Err("Add credentials before using this connection.".into());
+        }
+        Ok(())
+      })
+      .await?;
+      let mut next = current.clone();
+      next.active_connection_id = id.to_owned();
+      let root = host.root.clone();
+      let persist = next.clone();
+      blocking(move || persist.persist(&root)).await?;
+      *current = next;
+      Ok(Value::Null)
+    }
+    "llm.delete_connection" => {
+      let id = string(&params, "connection_id")?;
+      let _gate = host.credential_gate.lock().await;
+      let mut current = host.settings.lock().await;
+      let connection = current.connection(id)?.clone();
+      if connection.is_demo() {
+        return Err("The local demo connection cannot be removed.".into());
+      }
+      let mut next = current.clone();
+      next
+        .connections
+        .retain(|connection| connection.connection_id != id);
+      if next.active_connection_id == id {
+        next.active_connection_id = DEMO_ID.into();
+      }
+      let persist = next.clone();
+      let root = host.root.clone();
+      blocking(move || {
+        commit_settings(
+          &app,
+          &root,
+          &persist,
+          vec![(connection.credential.account, None)],
+        )
+      })
+      .await?;
+      *current = next;
+      host.provider_jobs.cancel_connection(id);
+      Ok(Value::Null)
+    }
+    "llm.discover_models" => {
+      let id = string(&params, "connection_id")?;
+      let (config, account) = snapshot(&app, host, Some(id)).await;
+      serde_json::to_value(
+        providers::discover_models(&host.provider_http, &config, account?).await?,
+      )
+      .map_err(|_| "Could not encode the model list.".into())
+    }
+    "llm.test_connection" => {
+      let id = string(&params, "connection_id")?;
+      let request_id = string(&params, "request_id")?.to_owned();
+      let (config, account) = snapshot(&app, host, Some(id)).await;
+      let request = LlmRequest {
+        request_id,
+        messages: vec![json!({"role":"user","content":"Reply with OK."})],
+        max_output_tokens: (config.provider_id != "codex").then_some(128),
+        ..Default::default()
+      };
+      serde_json::to_value(
+        host
+          .llm
+          .generate("shell-settings", request, config, account?, |_| {})
+          .await,
+      )
+      .map_err(|_| "Could not encode the connection test result.".into())
+    }
+    "llm.cancel_test" => {
+      host
+        .llm
+        .cancel("shell-settings", string(&params, "request_id")?)?;
+      Ok(Value::Null)
+    }
+    "llm.begin_login" => begin_login(host, string(&params, "connection_id")?).await,
+    "llm.poll_login" => poll_login(app, host, string(&params, "login_id")?).await,
+    "llm.cancel_login" => {
+      // If completion has started writing the vault, wait for that commit.
+      // Once cancellation returns, no credential can appear from this login.
+      let _gate = host.credential_gate.lock().await;
+      host
+        .provider_jobs
+        .cancel_login(string(&params, "login_id")?)?;
+      Ok(Value::Null)
+    }
+    "llm.open_login" => {
+      let uri = {
+        let logins = host
+          .provider_jobs
+          .logins
+          .lock()
+          .map_err(|_| "Sign-in state is unavailable.")?;
+        let login = logins
+          .get(string(&params, "login_id")?)
+          .filter(|login| login.expires_at > Instant::now())
+          .ok_or("This sign-in attempt has expired. Start again.")?;
+        login.handle.verification_uri.clone()
+      };
+      app
+        .opener()
+        .open_url(uri, None::<&str>)
+        .map_err(|_| "Could not open the provider sign-in page.")?;
+      Ok(Value::Null)
+    }
+    _ => Err("Unknown provider settings operation.".into()),
+  }
+}
+
+async fn begin_login(host: &Host, id: &str) -> Result<Value, String> {
+  let (connection, reservation, mut cancellation) = {
+    let settings = host.settings.lock().await;
+    let connection = settings.connection(id)?.clone();
+    if !connection.is_oauth() {
+      return Err("This provider does not use sign-in.".into());
+    }
+    let (reservation, cancellation) = host.provider_jobs.reserve(id)?;
+    (connection, reservation, cancellation)
+  };
+  let handle = tokio::select! {
+    biased;
+    _ = cancellation.changed() => return Err("Sign-in was cancelled or replaced.".into()),
+    result = providers::begin_login(&connection.provider_id, &host.provider_http) => result?,
+  };
+  let current = host.settings.lock().await;
+  let still_current = current.connection(id)?;
+  if still_current.provider_id != connection.provider_id
+    || still_current.base_url != connection.base_url
+  {
+    return Err("The connection changed. Start sign-in again.".into());
+  }
+  let result = json!({
+    "login_id": reservation.login_id,
+    "user_code": handle.user_code,
+    "verification_uri": handle.verification_uri,
+    "expires_in": handle.expires_in,
+    "interval": handle.interval,
+  });
+  host
+    .provider_jobs
+    .publish(&reservation, &connection.provider_id, handle)?;
+  Ok(result)
+}
+
+async fn poll_login(app: AppHandle, host: &Host, login_id: &str) -> Result<Value, String> {
+  let (connection_id, provider_id, handle, expires_at, mut cancellation) = {
+    let mut logins = host
+      .provider_jobs
+      .logins
+      .lock()
+      .map_err(|_| "Sign-in state is unavailable.")?;
+    let login = logins
+      .get_mut(login_id)
+      .ok_or("This sign-in attempt no longer exists.")?;
+    if login.polling {
+      return Err("This sign-in attempt is already waiting for authorization.".into());
+    }
+    if login.expires_at <= Instant::now() {
+      return Err("This sign-in attempt has expired. Start again.".into());
+    }
+    login.polling = true;
+    (
+      login.connection_id.clone(),
+      login.provider_id.clone(),
+      login.handle.clone(),
+      login.expires_at,
+      login.cancel.subscribe(),
+    )
+  };
+  let outcome = tokio::select! {
+    biased;
+    _ = cancellation.changed() => Err("Sign-in was cancelled.".to_owned()),
+    result = tokio::time::timeout_at(tokio::time::Instant::from_std(expires_at), providers::poll_login(&provider_id, &host.provider_http, handle)) => {
+      result.map_err(|_| "This sign-in attempt has expired. Start again.".to_owned()).and_then(|result| result)
+    }
+  };
+  if outcome.is_err() {
+    host
+      .provider_jobs
+      .logins
+      .lock()
+      .map_err(|_| "Sign-in state is unavailable.")?
+      .remove(login_id);
+  }
+  let outcome = outcome?;
+  let _gate = host.credential_gate.lock().await;
+  let settings = host.settings.lock().await;
+  let connection = settings.connection(&connection_id)?.clone();
+  // The final authorization is checked under the same lock as cancellation.
+  // This prevents a finished poll from resurrecting deleted/replaced credentials.
+  let login = host
+    .provider_jobs
+    .logins
+    .lock()
+    .map_err(|_| "Sign-in state is unavailable.")?
+    .remove(login_id)
+    .filter(|login| !*login.cancel.borrow() && login.expires_at > Instant::now())
+    .ok_or("This sign-in attempt was cancelled or expired.")?;
+  if connection.provider_id != login.provider_id || !connection.is_oauth() {
+    return Err("The connection changed. Sign in again.".into());
+  }
+  let account = providers::device_account(&provider_id, &connection_id, outcome)?;
+  let value = encode_account(&account)?;
+  let slot = connection.credential.account.clone();
+  blocking(move || {
+    commit_with_vault(
+      |slot| tauri_plugin_apell_credentials::read(&app, slot),
+      |slot, value| tauri_plugin_apell_credentials::write(&app, slot, value),
+      || Ok(()),
+      vec![(slot, Some(value))],
+    )
+  })
+  .await?;
+  Ok(connection.public("present"))
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use std::cell::{Cell, RefCell};
+
+  #[test]
+  fn unsigned_in_drafts_save_without_accessing_an_unavailable_vault() {
+    let mut settings = Settings::default();
+    let input = SaveConnection {
+      connection_id: None,
+      name: "ChatGPT (Codex)".into(),
+      provider_id: "codex".into(),
+      base_url: providers::default_base_url("codex").unwrap().into(),
+      model_id: String::new(),
+      key_action: KeyAction::Remove,
+      api_key: None,
+    };
+    let mut connection = settings.prepare_save(&input).unwrap();
+    let updates = credential_updates(&input, &mut connection, None).unwrap();
+    settings.replace(None, connection);
+    let directory = tempfile::tempdir().unwrap();
+    commit_with_vault(
+      |_| Err("vault unavailable".into()),
+      |_, _| Err("vault unavailable".into()),
+      || settings.persist(directory.path()),
+      updates,
+    )
+    .unwrap();
+    let loaded = Settings::load(directory.path()).unwrap();
+    assert_eq!(loaded.active_connection_id, DEMO_ID);
+    assert_eq!(loaded.connections.len(), 2);
+  }
+
+  #[test]
+  fn config_failure_restores_both_retired_and_replaced_credentials() {
+    let vault = RefCell::new(HashMap::from([
+      ("old-slot".to_owned(), "old-credential".to_owned()),
+      ("new-slot".to_owned(), "previous-value".to_owned()),
+    ]));
+    let before = vault.borrow().clone();
+    let result = commit_with_vault(
+      |slot| Ok(vault.borrow().get(slot).cloned()),
+      |slot, value| {
+        match value {
+          Some(value) => {
+            vault.borrow_mut().insert(slot.to_owned(), value.to_owned());
+          }
+          None => {
+            vault.borrow_mut().remove(slot);
+          }
+        }
+        Ok(())
+      },
+      || Err("disk fixture failure".into()),
+      vec![
+        ("new-slot".into(), Some("new-credential".into())),
+        ("old-slot".into(), None),
+      ],
+    );
+    assert_eq!(result.unwrap_err(), "disk fixture failure");
+    assert_eq!(*vault.borrow(), before);
+  }
+
+  #[test]
+  fn partial_platform_write_is_rolled_back_before_any_config_save() {
+    let vault = RefCell::new(HashMap::from([("slot".to_owned(), "old".to_owned())]));
+    let calls = Cell::new(0);
+    let saved = Cell::new(false);
+    let result = commit_with_vault(
+      |slot| Ok(vault.borrow().get(slot).cloned()),
+      |slot, value| {
+        calls.set(calls.get() + 1);
+        vault
+          .borrow_mut()
+          .insert(slot.to_owned(), value.unwrap_or_default().to_owned());
+        if calls.get() == 1 {
+          Err("platform fixture failure".into())
+        } else {
+          Ok(())
+        }
+      },
+      || {
+        saved.set(true);
+        Ok(())
+      },
+      vec![("slot".into(), Some("new".into()))],
+    );
+    assert!(result.is_err());
+    assert_eq!(vault.borrow().get("slot").unwrap(), "old");
+    assert!(!saved.get());
+  }
+
+  #[test]
+  fn cancel_connection_invalidates_its_poll_and_leaves_other_logins() {
+    let jobs = ProviderJobs::default();
+    let mut receivers = Vec::new();
+    for id in ["one", "two"] {
+      let cancel = tokio::sync::watch::channel(false).0;
+      receivers.push(cancel.subscribe());
+      jobs.logins.lock().unwrap().insert(
+        id.to_owned(),
+        Login {
+          connection_id: id.into(),
+          provider_id: "codex".into(),
+          polling: true,
+          expires_at: Instant::now() + Duration::from_secs(30),
+          cancel,
+          handle: DeviceCodeHandle {
+            device_code: "fixture-device-code".into(),
+            user_code: "TEST-CODE".into(),
+            verification_uri: "https://auth.openai.com/codex/device".into(),
+            expires_in: 30,
+            interval: 5,
+          },
+        },
+      );
+    }
+    jobs.cancel_connection("one");
+    assert!(*receivers[0].borrow());
+    assert!(!*receivers[1].borrow());
+    assert_eq!(jobs.logins.lock().unwrap().len(), 1);
+  }
+
+  fn login_handle() -> DeviceCodeHandle {
+    DeviceCodeHandle {
+      device_code: "fixture-device-code".into(),
+      user_code: "TEST-CODE".into(),
+      verification_uri: "https://auth.openai.com/codex/device".into(),
+      expires_in: 30,
+      interval: 5,
+    }
+  }
+
+  #[tokio::test]
+  async fn late_device_code_completion_cannot_replace_a_newer_poll() {
+    let jobs = std::sync::Arc::new(ProviderJobs::default());
+    let (started, ready) = tokio::sync::oneshot::channel();
+    let (complete, completion) = tokio::sync::oneshot::channel();
+    let older_jobs = jobs.clone();
+    let older = tokio::spawn(async move {
+      let (reservation, cancelled) = older_jobs.reserve("connection").unwrap();
+      started.send(()).unwrap();
+      // Model a device-code response that arrives after a newer attempt.
+      completion.await.unwrap();
+      assert!(*cancelled.borrow());
+      assert!(older_jobs
+        .publish(&reservation, "codex", login_handle())
+        .is_err());
+      // Dropping the old reservation must not release the newer attempt.
+    });
+    ready.await.unwrap();
+    let (newer, _) = jobs.reserve("connection").unwrap();
+    jobs.publish(&newer, "codex", login_handle()).unwrap();
+    let cancelled = {
+      let mut logins = jobs.logins.lock().unwrap();
+      let login = logins.get_mut(&newer.login_id).unwrap();
+      login.polling = true;
+      login.cancel.subscribe()
+    };
+    complete.send(()).unwrap();
+    older.await.unwrap();
+    assert!(!*cancelled.borrow());
+    assert!(jobs.pending.lock().unwrap().is_empty());
+    assert!(
+      jobs
+        .logins
+        .lock()
+        .unwrap()
+        .get(&newer.login_id)
+        .unwrap()
+        .polling
+    );
+  }
+
+  #[test]
+  fn settings_mutation_and_explicit_cancel_invalidate_pending_device_code_requests() {
+    let jobs = ProviderJobs::default();
+    let (removed, removed_cancel) = jobs.reserve("removed").unwrap();
+    let (kept, kept_cancel) = jobs.reserve("kept").unwrap();
+    jobs.cancel_connection("removed");
+    assert!(*removed_cancel.borrow());
+    assert!(!*kept_cancel.borrow());
+    assert!(jobs.publish(&removed, "codex", login_handle()).is_err());
+    jobs.cancel_login(&kept.login_id).unwrap();
+    assert!(*kept_cancel.borrow());
+    assert!(jobs.publish(&kept, "codex", login_handle()).is_err());
+    assert!(jobs.pending.lock().unwrap().is_empty());
+    assert!(jobs.logins.lock().unwrap().is_empty());
+  }
+
+  #[test]
+  fn pending_requests_share_the_login_limit_and_drop_releases_capacity() {
+    let jobs = ProviderJobs::default();
+    let mut reservations = Vec::new();
+    for index in 0..4 {
+      reservations.push(jobs.reserve(&format!("connection_{index}")).unwrap().0);
+    }
+    jobs
+      .publish(&reservations[0], "codex", login_handle())
+      .unwrap();
+    assert!(jobs.reserve("overflow").is_err());
+    reservations.pop();
+    let (replacement, _) = jobs.reserve("replacement").unwrap();
+    assert_eq!(jobs.pending.lock().unwrap().len(), 3);
+    drop(replacement);
+    drop(reservations);
+    assert!(jobs.pending.lock().unwrap().is_empty());
+    assert_eq!(jobs.logins.lock().unwrap().len(), 1);
+  }
+}

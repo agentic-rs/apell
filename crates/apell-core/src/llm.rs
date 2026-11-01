@@ -4,6 +4,7 @@ mod sse;
 mod tokn_config;
 mod types;
 mod validation;
+mod wire;
 
 pub use types::*;
 pub use validation::validate_config;
@@ -16,6 +17,7 @@ use std::{
   time::{Duration, Instant},
 };
 use tokio::sync::watch;
+use tokn_sdk::account::AccountConfig;
 use uuid::Uuid;
 
 const MAX_INPUT_BYTES: usize = 512 * 1024;
@@ -120,12 +122,12 @@ impl LlmService {
     session_id: &str,
     request: LlmRequest,
     config: LlmConfig,
-    api_key: Option<String>,
+    account: Option<AccountConfig>,
     emit: impl Fn(LlmEvent) + Send + Sync + 'static,
   ) -> LlmResult {
     let mut output = Output::new(&request.request_id, config.provenance());
     let result = self
-      .run(session_id, &request, &config, api_key, &mut output, &emit)
+      .run(session_id, &request, &config, account, &mut output, &emit)
       .await;
     output.result(result)
   }
@@ -135,7 +137,7 @@ impl LlmService {
     session_id: &str,
     request: &LlmRequest,
     config: &LlmConfig,
-    api_key: Option<String>,
+    account: Option<AccountConfig>,
     output: &mut Output,
     emit: &impl Fn(LlmEvent),
   ) -> Result<LlmStatus, Failure> {
@@ -146,15 +148,7 @@ impl LlmService {
       )
     })?;
     validation::request(request)?;
-    if api_key
-      .as_ref()
-      .is_some_and(|key| key.len() > 8192 || key.chars().any(char::is_control))
-    {
-      return Err(Failure::new(
-        "invalid_credential",
-        "The provider credential is invalid.",
-      ));
-    }
+    tokn_config::validate_account(config, account.as_ref())?;
     let (mut cancellation, guard) = self.register(session_id, &request.request_id)?;
     if config.base_url == "demo"
       && (!request.tools.is_empty()
@@ -179,7 +173,7 @@ impl LlmService {
         if config.base_url == "demo" {
           provider::demo(request, output, emit).await
         } else {
-          provider::remote(&self.client, request, config, api_key, output, emit).await
+          provider::remote(&self.client, request, config, account, output, emit).await
         }
       };
       tokio::select! {
