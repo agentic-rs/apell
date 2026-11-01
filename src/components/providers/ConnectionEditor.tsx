@@ -15,6 +15,7 @@ import {
 } from '../../lib/tauri';
 import type { LlmConnection, LlmModels, LlmProvider, LoginChallenge } from '../../lib/types';
 import { Icon } from '../Icon';
+import { ApiKeyField } from './ApiKeyField';
 import { ModelPicker } from './ModelPicker';
 import {
   changeProvider,
@@ -219,54 +220,15 @@ export function ConnectionEditor(props: EditorProps) {
           ) : (
             <>
               {accepts_key && (
-                <div className="credential-fields">
-                  <label>
-                    API key
-                    <select
-                      value={draft.key_action}
-                      onChange={(event) =>
-                        setDraft({
-                          ...draft,
-                          key_action: event.target.value as typeof draft.key_action,
-                          api_key: '',
-                        })
-                      }
-                    >
-                      <option value="keep">
-                        {saved && !changed_destination ? 'Keep current credential' : 'No new key'}
-                      </option>
-                      <option value="replace">Enter a new key</option>
-                      <option value="remove">Remove saved key</option>
-                    </select>
-                  </label>
-                  {draft.key_action === 'replace' && (
-                    <label>
-                      New API key
-                      <input
-                        type="password"
-                        required
-                        maxLength={8192}
-                        value={draft.api_key}
-                        autoCapitalize="none"
-                        autoCorrect="off"
-                        autoComplete="off"
-                        spellCheck={false}
-                        onChange={(event) => setDraft({ ...draft, api_key: event.target.value })}
-                      />
-                    </label>
-                  )}
-                  {saved && !changed_destination && (
-                    <p
-                      className={`status${saved.credential_status === 'unavailable' ? ' error' : ''}`}
-                    >
-                      {saved.credential_status === 'present'
-                        ? 'Credential saved securely.'
-                        : saved.credential_status === 'unavailable'
-                          ? 'The secure credential store is unavailable. You can still edit this connection.'
-                          : 'No API key saved.'}
-                    </p>
-                  )}
-                </div>
+                <ApiKeyField
+                  credential_status={!changed_destination ? saved?.credential_status : undefined}
+                  optional={provider?.auth_methods.includes('none') ?? false}
+                  value={draft.api_key}
+                  removing={draft.remove_credential}
+                  onChange={(api_key) => setDraft({ ...draft, api_key, remove_credential: false })}
+                  onRemove={() => setDraft({ ...draft, remove_credential: true, api_key: '' })}
+                  onUndo={() => setDraft({ ...draft, remove_credential: false })}
+                />
               )}
               {device_login && (
                 <div className="credential-fields">
@@ -283,13 +245,19 @@ export function ConnectionEditor(props: EditorProps) {
                   {saved?.credential_status === 'present' && !changed_destination && (
                     <button
                       type="button"
-                      className="text-button danger"
+                      className={`text-button${draft.remove_credential ? '' : ' danger'}`}
                       onClick={() => {
-                        setDraft({ ...draft, key_action: 'remove', api_key: '' });
-                        announce('Save to remove the saved sign-in.');
+                        setDraft({
+                          ...draft,
+                          remove_credential: !draft.remove_credential,
+                          api_key: '',
+                        });
+                        announce(
+                          draft.remove_credential ? '' : 'Save to remove the saved sign-in.',
+                        );
                       }}
                     >
-                      Remove sign-in
+                      {draft.remove_credential ? 'Undo removal' : 'Remove sign-in'}
                     </button>
                   )}
                 </div>

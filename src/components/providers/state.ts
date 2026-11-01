@@ -12,7 +12,7 @@ export interface ConnectionDraft {
   provider_id: string;
   base_url: string;
   model_id: string;
-  key_action: SaveConnection['key_action'];
+  remove_credential: boolean;
   api_key: string;
 }
 
@@ -29,12 +29,7 @@ export function connectionDraft(
     provider_id: connection?.provider_id ?? provider?.provider_id ?? '',
     base_url: connection?.base_url ?? provider?.base_url ?? '',
     model_id: connection?.model_id ?? '',
-    key_action:
-      !connection &&
-      provider?.auth_methods.includes('api_key') &&
-      !provider.auth_methods.includes('none')
-        ? 'replace'
-        : 'keep',
+    remove_credential: false,
     api_key: '',
   };
 }
@@ -45,10 +40,7 @@ export function changeProvider(draft: ConnectionDraft, provider: LlmProvider): C
     provider_id: provider.provider_id,
     base_url: provider.base_url,
     model_id: provider.provider_id === 'demo' ? 'local-demo' : '',
-    key_action:
-      provider.auth_methods.includes('api_key') && !provider.auth_methods.includes('none')
-        ? 'replace'
-        : 'remove',
+    remove_credential: false,
     api_key: '',
   };
 }
@@ -66,8 +58,13 @@ export function destinationChanged(draft: ConnectionDraft, saved?: LlmConnection
 }
 
 export function savePayload(draft: ConnectionDraft, saved?: LlmConnection): SaveConnection {
-  const key_action =
-    destinationChanged(draft, saved) && draft.key_action === 'keep' ? 'remove' : draft.key_action;
+  const key_action = draft.remove_credential
+    ? 'remove'
+    : draft.api_key
+      ? 'replace'
+      : destinationChanged(draft, saved)
+        ? 'remove'
+        : 'keep';
   return {
     ...(saved ? { connection_id: saved.connection_id } : {}),
     name: draft.name.trim(),
