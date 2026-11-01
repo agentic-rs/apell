@@ -1,5 +1,7 @@
 # Verification
 
+The credential-form simplification passed all 44 frontend/SDK/WASM tests, TypeScript checking, formatting checks, and the signed iOS simulator build. Regression cases cover clearing a replacement key, undoing removal, preserving an unavailable credential, provider changes, and optional-key entry. Simulator smoke checks verified direct required and optional key fields without a credential-action dropdown. The rebuilt app was installed and relaunched, and its executable matched the build output. No credentials were entered or provider requests made for this check.
+
 Provider connections and device sign-in use Tokn Git `main` at `552dfd60ee9bc333118f11fdc1bc3ad951c32b7e`. The update was checked with:
 
 - `pnpm test`: all 43 SDK, bridge, compiled-WASM/SQLite, provider-settings, JSON validation, and iOS preparation tests passed.

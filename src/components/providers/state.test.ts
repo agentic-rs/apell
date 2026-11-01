@@ -35,18 +35,24 @@ const connection: LlmConnection = {
 };
 
 describe('connection drafts', () => {
-  it('preserves saved credentials unless an explicit replacement or removal is selected', () => {
-    const draft = connectionDraft(connection, providers);
-    expect(hasChanges(draft, connection)).toBe(false);
-    expect(savePayload({ ...draft, api_key: 'unused-fixture' }, connection)).not.toHaveProperty(
-      'api_key',
-    );
-    expect(
-      savePayload({ ...draft, key_action: 'replace', api_key: 'new-fixture' }, connection),
-    ).toMatchObject({ key_action: 'replace', api_key: 'new-fixture' });
-    expect(
-      savePayload({ ...draft, key_action: 'remove', api_key: 'unused-fixture' }, connection),
-    ).not.toHaveProperty('api_key');
+  it('preserves saved credentials when a replacement is cleared or removal is undone', () => {
+    for (const credential_status of ['present', 'unavailable'] as const) {
+      const saved = { ...connection, credential_status };
+      const draft = connectionDraft(saved, providers);
+      expect(hasChanges(draft, saved)).toBe(false);
+      const replacement = { ...draft, api_key: 'new-fixture' };
+      expect(savePayload(replacement, saved)).toMatchObject({
+        key_action: 'replace',
+        api_key: 'new-fixture',
+      });
+      const cleared = { ...replacement, api_key: '' };
+      expect(savePayload(cleared, saved)).toMatchObject({ key_action: 'keep' });
+      expect(hasChanges(cleared, saved)).toBe(false);
+      const removal = { ...cleared, remove_credential: true };
+      expect(savePayload(removal, saved)).toMatchObject({ key_action: 'remove' });
+      expect(savePayload(removal, saved)).not.toHaveProperty('api_key');
+      expect(hasChanges({ ...removal, remove_credential: false }, saved)).toBe(false);
+    }
   });
 
   it('never carries an existing credential to another destination or provider', () => {
@@ -55,7 +61,7 @@ describe('connection drafts', () => {
       savePayload({ ...draft, base_url: 'https://other.invalid/v1' }, connection),
     ).toMatchObject({ key_action: 'remove' });
     const switched = changeProvider(
-      { ...draft, key_action: 'replace', api_key: 'typed-fixture' },
+      { ...draft, remove_credential: true, api_key: 'typed-fixture' },
       providers[1],
     );
     expect(switched).toMatchObject({
@@ -63,9 +69,27 @@ describe('connection drafts', () => {
       base_url: providers[1].base_url,
       api_key: '',
       model_id: '',
-      key_action: 'remove',
+      remove_credential: false,
     });
-    expect(savePayload(switched, connection)).not.toHaveProperty('api_key');
+    const payload = savePayload(switched, connection);
+    expect(payload).toMatchObject({ key_action: 'remove' });
+    expect(payload).not.toHaveProperty('api_key');
+  });
+
+  it('accepts an optional key directly without a separate credential action', () => {
+    const provider: LlmProvider = {
+      provider_id: 'custom',
+      name: 'Compatible endpoint',
+      base_url: 'https://custom.invalid/v1',
+      auth_methods: ['api_key', 'none'],
+    };
+    const draft = changeProvider(connectionDraft(undefined, providers), provider);
+    expect(savePayload(draft)).toMatchObject({ key_action: 'keep' });
+    expect(savePayload(draft)).not.toHaveProperty('api_key');
+    expect(savePayload({ ...draft, api_key: 'optional-fixture' })).toMatchObject({
+      key_action: 'replace',
+      api_key: 'optional-fixture',
+    });
   });
 
   it('keeps credentials for slash-only edits and migrated endpoints with trailing slashes', () => {
