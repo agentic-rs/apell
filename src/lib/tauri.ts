@@ -4,12 +4,15 @@ import type { LlmResult } from '../../packages/applet-sdk/src/types';
 import type {
   AppletEvent,
   AppletSession,
+  CreateConnectionDraft,
+  DraftCredential,
   InstalledApplet,
   InstallProgress,
   LlmConnection,
   LlmModels,
   LlmSettings,
   LoginChallenge,
+  NativeConnectionDraft,
   SaveConnection,
 } from './types';
 
@@ -38,22 +41,26 @@ export const launchApplet = (applet_id: string) =>
   shellCall<AppletSession>('applets.launch', { applet_id });
 export const closeApplet = (session_id: string) => shellCall<void>('applets.close', { session_id });
 export const getSettings = () => shellCall<LlmSettings>('llm.settings');
+export const createConnectionDraft = (params: CreateConnectionDraft) =>
+  shellCall<NativeConnectionDraft>('llm.create_draft', params);
+export const discardConnectionDraft = (draft_id: string) =>
+  shellCall<void>('llm.discard_draft', { draft_id });
 export const saveConnection = (params: SaveConnection) =>
   shellCall<LlmConnection>('llm.save_connection', params);
 export const activateConnection = (connection_id: string) =>
   shellCall<void>('llm.activate_connection', { connection_id });
 export const deleteConnection = (connection_id: string) =>
   shellCall<void>('llm.delete_connection', { connection_id });
-export const discoverModels = (connection_id: string) =>
-  shellCall<LlmModels>('llm.discover_models', { connection_id });
+export const discoverDraftModels = (draft_id: string, credential: DraftCredential) =>
+  shellCall<LlmModels>('llm.discover_draft_models', { draft_id, ...credential });
 export const testConnection = (connection_id: string, request_id: string) =>
   shellCall<LlmResult>('llm.test_connection', { connection_id, request_id });
 export const cancelConnectionTest = (request_id: string) =>
   shellCall<void>('llm.cancel_test', { request_id });
-export const beginLogin = (connection_id: string) =>
-  shellCall<LoginChallenge>('llm.begin_login', { connection_id });
+export const beginLogin = (draft_id: string) =>
+  shellCall<LoginChallenge>('llm.begin_login', { draft_id });
 export const pollLogin = (login_id: string) =>
-  shellCall<LlmConnection>('llm.poll_login', { login_id });
+  shellCall<NativeConnectionDraft>('llm.poll_login', { login_id });
 export const cancelLogin = (login_id: string) => shellCall<void>('llm.cancel_login', { login_id });
 export const openLogin = (login_id: string) => shellCall<void>('llm.open_login', { login_id });
 export const callApplet = (session_id: string, method: string, params: unknown) =>

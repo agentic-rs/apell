@@ -6,11 +6,13 @@ export function ModelPicker({
   model_id,
   models,
   disabled,
+  required = false,
   onChange,
 }: {
   model_id: string;
   models?: LlmModels;
   disabled: boolean;
+  required?: boolean;
   onChange: (model_id: string) => void;
 }) {
   const [query, setQuery] = useState('');
@@ -26,6 +28,7 @@ export function ModelPicker({
           autoCorrect="off"
           spellCheck={false}
           disabled={disabled}
+          required={required}
           placeholder="Choose a model or enter its ID"
         />
       </label>

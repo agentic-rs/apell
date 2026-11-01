@@ -108,7 +108,7 @@ A checksum pins exact bytes; it is not a publisher signature. This version is fo
 - Applet-private file operations and persistent JSON configuration.
 - A basic `device.info` API for platform and host API version.
 
-In Settings, add a connection, enter its API key or sign in, refresh its models (or enter a model ID), and choose **Use connection**. Connections remain saved when switching the active model. **Test connection** sends a short model request and can be cancelled; saving or discovering models does not generate an answer.
+In Settings, choose a provider, enter its API key or sign in, load and choose a model (or enter its ID), then **Save connection**. Sign-in and model lookup work before saving; leaving setup discards its temporary credentials. Choose **Use connection** to make a saved connection active. Connections remain saved when switching the active model. **Test connection** sends a short model request and can be cancelled; saving or discovering models does not generate an answer.
 
 Tokn-backed providers include OpenAI, Codex, GitHub Copilot, DeepSeek, OpenCode Go, llama.cpp, Z.ai/Zhipu and their coding plans, plus custom OpenAI-compatible endpoints. OpenAI/Codex use Responses; Copilot/OpenCode use their model's supported protocol; compatible endpoints retain Chat Completions. See the [provider settings and protocol details](docs/architecture.md#provider-settings).
 
