@@ -25,6 +25,13 @@ const provenance = {
   requested_model_id: 'requested_model',
   model_id: 'reported_model',
 };
+const target = { connection_id: provenance.connection_id, model_id: provenance.requested_model_id };
+let sentTarget: typeof target | undefined;
+
+async function newChat(): Promise<string> {
+  const id = await chatbot.create_conversation();
+  return chatbot.choose_model(id, target);
+}
 
 function openDatabase(): void {
   database = new DatabaseSync(databasePath);
@@ -42,6 +49,7 @@ beforeEach(() => {
   completionStatus = 'completed';
   missingMessage = false;
   sentMessages = [];
+  sentTarget = undefined;
 });
 
 afterEach(() => {
@@ -99,6 +107,7 @@ Object.assign(globalThis, {
     }
     if (method === 'llm.generate') {
       sentMessages = params.messages as LlmMessage[];
+      sentTarget = params.target as typeof target;
       expect(params).not.toHaveProperty('api_key');
       if (completionStatus === 'bridge_failure')
         throw Object.assign(new Error('Bridge interrupted.'), {
@@ -134,7 +143,11 @@ Object.assign(globalThis, {
                 }
               : null,
         finish_reason: completionStatus === 'completed' ? 'stop' : null,
-        provenance,
+        provenance: {
+          ...provenance,
+          connection_id: sentTarget.connection_id,
+          requested_model_id: sentTarget.model_id,
+        },
         error:
           completionStatus === 'completed' || completionStatus === 'tool_calls'
             ? null
@@ -146,7 +159,7 @@ Object.assign(globalThis, {
   },
 });
 
-it('migrates existing text conversations without losing their messages or replay history', async () => {
+it('preserves unattributed legacy history and starts a fresh conversation for the chosen model', async () => {
   database.exec(`
     CREATE TABLE conversations (conversation_id TEXT PRIMARY KEY, title TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
     CREATE TABLE messages (message_id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE, role TEXT NOT NULL CHECK(role IN ('user', 'assistant')), content TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('pending', 'complete', 'interrupted')), request_id TEXT NOT NULL, created_at TEXT NOT NULL);
@@ -157,7 +170,7 @@ it('migrates existing text conversations without losing their messages or replay
     PRAGMA user_version = 1;
   `);
   await chatbot.initialize();
-  expect(database.prepare('PRAGMA user_version').get()?.user_version).toBe(2);
+  expect(database.prepare('PRAGMA user_version').get()?.user_version).toBe(3);
   expect(await chatbot.load_messages('legacy')).toEqual([
     { message_id: 'old_user', role: 'user', content: 'An existing question', status: 'complete' },
     {
@@ -167,19 +180,21 @@ it('migrates existing text conversations without losing their messages or replay
       status: 'complete',
     },
   ]);
-  await chatbot.send_message('legacy', 'Continue this conversation', 'new_reply');
-  expect(sentMessages.slice(1, 3)).toEqual([
-    { role: 'user', content: 'An existing question' },
-    { role: 'assistant', content: 'An existing answer' },
-  ]);
-  expect(await chatbot.list_conversations()).toEqual([
-    expect.objectContaining({ conversation_id: 'legacy', title: 'Existing conversation' }),
-  ]);
+  expect(await chatbot.conversation_model('legacy')).toBeNull();
+  await expect(chatbot.send_message('legacy', 'Follow up', 'blocked')).rejects.toThrow(
+    'Choose a provider',
+  );
+  expect(sentTarget).toBeUndefined();
+  const selected = await chatbot.choose_model('legacy', target);
+  expect(selected).not.toBe('legacy');
+  await chatbot.send_message(selected, 'A fresh question', 'new_reply');
+  expect(sentMessages.slice(1)).toEqual([{ role: 'user', content: 'A fresh question' }]);
+  expect(await chatbot.load_messages('legacy')).toHaveLength(2);
 });
 
 it('persists complete assistant metadata and attribution and replays it after SQLite reopens', async () => {
   await chatbot.initialize();
-  const conversation_id = await chatbot.create_conversation();
+  const conversation_id = await newChat();
   await chatbot.send_message(conversation_id, 'Help me plan\nmy day', 'first_reply');
   const stored = database
     .prepare("SELECT provider_message, provenance FROM messages WHERE role = 'assistant'")
@@ -203,6 +218,8 @@ it('persists complete assistant metadata and attribution and replays it after SQ
   await chatbot.initialize();
   expect(await chatbot.load_messages(conversation_id)).toEqual(visible);
   await chatbot.send_message(conversation_id, 'Follow up after reopening', 'second_reply');
+  expect(sentTarget).toEqual(target);
+  expect(await chatbot.conversation_model(conversation_id)).toEqual(target);
   expect(sentMessages[2]).toEqual(assistantMessage);
   expect(sentMessages[3]).toEqual({ role: 'user', content: 'Follow up after reopening' });
   expect(await chatbot.list_conversations()).toEqual([
@@ -212,7 +229,7 @@ it('persists complete assistant metadata and attribution and replays it after SQ
 
 it('retains interrupted partials without replaying them or executing tools', async () => {
   await chatbot.initialize();
-  const conversation_id = await chatbot.create_conversation();
+  const conversation_id = await newChat();
   for (const status of ['cancelled', 'truncated', 'unsupported', 'failed', 'tool_calls'] as const) {
     completionStatus = status;
     await expect(
@@ -261,10 +278,57 @@ it('retains interrupted partials without replaying them or executing tools', asy
   ).toBe(0);
 });
 
+it('restores a consistent v2 route and forks without replaying old metadata when either route field changes', async () => {
+  await chatbot.initialize();
+  const id = await newChat();
+  await chatbot.send_message(id, 'Old question', 'old_reply');
+  database.exec('ALTER TABLE conversations DROP COLUMN model_target; PRAGMA user_version = 2;');
+  await chatbot.initialize();
+  expect(await chatbot.conversation_model(id)).toEqual(target);
+  expect(await chatbot.choose_model(id, target)).toBe(id);
+  for (const other of [
+    { ...target, model_id: 'another-model' },
+    { ...target, connection_id: 'another-connection' },
+  ]) {
+    const next = await chatbot.choose_model(id, other);
+    expect(next).not.toBe(id);
+    expect(await chatbot.conversation_model(next)).toEqual(other);
+    await chatbot.send_message(next, 'New question', `reply_${next}`);
+    expect(sentTarget).toEqual(other);
+    expect(sentMessages.slice(1)).toEqual([{ role: 'user', content: 'New question' }]);
+  }
+  expect(await chatbot.load_messages(id)).toHaveLength(2);
+});
+
+it('refuses to infer a model for mixed, demo, or partly unknown legacy history', async () => {
+  await chatbot.initialize();
+  const id = await newChat();
+  await chatbot.send_message(id, 'First', 'first');
+  await chatbot.send_message(id, 'Second', 'second');
+  database.exec('ALTER TABLE conversations DROP COLUMN model_target; PRAGMA user_version = 2;');
+  await chatbot.initialize();
+  const replace = database.prepare(
+    "UPDATE messages SET provenance = ? WHERE request_id = 'second' AND role = 'assistant'",
+  );
+  for (const changed of [
+    { ...provenance, requested_model_id: 'other-model' },
+    { ...provenance, connection_id: 'other-connection' },
+    { ...provenance, connection_id: 'local-demo', requested_model_id: 'local-demo' },
+    null,
+  ]) {
+    replace.run(changed ? JSON.stringify(changed) : null);
+    expect(await chatbot.conversation_model(id)).toBeNull();
+    await expect(chatbot.send_message(id, 'Never sent', 'blocked')).rejects.toThrow(
+      'Choose a provider',
+    );
+  }
+  expect(await chatbot.load_messages(id)).toHaveLength(4);
+});
+
 it('never marks a newly completed answer replayable when its assistant message is missing', async () => {
   await chatbot.initialize();
   missingMessage = true;
-  const conversation_id = await chatbot.create_conversation();
+  const conversation_id = await newChat();
   await expect(
     chatbot.send_message(conversation_id, 'Question', 'missing_message'),
   ).rejects.toThrow('The model did not return a replayable assistant message.');

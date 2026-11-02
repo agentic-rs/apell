@@ -621,6 +621,13 @@ svg {
   display: grid;
   gap: 8px;
 }
+.applet-model-picker {
+  display: grid;
+  gap: 14px;
+}
+.applet-model-picker p {
+  margin: 0;
+}
 .applet-menu-action {
   display: flex;
   align-items: center;

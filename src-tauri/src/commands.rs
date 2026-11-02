@@ -1,14 +1,44 @@
 use crate::host::{public_config, string, Host, Session};
+use crate::provider_commands::{snapshot, ModelRoute, ModelSnapshot};
 use apell_core::{
   bundles::{digest, sandbox_document, valid_hash, MAX_BUNDLE_BYTES},
-  llm::{LlmEvent, LlmFailure, LlmRequest, LlmResult, LlmStatus},
+  llm::{
+    deserialize_target, LlmEvent, LlmFailure, LlmProvenance, LlmRequest, LlmResult, LlmStatus,
+    LlmTarget,
+  },
 };
+use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::{
   atomic::{AtomicBool, Ordering},
   Arc, RwLock,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ConfigQuery {
+  #[serde(default, deserialize_with = "deserialize_target")]
+  target: Option<LlmTarget>,
+}
+
+fn failed_generation(
+  request_id: String,
+  provenance: LlmProvenance,
+  error: LlmFailure,
+) -> Result<Value, String> {
+  serde_json::to_value(LlmResult {
+    request_id,
+    status: LlmStatus::Failed,
+    content: String::new(),
+    tool_calls: Vec::new(),
+    message: None,
+    finish_reason: None,
+    provenance,
+    error: Some(error),
+  })
+  .map_err(|_| "Could not encode LLM result.".into())
+}
 
 #[tauri::command(rename_all = "snake_case")]
 pub async fn shell_command(
@@ -173,11 +203,17 @@ pub async fn applet_call(
         response = host.http.request(request) => serde_json::to_value(response?).map_err(|_| "Could not encode HTTP response.".into()),
       }
     }
-    "llm.config" => Ok(public_config(&host.settings.lock().await.active().config())),
+    "llm.config" => {
+      let query: ConfigQuery =
+        serde_json::from_value(params).map_err(|_| "Invalid model selection.")?;
+      let connection =
+        ModelRoute::applet(query.target.as_ref()).resolve(&*host.settings.lock().await)?;
+      Ok(public_config(&connection.config()))
+    }
     "llm.generate" => {
       let request: LlmRequest =
         serde_json::from_value(params).map_err(|_| "Invalid LLM request.")?;
-      let (config, key_result) = crate::provider_commands::snapshot(&app, &host, None).await;
+      let selected = snapshot(&app, &host, ModelRoute::applet(request.target.as_ref())).await;
       if !session.alive.load(Ordering::SeqCst) {
         return Err("Applet session is closed.".into());
       }
@@ -189,26 +225,36 @@ pub async fn applet_call(
           json!({"session_id":event_session,"event":event}),
         );
       };
-      let key = match key_result {
-        Ok(key) => key,
+      let ModelSnapshot { config, account } = match selected {
+        Ok(snapshot) => snapshot,
+        Err(message) => {
+          let target = request.target.as_ref().ok_or_else(|| message.clone())?;
+          return failed_generation(
+            request.request_id,
+            target.provenance(),
+            LlmFailure {
+              code: "invalid_target".into(),
+              message,
+              capability: None,
+              retryable: false,
+            },
+          );
+        }
+      };
+      let key = match account {
+        Ok(account) => account,
         Err(_) => {
-          let result = LlmResult {
-            request_id: request.request_id,
-            status: LlmStatus::Failed,
-            content: String::new(),
-            tool_calls: Vec::new(),
-            message: None,
-            finish_reason: None,
-            provenance: config.provenance(),
-            error: Some(LlmFailure {
+          return failed_generation(
+            request.request_id,
+            config.provenance(),
+            LlmFailure {
               code: "credential_unavailable".into(),
               message: "The provider credential is unavailable or needs sign-in. Check Settings."
                 .into(),
               capability: None,
               retryable: true,
-            }),
-          };
-          return serde_json::to_value(result).map_err(|_| "Could not encode LLM result.".into());
+            },
+          )
         }
       };
       let result = host

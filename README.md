@@ -20,8 +20,8 @@ The `wasm-bindgen` CLI version must match the chatbot's pinned Rust dependency. 
 In the shell:
 
 1. Tap **+**, choose **Try Companion**, then tap the **Companion** icon.
-2. Start a conversation. The initial demo connection produces scripted replies locally, allowing streaming, cancellation, and persistence to be exercised without credentials.
-3. Open **Settings → Model connection** to configure an OpenAI-compatible API base URL, model ID, and optional key. The host uses the embedded [Tokn SDK](https://github.com/tokn-ai/tokn) and appends `/chat/completions` to the base URL. Keys remain in native secure storage.
+2. Open **Settings** to configure a provider connection using an API key or account sign-in, choose its model, then save.
+3. Open Companion, tap its model button, choose your provider and model, and start a conversation. The host uses the embedded [Tokn SDK](https://github.com/tokn-ai/tokn). Keys remain in native secure storage.
 
 The library shows each applet as one icon and its name. Add and Settings stay in the header. To refresh the bundled sample after updating the shell, choose **+ → Update Companion**; existing chats are preserved.
 
@@ -123,6 +123,8 @@ The SDK runs inside the native host with an in-memory configuration. No Tokn gat
 See [the architecture and API contract](docs/architecture.md) for migration guidance and limits, and [verification notes](docs/verification.md) for tested behavior.
 
 Applets use `llm.generate(request, { signal, on_event })` and inspect the returned status. Save and replay the complete `result.message`; Apell keeps no conversation or continuation cache. See the [LLM history and tool example](docs/llm.md). This is a breaking API update: rebuild existing applets and update Companion from the install sheet.
+
+Companion's model button opens Apell's provider/model picker. Configure provider connections in Settings, then choose one and its model from inside the chatbot. Each conversation retains its chosen model. Selecting another provider or model for a populated chat starts a new conversation. Companion requires a real provider selection before sending. Update the installed Companion bundle to version 0.3.0 to receive this behavior.
 
 ## Repository hygiene
 

@@ -3,7 +3,7 @@ use crate::{
   settings::{Connection, CredentialFormat, KeyAction, SaveConnection, Settings, DEMO_ID},
 };
 use apell_core::{
-  llm::{validate_config, LlmConfig, LlmRequest},
+  llm::{validate_config, LlmConfig, LlmRequest, LlmTarget},
   providers::{self, AccountConfig, DeviceCodeHandle},
 };
 use serde_json::{json, Value};
@@ -237,57 +237,76 @@ async fn blocking<T: Send + 'static>(
     .map_err(|_| "The provider settings operation was interrupted.".to_owned())?
 }
 
-/// Capture the selected connection and its credential together. Credential
-/// mutations and token refresh serialize, while the settings UI remains readable.
+pub enum ModelRoute<'a> {
+  Active,
+  Saved(&'a str),
+  Selected(&'a LlmTarget),
+}
+
+impl<'a> ModelRoute<'a> {
+  pub fn applet(target: Option<&'a LlmTarget>) -> Self {
+    target.map_or(Self::Active, Self::Selected)
+  }
+
+  pub fn resolve(&self, settings: &Settings) -> Result<Connection, String> {
+    match self {
+      Self::Active => Ok(settings.active().clone()),
+      Self::Saved(id) => settings.connection(id).cloned(),
+      Self::Selected(target) => {
+        let mut selected = settings.connection(&target.connection_id)?.clone();
+        selected.model_id.clone_from(&target.model_id);
+        target.validate_for(&selected.config())?;
+        Ok(selected)
+      }
+    }
+  }
+}
+
+pub struct ModelSnapshot {
+  pub config: LlmConfig,
+  pub account: Result<Option<AccountConfig>, String>,
+}
+
+/// Resolve the destination and read its current credential under the same
+/// mutation gate. An unavailable selection fails before the secure store is read.
 pub async fn snapshot(
   app: &AppHandle,
   host: &Host,
-  id: Option<&str>,
-) -> (LlmConfig, Result<Option<AccountConfig>, String>) {
+  route: ModelRoute<'_>,
+) -> Result<ModelSnapshot, String> {
   let _gate = host.credential_gate.lock().await;
-  let connection = {
-    let settings = host.settings.lock().await;
-    match id.map(|id| settings.connection(id)).transpose() {
-      Ok(Some(connection)) => connection.clone(),
-      Ok(None) => settings.active().clone(),
-      Err(error) => return (settings.active().config(), Err(error)),
-    }
-  };
-  let config = connection.config();
+  let connection = route.resolve(&*host.settings.lock().await)?;
+  let account = current_account(app, host, &connection).await;
+  Ok(ModelSnapshot {
+    config: connection.config(),
+    account,
+  })
+}
+
+async fn current_account(
+  app: &AppHandle,
+  host: &Host,
+  connection: &Connection,
+) -> Result<Option<AccountConfig>, String> {
   let app_read = app.clone();
   let read_connection = connection.clone();
-  let mut account = match blocking(move || read_account(&app_read, &read_connection)).await {
-    Ok(account) => account,
-    Err(error) => return (config, Err(error)),
-  };
+  let mut account = blocking(move || read_account(&app_read, &read_connection)).await?;
   if let Some(current) = account.as_mut() {
-    match providers::refresh_account(&host.provider_http, current).await {
-      Ok(true) => {
-        let saved = match encode_account(current) {
-          Ok(saved) => saved,
-          Err(error) => return (config, Err(error)),
-        };
-        let app_write = app.clone();
-        let slot = connection.credential.account.clone();
-        if let Err(error) =
-          blocking(move || tauri_plugin_apell_credentials::write(&app_write, &slot, Some(&saved)))
-            .await
-        {
-          return (config, Err(error));
-        }
-      }
-      Ok(false) => {}
-      Err(error) => return (config, Err(error)),
+    if providers::refresh_account(&host.provider_http, current).await? {
+      let saved = encode_account(current)?;
+      let app_write = app.clone();
+      let slot = connection.credential.account.clone();
+      blocking(move || tauri_plugin_apell_credentials::write(&app_write, &slot, Some(&saved)))
+        .await?;
     }
   } else if !connection.is_demo() {
-    // Keyless compatible/local connections still need an explicit account
-    // identity for provider-aware request preparation.
-    match providers::static_account(&connection.provider_id, &connection.connection_id, None) {
-      Ok(value) => account = Some(value),
-      Err(error) => return (config, Err(error)),
-    }
+    account = Some(providers::static_account(
+      &connection.provider_id,
+      &connection.connection_id,
+      None,
+    )?);
   }
-  (config, Ok(account))
+  Ok(account)
 }
 
 fn commit_settings(
@@ -426,7 +445,7 @@ pub async fn dispatch(
     "llm.test_connection" => {
       let id = string(&params, "connection_id")?;
       let request_id = string(&params, "request_id")?.to_owned();
-      let (config, account) = snapshot(&app, host, Some(id)).await;
+      let ModelSnapshot { config, account } = snapshot(&app, host, ModelRoute::Saved(id)).await?;
       let request = LlmRequest {
         request_id,
         messages: vec![json!({"role":"user","content":"Reply with OK."})],
@@ -480,6 +499,54 @@ pub async fn dispatch(
 mod tests {
   use super::*;
   use std::cell::{Cell, RefCell};
+
+  #[test]
+  fn applet_route_overrides_only_the_selected_model_and_never_falls_back() {
+    let mut settings = Settings::default();
+    let saved = Connection {
+      connection_id: "chosen-connection".into(),
+      name: "Private connection alias".into(),
+      provider_id: "custom".into(),
+      base_url: "https://example.invalid/v1".into(),
+      model_id: "saved-default".into(),
+      credential: crate::settings::credential_ref("chosen-connection"),
+    };
+    settings.replace(None, saved.clone());
+    let target = LlmTarget {
+      connection_id: saved.connection_id.clone(),
+      model_id: "chosen-model".into(),
+    };
+    let selected = ModelRoute::applet(Some(&target))
+      .resolve(&settings)
+      .unwrap();
+    assert_eq!(selected.model_id, "chosen-model");
+    assert_eq!(selected.credential, saved.credential);
+    assert_eq!(settings.connection(&target.connection_id).unwrap(), &saved);
+    assert!(ModelRoute::applet(None)
+      .resolve(&settings)
+      .unwrap()
+      .is_demo());
+    let public = crate::host::public_config(&selected.config());
+    assert_eq!(public["provider_name"], "OpenAI compatible");
+    assert!(!public.to_string().contains(&saved.name));
+    assert!(!public.to_string().contains(&saved.base_url));
+    assert!(ModelRoute::Selected(&LlmTarget {
+      connection_id: DEMO_ID.into(),
+      ..target.clone()
+    })
+    .resolve(&settings)
+    .is_err());
+    assert!(ModelRoute::Selected(&LlmTarget {
+      model_id: " ".into(),
+      ..target.clone()
+    })
+    .resolve(&settings)
+    .is_err());
+    settings
+      .connections
+      .retain(|entry| entry.connection_id != target.connection_id);
+    assert!(ModelRoute::Selected(&target).resolve(&settings).is_err());
+  }
 
   #[test]
   fn config_failure_restores_both_retired_and_replaced_credentials() {

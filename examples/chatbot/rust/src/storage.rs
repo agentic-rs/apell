@@ -135,15 +135,17 @@ pub async fn initialize() -> Result<(), JsValue> {
         execute("CREATE TABLE conversations (conversation_id TEXT PRIMARY KEY, title TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)", vec![], Some(&transaction)).await?;
         execute("CREATE TABLE messages (message_id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE, role TEXT NOT NULL CHECK(role IN ('user', 'assistant')), content TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('pending', 'complete', 'interrupted')), request_id TEXT NOT NULL, created_at TEXT NOT NULL, provider_message TEXT, provenance TEXT)", vec![], Some(&transaction)).await?;
         execute("CREATE INDEX messages_by_conversation ON messages(conversation_id)", vec![], Some(&transaction)).await?;
-        execute("PRAGMA user_version = 2", vec![], Some(&transaction)).await?;
       }
       "1" => {
         execute("ALTER TABLE messages ADD COLUMN provider_message TEXT", vec![], Some(&transaction)).await?;
         execute("ALTER TABLE messages ADD COLUMN provenance TEXT", vec![], Some(&transaction)).await?;
-        execute("PRAGMA user_version = 2", vec![], Some(&transaction)).await?;
       }
-      "2" => {}
+      "2" | "3" => {}
       _ => return Err(bridge::error("This chatbot database requires a newer applet.")),
+    }
+    if version != "3" {
+      execute("ALTER TABLE conversations ADD COLUMN model_target TEXT", vec![], Some(&transaction)).await?;
+      execute("PRAGMA user_version = 3", vec![], Some(&transaction)).await?;
     }
     execute("UPDATE messages SET status = 'interrupted' WHERE status = 'pending'", vec![], Some(&transaction)).await?;
     commit(&transaction).await
@@ -161,10 +163,10 @@ pub async fn conversations() -> Result<Vec<Conversation>, JsValue> {
     })).collect()
 }
 
-pub async fn create_conversation() -> Result<String, JsValue> {
+pub async fn create_conversation(transaction: Option<&str>) -> Result<String, JsValue> {
   let conversation_id = bridge::create_id();
   let now = bridge::now();
-  execute("INSERT INTO conversations (conversation_id, title, created_at, updated_at) VALUES (?1, 'New conversation', ?2, ?2)", vec![text(&conversation_id), text(now)], None).await?;
+  execute("INSERT INTO conversations (conversation_id, title, created_at, updated_at) VALUES (?1, 'New conversation', ?2, ?2)", vec![text(&conversation_id), text(now)], transaction).await?;
   Ok(conversation_id)
 }
 

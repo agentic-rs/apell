@@ -125,7 +125,11 @@ impl LlmService {
     account: Option<AccountConfig>,
     emit: impl Fn(LlmEvent) + Send + Sync + 'static,
   ) -> LlmResult {
-    let mut output = Output::new(&request.request_id, config.provenance());
+    let provenance = request
+      .target
+      .as_ref()
+      .map_or_else(|| config.provenance(), LlmTarget::provenance);
+    let mut output = Output::new(&request.request_id, provenance);
     let result = self
       .run(session_id, &request, &config, account, &mut output, &emit)
       .await;
@@ -141,12 +145,18 @@ impl LlmService {
     output: &mut Output,
     emit: &impl Fn(LlmEvent),
   ) -> Result<LlmStatus, Failure> {
-    validate_config(config).map_err(|_| {
-      Failure::new(
-        "invalid_configuration",
-        "The LLM connection configuration is invalid.",
-      )
-    })?;
+    if let Some(target) = &request.target {
+      target
+        .validate_for(config)
+        .map_err(|message| Failure::new("invalid_target", &message))?;
+    } else {
+      validate_config(config).map_err(|_| {
+        Failure::new(
+          "invalid_configuration",
+          "The LLM connection configuration is invalid.",
+        )
+      })?;
+    }
     validation::request(request)?;
     tokn_config::validate_account(config, account.as_ref())?;
     let (mut cancellation, guard) = self.register(session_id, &request.request_id)?;

@@ -10,6 +10,7 @@ const methods = new Set([
   'sqlite.commit',
   'sqlite.rollback',
   'llm.config',
+  'llm.choose_model',
   'llm.generate',
   'llm.cancel',
   'resources.download',
@@ -63,7 +64,11 @@ export function attachBridge(
       if (data.method === 'config.set') {
         assertJsonValue((data.params as Record<string, unknown>).value);
       }
-      if (data.method === 'llm.generate') {
+      if (
+        data.method === 'llm.generate' ||
+        data.method === 'llm.config' ||
+        data.method === 'llm.choose_model'
+      ) {
         // Raw WASM callers bypass the SDK helper. Validate before native JSON
         // serialization can silently turn NaN into null or omit undefined.
         assertJsonValue(data.params);

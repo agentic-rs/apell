@@ -266,7 +266,12 @@ async fn account_for_discovery(
       } else if let Some(inherited) = draft.inherited() {
         // Reference the saved credential, including legacy slots. Reading and
         // refreshing it on demand prevents a draft from restoring stale tokens.
-        let (config, account) = super::snapshot(app, host, Some(&inherited.connection_id)).await;
+        let super::ModelSnapshot { config, account } = super::snapshot(
+          app,
+          host,
+          super::ModelRoute::Saved(&inherited.connection_id),
+        )
+        .await?;
         if config.provider_id != draft.connection.provider_id
           || config.connection_id != draft.connection.connection_id
           || config.base_url.trim().trim_end_matches('/') != draft.connection.base_url

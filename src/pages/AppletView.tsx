@@ -3,6 +3,8 @@ import { attachBridge } from '../lib/bridge';
 import { callApplet, onAppletEvent, message } from '../lib/tauri';
 import type { AppletSession } from '../lib/types';
 import { AppletControls } from '../components/AppletControls';
+import { LlmModelPicker } from '../components/LlmModelPicker';
+import { AppletModelChooser, type ModelChoice } from '../lib/modelChoice';
 
 export function AppletView({
   session,
@@ -18,15 +20,21 @@ export function AppletView({
   const [error, setError] = useState('');
   const [suspended, setSuspended] = useState(false);
   const [action, setAction] = useState<'close' | 'reload' | null>(null);
+  const [choice, setChoice] = useState<ModelChoice>();
+  const stopBridge = useRef<(() => void) | undefined>(undefined);
   const pending = useRef(false);
   useEffect(() => {
     if (suspended) return;
     let dispose: (() => void) | undefined;
     let unlisten: (() => void) | undefined;
     let cancelled = false;
+    const chooser = new AppletModelChooser(session.manifest.permissions, (next) => {
+      if (!cancelled) setChoice(next);
+    });
     let initializing = false;
     const channel = new MessageChannel();
     const element = frame.current;
+    setChoice(undefined);
     setReady(false);
     setError('');
     const timeout = setTimeout(() => {
@@ -44,9 +52,10 @@ export function AppletView({
           unlisten();
           return;
         }
-        dispose = attachBridge(channel.port1, (method, params) =>
-          callApplet(session.session_id, method, params),
-        );
+        dispose = attachBridge(channel.port1, (method, params) => {
+          if (method === 'llm.choose_model') return chooser.open(params);
+          return callApplet(session.session_id, method, params);
+        });
         element?.contentWindow?.postMessage({ type: 'apell:init' }, '*', [channel.port2]);
         clearTimeout(timeout);
         setError('');
@@ -64,20 +73,29 @@ export function AppletView({
     window.addEventListener('message', onReady);
     // The opaque iframe announces readiness after its SDK receiver is installed.
     if (element) element.srcdoc = session.html;
-    return () => {
+    const stop = () => {
+      if (cancelled) return;
       cancelled = true;
       clearTimeout(timeout);
       window.removeEventListener('message', onReady);
       dispose?.();
+      chooser.close();
       unlisten?.();
       channel.port1.close();
       channel.port2.close();
+    };
+    stopBridge.current = stop;
+    return () => {
+      stop();
+      if (stopBridge.current === stop) stopBridge.current = undefined;
     };
   }, [session, suspended]);
 
   const run = async (next_action: 'close' | 'reload') => {
     if (pending.current) return;
     pending.current = true;
+    stopBridge.current?.();
+    setChoice(undefined);
     // Suspend the old iframe and bridge while changing its native session.
     // On failure it stays suspended; a retry must create a fresh session.
     setSuspended(true);
@@ -98,8 +116,9 @@ export function AppletView({
       <header className="applet-bar">
         <span>{session.manifest.name}</span>
         <AppletControls
+          key={choice ? 'choosing-model' : 'applet-controls'}
           manifest={session.manifest}
-          disabled={action !== null}
+          disabled={action !== null || !!choice}
           onClose={() => void run('close')}
           onReload={() => void run('reload')}
         />
@@ -133,6 +152,7 @@ export function AppletView({
           />
         </>
       )}
+      {choice && !suspended && <LlmModelPicker key={choice.id} choice={choice} />}
     </section>
   );
 }

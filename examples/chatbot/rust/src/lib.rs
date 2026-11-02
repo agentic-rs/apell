@@ -1,6 +1,7 @@
 mod bridge;
 mod chat;
 mod models;
+mod selection;
 mod storage;
 
 use wasm_bindgen::prelude::*;
@@ -17,7 +18,18 @@ pub async fn list_conversations() -> Result<JsValue, JsValue> {
 
 #[wasm_bindgen]
 pub async fn create_conversation() -> Result<String, JsValue> {
-  storage::create_conversation().await
+  storage::create_conversation(None).await
+}
+
+#[wasm_bindgen]
+pub async fn conversation_model(conversation_id: String) -> Result<JsValue, JsValue> {
+  bridge::output(&selection::load(&conversation_id, None).await?)
+}
+
+#[wasm_bindgen]
+pub async fn choose_model(conversation_id: String, selection: JsValue) -> Result<String, JsValue> {
+  let selection = serde_wasm_bindgen::from_value(selection).map_err(bridge::error)?;
+  selection::choose(&conversation_id, selection).await
 }
 
 #[wasm_bindgen]
