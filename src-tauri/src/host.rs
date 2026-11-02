@@ -133,7 +133,14 @@ pub fn string<'a>(params: &'a Value, field: &str) -> Result<&'a str, String> {
 }
 
 pub fn public_config(config: &LlmConfig) -> Value {
+  let provider_name = apell_core::providers::presets()
+    .into_iter()
+    .find(|preset| preset.provider_id == config.provider_id)
+    .map(|preset| preset.name)
+    .unwrap_or_else(|| "Unknown provider".into());
   json!({
+    "provider_id": config.provider_id,
+    "provider_name": provider_name,
     "model_id": config.model_id,
     "connection_id": config.connection_id,
     "mode": if config.base_url == "demo" { "demo" } else { "provider" },
@@ -162,11 +169,13 @@ mod tests {
     let public = public_config(&configuration);
     assert_eq!(public["connection_id"], "local-demo");
     assert_eq!(public["mode"], "demo");
+    assert_eq!(public["provider_id"], "demo");
+    assert_eq!(public["provider_name"], "Local demo");
     for private in [
       "base_url",
       "name",
       "credential",
-      "provider_id",
+      "credential_status",
       "connections",
     ] {
       assert!(public.get(private).is_none());

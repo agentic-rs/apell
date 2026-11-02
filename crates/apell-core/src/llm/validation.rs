@@ -1,9 +1,24 @@
 use super::{
-  Failure, LlmConfig, LlmRequest, LlmToolCall, LlmToolChoice, MAX_INPUT_BYTES, MAX_TOOLS,
+  Failure, LlmConfig, LlmRequest, LlmTarget, LlmToolCall, LlmToolChoice, MAX_INPUT_BYTES, MAX_TOOLS,
 };
 use reqwest::Url;
 use std::collections::HashSet;
 use tokn_sdk::policy::{CanonicalAuthority, InvalidAuthority, InvalidHost};
+
+impl LlmTarget {
+  /// Validate the exact snapshot before reading credentials or contacting Tokn.
+  pub fn validate_for(&self, config: &LlmConfig) -> Result<(), String> {
+    if config.provider_id == "demo"
+      || config.base_url == "demo"
+      || self.connection_id != config.connection_id
+      || self.model_id != config.model_id
+      || self.model_id != self.model_id.trim()
+    {
+      return Err("Choose a saved provider connection and a valid model.".into());
+    }
+    validate_config(config)
+  }
+}
 
 pub fn validate_config(config: &LlmConfig) -> Result<(), String> {
   if config.model_id.trim().is_empty()

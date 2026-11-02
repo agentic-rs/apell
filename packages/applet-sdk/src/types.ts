@@ -24,10 +24,22 @@ export interface DownloadProgress {
   total_bytes: number | null;
 }
 
-export interface LlmConfiguration {
-  model_id: string;
-  mode: 'demo' | 'provider';
+export interface LlmTarget {
   connection_id: string;
+  model_id: string;
+}
+
+export interface LlmSelection extends LlmTarget {
+  provider_id: string;
+  provider_name: string;
+}
+
+export interface LlmChooseModelOptions {
+  current?: LlmTarget;
+}
+
+export interface LlmConfiguration extends LlmSelection {
+  mode: 'demo' | 'provider';
   capabilities: LlmCapabilities;
 }
 
@@ -61,6 +73,7 @@ export type LlmMessage = {
 
 export interface LlmRequest {
   request_id?: string;
+  target?: LlmTarget;
   messages: LlmMessage[];
   stream?: boolean;
   max_output_tokens?: number;

@@ -191,10 +191,12 @@ h1 {
   text-overflow: ellipsis;
 }
 .model-pill {
+  min-height: 44px;
+  background: #f0f3ea;
   border: 1px solid #dce2d5;
   border-radius: 30px;
   padding: 7px 12px;
-  color: #758269;
+  color: #4d654e;
   font-size: 11px;
   white-space: nowrap;
   max-width: 40%;

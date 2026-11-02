@@ -1,5 +1,5 @@
 use apell_core::llm::{
-  LlmConfig, LlmEvent, LlmRequest, LlmResult, LlmService, LlmStatus, LlmToolChoice,
+  LlmConfig, LlmEvent, LlmRequest, LlmResult, LlmService, LlmStatus, LlmTarget, LlmToolChoice,
 };
 use serde_json::{json, Value};
 use std::{
@@ -529,6 +529,45 @@ async fn explicit_unsupported_parameters_are_distinct_from_generic_provider_reje
     .requests()
     .iter()
     .all(|request| request.body["tool_choice"] == "required"));
+}
+
+#[tokio::test]
+async fn explicit_target_must_match_the_snapshot_and_never_reaches_the_provider_as_metadata() {
+  let mut server = Server::start(vec![Reply::Json(completion(
+    json!({"role":"assistant","content":"Selected answer."}),
+    "stop",
+  ))])
+  .await;
+  let service = LlmService::new().unwrap();
+  service.register_session("session").unwrap();
+  let target = LlmTarget {
+    connection_id: server.config.connection_id.clone(),
+    model_id: "selected-model".into(),
+  };
+  let mut request = input("target");
+  request.target = Some(target.clone());
+  for mismatch in [server.config.clone(), LlmConfig::default()] {
+    let result = service
+      .generate("session", request.clone(), mismatch, None, |_| {})
+      .await;
+    assert_eq!(result.status, LlmStatus::Failed);
+    assert_eq!(result.error.unwrap().code, "invalid_target");
+    assert_eq!(result.provenance, target.provenance());
+  }
+  assert!(server.requests().is_empty());
+  server.config.model_id = target.model_id.clone();
+  let (result, _) = generate(&service, "session", request, &server.config).await;
+  assert_eq!(result.status, LlmStatus::Completed);
+  assert_eq!(result.provenance.connection_id, target.connection_id);
+  assert_eq!(result.provenance.requested_model_id, target.model_id);
+  assert_eq!(
+    result.provenance.model_id.as_deref(),
+    Some("actual-model-revision")
+  );
+  let sent = server.requests();
+  assert_eq!(sent.len(), 1);
+  assert_eq!(sent[0].body["model"], target.model_id);
+  assert!(sent[0].body.get("target").is_none());
 }
 
 #[tokio::test]

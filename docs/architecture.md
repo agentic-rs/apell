@@ -111,13 +111,18 @@ The host limits SQL to 64 KiB, 256 parameters, 1 MiB of parameter data, 1 MiB SQ
 
 Apell owns provider connections, credentials, model selection, transport, cancellation, and request attribution. Applets own prompts, complete message history and provider replay metadata, context selection, persistence, tool implementations, validation, and user review. The host never stores a conversation or executes an applet's tools. Provider setup stays in the shell's Settings screen.
 
-| Method         | Parameters                                                                                              | Result                                            |
-| -------------- | ------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
-| `llm.config`   | None                                                                                                    | `{ model_id, mode, connection_id, capabilities }` |
-| `llm.generate` | `request_id`, `messages`, optional `temperature`, `tools`, `tool_choice`, `stream`, `max_output_tokens` | `LlmResult` with an explicit final status         |
-| `llm.cancel`   | `request_id`                                                                                            | `null`                                            |
+| Method             | Parameters                                                                                                        | Result                                                                        |
+| ------------------ | ----------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| `llm.config`       | Optional `target: { connection_id, model_id }`                                                                    | `{ model_id, mode, connection_id, provider_id, provider_name, capabilities }` |
+| `llm.choose_model` | Optional `current: { connection_id, model_id }`                                                                   | `{ connection_id, model_id, provider_id, provider_name }` or `null` on cancel |
+| `llm.generate`     | `request_id`, `messages`, optional `target`, `temperature`, `tools`, `tool_choice`, `stream`, `max_output_tokens` | `LlmResult` with an explicit final status                                     |
+| `llm.cancel`       | `request_id`                                                                                                      | `null`                                                                        |
 
-The SDK exports `llm.config()`, `llm.generate(request, { signal?, on_event? })`, and `llm.cancel(request_id)`. It generates request IDs when omitted, scopes progress callbacks to one call, and forwards AbortSignal cancellation to the host. Rust/WASM clients may supply request IDs explicitly. The promise result is the sole authoritative final outcome. There is no legacy completion method or global LLM event subscriber API; applets must use the current contract.
+The SDK exports `llm.config(target?)`, `llm.chooseModel({ current? })`, `llm.generate(request, { signal?, on_event? })`, and `llm.cancel(request_id)`. It generates request IDs when omitted, scopes progress callbacks to one call, and forwards AbortSignal cancellation to the host. Rust/WASM clients may supply request IDs explicitly. The promise result is the sole authoritative final outcome. There is no legacy completion method or global LLM event subscriber API; applets must use the current contract.
+
+`llm.chooseModel` opens a host-owned provider/model picker for applets with the `llm` permission. The user chooses a saved real provider connection and a discovered or manually entered model. Provider setup stays in Settings. The picker returns public provider labels and an opaque connection ID, while saved aliases, endpoints, and credentials stay in the host UI. Closing the picker returns `null`. Closing or reloading the applet cancels its picker.
+
+An explicit generation target captures that saved connection and requested model for one request. Invalid, deleted, or synthetic targets fail with `invalid_target` and retain the requested target in provenance. Requests without a target use the shared active connection. Applets persist their chosen target with their own conversation state. Companion binds each chat to its target and starts a new chat when the user changes a populated conversation's provider or model. Legacy history is routed only when its saved attribution establishes a consistent real target.
 
 ### Messages, tools, and continuation
 

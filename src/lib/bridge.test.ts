@@ -7,6 +7,7 @@ describe('applet bridge boundary', () => {
     for (const method of [
       'sqlite.query',
       'llm.config',
+      'llm.choose_model',
       'llm.generate',
       'llm.cancel',
       'http.request',

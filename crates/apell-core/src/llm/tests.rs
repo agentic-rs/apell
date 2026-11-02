@@ -207,6 +207,17 @@ fn validates_raw_message_shape_metadata_and_generation_options() {
     "request_id":"raw", "messages":input.messages
   }))
   .unwrap();
+  assert!(decoded.target.is_none());
+  for malformed in [
+    json!(null),
+    json!({}),
+    json!({"connection_id":"saved", "model_id":"choice","base_url":"https://example.invalid"}),
+  ] {
+    assert!(serde_json::from_value::<LlmRequest>(json!({
+      "request_id":"raw","messages":input.messages,"target":malformed
+    }))
+    .is_err());
+  }
   assert!(decoded.stream);
   assert!(LlmRequest::default().stream);
   let mut nested = json!(null);

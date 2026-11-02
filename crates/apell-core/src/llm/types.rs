@@ -98,10 +98,40 @@ pub enum LlmToolChoice {
   Named { name: String },
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct LlmTarget {
+  pub connection_id: String,
+  pub model_id: String,
+}
+
+impl LlmTarget {
+  pub fn provenance(&self) -> LlmProvenance {
+    LlmProvenance {
+      connection_id: self.connection_id.clone(),
+      requested_model_id: self.model_id.clone(),
+      model_id: None,
+    }
+  }
+}
+
+/// Only an omitted target selects the active default. A present null must fail.
+pub fn deserialize_target<'de, D: serde::Deserializer<'de>>(
+  value: D,
+) -> Result<Option<LlmTarget>, D::Error> {
+  LlmTarget::deserialize(value).map(Some)
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct LlmRequest {
   pub request_id: String,
+  #[serde(
+    default,
+    deserialize_with = "deserialize_target",
+    skip_serializing_if = "Option::is_none"
+  )]
+  pub target: Option<LlmTarget>,
   /// Complete provider-compatible messages, including applet-owned metadata.
   pub messages: Vec<Value>,
   #[serde(default = "default_stream")]
@@ -124,6 +154,7 @@ impl Default for LlmRequest {
   fn default() -> Self {
     Self {
       request_id: String::new(),
+      target: None,
       messages: Vec::new(),
       stream: true,
       max_output_tokens: None,

@@ -103,6 +103,49 @@ describe('applet bridge', () => {
     expect(on_event).toHaveBeenCalledTimes(2);
   });
 
+  it('waits for the picker and forwards only routing IDs from a public selection', async () => {
+    vi.useFakeTimers();
+    const sdk = await import('./index');
+    connect();
+    const target = { connection_id: 'saved', model_id: 'selected-model' };
+    const selection = { ...target, provider_id: 'custom', provider_name: 'OpenAI compatible' };
+    const choosing = sdk.llm.chooseModel({ current: selection });
+    await vi.advanceTimersByTimeAsync(60_000);
+    const picker = channel.postMessage.mock.calls[0][0];
+    expect(picker.method).toBe('llm.choose_model');
+    expect(picker.params).toEqual({ current: target });
+    receive({ type: 'response', request_id: picker.request_id, result: selection });
+    await expect(choosing).resolves.toEqual(selection);
+
+    const config = sdk.llm.config(selection);
+    const generation = sdk.llm.generate({
+      messages: [{ role: 'user', content: 'Hello' }],
+      target: selection,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    const [, configCall, generateCall] = channel.postMessage.mock.calls.map(([call]) => call);
+    expect(configCall.params).toEqual({ target });
+    expect(generateCall.params.target).toEqual(target);
+    receive({
+      type: 'response',
+      request_id: configCall.request_id,
+      result: { ...selection, mode: 'provider' },
+    });
+    receive({
+      type: 'response',
+      request_id: generateCall.request_id,
+      result: llmResult(generateCall.params.request_id),
+    });
+    await Promise.all([config, generation]);
+
+    const cancelled = sdk.llm.chooseModel();
+    await vi.advanceTimersByTimeAsync(0);
+    const cancelCall = channel.postMessage.mock.calls.at(-1)![0];
+    expect(cancelCall.params).toEqual({});
+    receive({ type: 'response', request_id: cancelCall.request_id, result: null });
+    await expect(cancelled).resolves.toBeNull();
+  });
+
   it('delivers resource progress without treating it as an LLM event', async () => {
     const sdk = await import('./index');
     connect();

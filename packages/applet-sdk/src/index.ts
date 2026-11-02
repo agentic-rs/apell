@@ -8,11 +8,14 @@ import type {
   HttpRequest,
   HttpResponse,
   JsonValue,
+  LlmChooseModelOptions,
   LlmConfiguration,
   LlmEvent,
   LlmGenerateOptions,
   LlmRequest,
   LlmResult,
+  LlmSelection,
+  LlmTarget,
 } from './types';
 import { assertJsonValue } from './json';
 
@@ -21,7 +24,7 @@ export type * from './types';
 type Pending = {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
-  timeout: ReturnType<typeof setTimeout>;
+  timeout?: ReturnType<typeof setTimeout>;
   llm?: ActiveLlm;
 };
 
@@ -221,20 +224,24 @@ async function callHost<T>(
     }
     const request_id = createId();
     return await new Promise<T>((resolve, reject) => {
-      const request_timeout = setTimeout(
-        () => {
-          pending.delete(request_id);
-          const partial = active?.partial_content ?? '';
-          if (active) notifyCancellation(active);
-          releaseLlm(active);
-          reject(new HostError('The host request timed out.', partial));
-        },
-        is_llm_request
-          ? 330_000
-          : method === 'resources.download' || method === 'http.request'
-            ? 135_000
-            : 35_000,
-      );
+      // A visible picker stays open while the user chooses a model.
+      const request_timeout =
+        method === 'llm.choose_model'
+          ? undefined
+          : setTimeout(
+              () => {
+                pending.delete(request_id);
+                const partial = active?.partial_content ?? '';
+                if (active) notifyCancellation(active);
+                releaseLlm(active);
+                reject(new HostError('The host request timed out.', partial));
+              },
+              is_llm_request
+                ? 330_000
+                : method === 'resources.download' || method === 'http.request'
+                  ? 135_000
+                  : 35_000,
+            );
       pending.set(request_id, {
         resolve: (value) => resolve(value as T),
         reject,
@@ -265,8 +272,14 @@ export function onDownloadProgress(handler: (event: DownloadProgress) => void): 
 
 /** Shared model access. Tools run only when the applet explicitly executes them. */
 export const llm = {
-  config(): Promise<LlmConfiguration> {
-    return hostCall('llm.config');
+  chooseModel(options: LlmChooseModelOptions = {}): Promise<LlmSelection | null> {
+    return hostCall(
+      'llm.choose_model',
+      options.current === undefined ? {} : { current: routingTarget(options.current) },
+    );
+  },
+  config(target?: LlmTarget): Promise<LlmConfiguration> {
+    return hostCall('llm.config', target === undefined ? {} : { target: routingTarget(target) });
   },
   async generate(request: LlmRequest, options: LlmGenerateOptions = {}): Promise<LlmResult> {
     const params = omitUndefined({ ...request, request_id: request.request_id ?? createId() }, [
@@ -275,7 +288,9 @@ export const llm = {
       'tool_choice',
       'stream',
       'max_output_tokens',
+      'target',
     ]);
+    if (request.target !== undefined) params.target = routingTarget(request.target);
     if (request.tools !== undefined) {
       params.tools = request.tools.map((tool) => omitUndefined({ ...tool }, ['description']));
     }
@@ -286,6 +301,10 @@ export const llm = {
     return hostCall('llm.cancel', { request_id });
   },
 };
+
+function routingTarget({ connection_id, model_id }: LlmTarget): LlmTarget {
+  return { connection_id, model_id };
+}
 
 function omitUndefined(
   value: Record<string, unknown>,
