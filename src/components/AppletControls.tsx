@@ -16,11 +16,18 @@ const permission_labels: Record<string, string> = {
 interface AppletControlsProps {
   manifest: Manifest;
   disabled: boolean;
+  stopped?: boolean;
   onClose: () => void;
   onReload: () => void;
 }
 
-export function AppletControls({ manifest, disabled, onClose, onReload }: AppletControlsProps) {
+export function AppletControls({
+  manifest,
+  disabled,
+  stopped,
+  onClose,
+  onReload,
+}: AppletControlsProps) {
   const [panel, setPanel] = useState<'menu' | 'about' | null>(null);
   return (
     <>
@@ -62,7 +69,7 @@ export function AppletControls({ manifest, disabled, onClose, onReload }: Applet
             <div className="applet-menu-actions">
               <button
                 className="applet-menu-action"
-                disabled={disabled}
+                disabled={disabled || stopped}
                 onClick={() => {
                   setPanel(null);
                   onReload();

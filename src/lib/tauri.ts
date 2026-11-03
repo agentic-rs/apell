@@ -4,6 +4,8 @@ import type { LlmResult } from '../../packages/applet-sdk/src/types';
 import type {
   AppletEvent,
   AppletSession,
+  BackendEvent,
+  GitHubRelease,
   CreateConnectionDraft,
   DraftCredential,
   InstalledApplet,
@@ -34,12 +36,20 @@ export function shellCall<T>(method: string, params: unknown = {}): Promise<T> {
 export const listApplets = () => shellCall<InstalledApplet[]>('applets.list');
 export const installBundle = (
   params:
-    | { bundle: string; sha256?: string; url?: never }
-    | { url: string; sha256: string; bundle?: never },
+    | { bundle_base64: string }
+    | { repository: string; asset_name: string; release_id: number; asset_id: number },
 ) => shellCall<InstalledApplet>('applets.install', params);
+export const githubRelease = (repository: string) =>
+  shellCall<GitHubRelease>('applets.github_release', { repository });
+export const updateApplet = (applet_id: string) =>
+  shellCall<InstalledApplet>('applets.update', { applet_id });
 export const launchApplet = (applet_id: string) =>
   shellCall<AppletSession>('applets.launch', { applet_id });
-export const closeApplet = (session_id: string) => shellCall<void>('applets.close', { session_id });
+export const closeApplet = (session_id: string, view_id: string) =>
+  shellCall<void>('applets.close', { session_id, view_id });
+export const reloadApplet = (session_id: string, view_id: string) =>
+  shellCall<AppletSession>('applets.reload', { session_id, view_id });
+export const currentApplet = () => shellCall<AppletSession | null>('applets.current');
 export const getSettings = () => shellCall<LlmSettings>('llm.settings');
 export const createConnectionDraft = (params: CreateConnectionDraft) =>
   shellCall<NativeConnectionDraft>('llm.create_draft', params);
@@ -63,8 +73,10 @@ export const pollLogin = (login_id: string) =>
   shellCall<NativeConnectionDraft>('llm.poll_login', { login_id });
 export const cancelLogin = (login_id: string) => shellCall<void>('llm.cancel_login', { login_id });
 export const openLogin = (login_id: string) => shellCall<void>('llm.open_login', { login_id });
-export const callApplet = (session_id: string, method: string, params: unknown) =>
-  invoke('applet_call', { host_key: hostKey(), session_id, method, params });
+export const callApplet = (session_id: string, view_id: string, method: string, params: unknown) =>
+  invoke('applet_call', { host_key: hostKey(), session_id, view_id, method, params });
+export const onBackendEvent = (handler: (event: BackendEvent) => void) =>
+  listen<BackendEvent>('backend-event', (event) => handler(event.payload));
 export const onAppletEvent = (handler: (event: AppletEvent) => void) =>
   listen<AppletEvent>('applet-event', (event) => handler(event.payload));
 export const onInstallProgress = (handler: (event: InstallProgress) => void) =>

@@ -1,21 +1,4 @@
-import init, {
-  initialize,
-  list_conversations,
-  create_conversation,
-  conversation_model,
-  choose_model,
-  load_messages,
-  send_message,
-} from '../pkg/chatbot.js';
-import {
-  createId,
-  HostError,
-  hostCall,
-  llm,
-  type LlmRequest,
-  type LlmSelection,
-  type LlmTarget,
-} from '../../../packages/applet-sdk/src';
+import { applet, llm, type LlmSelection, type LlmTarget } from '../../../packages/applet-sdk/src';
 import './style.css';
 
 interface Conversation {
@@ -78,33 +61,26 @@ let conversations: Conversation[] = [];
 let currentId = '';
 let selected: LlmSelection | null = null;
 let changingView = false;
-let activeRequest: { request_id: string; controller: AbortController } | undefined;
+interface Reply {
+  request_id: string;
+  conversation_id: string;
+  assistant_id: string;
+  partial: string;
+  stopping: boolean;
+}
+interface Snapshot {
+  revision: number;
+  conversation_id: string;
+  conversations: Conversation[];
+  messages: Message[];
+  target: LlmTarget | null;
+  active: Reply | null;
+  error: string | null;
+}
+let activeRequest: Reply | null = null;
 let streamNode: HTMLParagraphElement | undefined;
-let streamText = '';
+let revision = -1;
 let ready = false;
-
-Object.assign(globalThis, {
-  apellCreateId: createId,
-  apellHostCall: (method: string, params: Record<string, unknown>) => {
-    if (method !== 'llm.generate') return hostCall(method, params);
-    const active = activeRequest;
-    if (!active || params.request_id !== active.request_id) {
-      return Promise.reject(new HostError('This reply is no longer active.'));
-    }
-    return llm.generate(params as unknown as LlmRequest, {
-      signal: active.controller.signal,
-      on_event: (event) => {
-        if (activeRequest !== active || event.kind !== 'text_delta' || !streamNode) return;
-        const follow =
-          messagesElement.scrollHeight - messagesElement.scrollTop - messagesElement.clientHeight <
-          100;
-        streamText += event.text;
-        streamNode.textContent = streamText;
-        if (follow) scrollToBottom();
-      },
-    });
-  },
-});
 
 function showError(error?: unknown): void {
   errorElement.hidden = error === undefined;
@@ -122,7 +98,7 @@ function updateControls(): void {
   sendButton.hidden = !!activeRequest;
   sendButton.disabled = busy || !selected || !textarea.value.trim();
   stopButton.hidden = !activeRequest;
-  stopButton.disabled = !!activeRequest?.controller.signal.aborted;
+  stopButton.disabled = !!activeRequest?.stopping;
   modelButton.disabled = busy;
   select.disabled = busy;
   for (const button of root.querySelectorAll<HTMLButtonElement>(
@@ -148,7 +124,9 @@ function renderHistory(): void {
       conversation.conversation_id === currentId ? 'page' : 'false',
     );
     button.addEventListener('click', () => {
-      void changeView(() => openConversation(conversation.conversation_id));
+      void changeView(() =>
+        applet.invoke('open_conversation', { conversation_id: conversation.conversation_id }),
+      );
     });
     list.appendChild(button);
     const option = document.createElement('option');
@@ -199,27 +177,82 @@ function renderMessages(messages: Message[]): void {
     messagesElement.appendChild(empty);
     messagesElement.scrollTop = 0;
   } else {
-    messages.forEach(appendMessage);
+    streamNode = undefined;
+    for (const message of messages) {
+      const node = appendMessage(message);
+      if (activeRequest?.assistant_id === message.message_id) {
+        streamNode = node;
+        node.textContent = activeRequest.partial || 'Thinking…';
+      }
+    }
     scrollToBottom();
   }
 }
 
-async function refreshHistory(): Promise<void> {
-  conversations = (await list_conversations()) as Conversation[];
-  renderHistory();
-}
-
-function targetOf({ connection_id, model_id }: LlmTarget): LlmTarget {
+function targetOf({ connection_id, model_id }: LlmTarget) {
   return { connection_id, model_id };
 }
 
-async function changeView(operation: () => Promise<void>): Promise<void> {
+async function applySnapshot(view: Snapshot): Promise<void> {
+  let model: LlmSelection | null = null;
+  let modelError: unknown;
+  if (view.target) {
+    try {
+      const config = await llm.config(view.target);
+      if (config.mode === 'provider') model = config;
+    } catch (error) {
+      modelError = error;
+    }
+  }
+  if (view.revision < revision) return;
+  revision = view.revision;
+  currentId = view.conversation_id;
+  conversations = view.conversations;
+  activeRequest = view.active;
+  selected = model;
+  const label = model ? `${model.provider_name} · ${model.model_id}` : 'Choose model';
+  modelButton.textContent = `${label} ▾`;
+  modelButton.title = model
+    ? `Change provider and model (${label})`
+    : 'Choose a provider and model';
+  modelButton.setAttribute('aria-label', modelButton.title);
+  footer.textContent = view.messages.length
+    ? 'Choosing a different provider or model starts a new conversation.'
+    : model
+      ? 'Messages use the provider and model shown above.'
+      : 'Choose a provider and model to send a message.';
+  showError(modelError ?? view.error ?? undefined);
+  renderHistory();
+  renderMessages(view.messages);
+}
+
+// Subscribe before the first snapshot, coalescing refreshes during a slow host
+// call. A missed delta or a newly attached view always recovers the full state.
+let queued = false;
+let refreshing: Promise<void> | undefined;
+function refresh(): Promise<void> {
+  queued = true;
+  refreshing ??= (async () => {
+    try {
+      while (queued) {
+        queued = false;
+        await applySnapshot(await applet.invoke<Snapshot>('snapshot'));
+      }
+    } finally {
+      refreshing = undefined;
+    }
+  })();
+  return refreshing;
+}
+
+async function changeView(action: () => Promise<unknown>): Promise<void> {
   if (!ready || activeRequest || changingView) return;
   changingView = true;
   updateControls();
   showError();
   try {
-    await operation();
+    await action();
+    await refresh();
   } catch (error) {
     showError(error);
   } finally {
@@ -228,132 +261,89 @@ async function changeView(operation: () => Promise<void>): Promise<void> {
   }
 }
 
-async function openConversation(conversationId: string): Promise<void> {
-  const messages = (await load_messages(conversationId)) as Message[];
-  const target = (await conversation_model(conversationId)) as LlmTarget | null;
-  selected = null;
-  try {
-    // Only an empty chat may adopt the shell default. Populated legacy chats
-    // without a known route remain readable until the user starts a fresh one.
-    if (target || messages.length === 0) {
-      const config = await llm.config(target ?? undefined);
-      if (config.mode === 'provider') {
-        if (!target) await choose_model(conversationId, targetOf(config));
-        selected = config;
-      }
-    }
-  } catch (error) {
-    showError(error);
-  }
-  currentId = conversationId;
-  const label = selected ? `${selected.provider_name} · ${selected.model_id}` : 'Choose model';
-  modelButton.textContent = `${label} ▾`;
-  modelButton.title = selected
-    ? `Change provider and model (${label})`
-    : 'Choose a provider and model';
-  modelButton.setAttribute('aria-label', modelButton.title);
-  footer.textContent = messages.length
-    ? 'Choosing a different provider or model starts a new conversation.'
-    : selected
-      ? 'Messages use the provider and model shown above.'
-      : 'Choose a provider and model to send a message.';
-  renderHistory();
-  renderMessages(messages);
-}
-
-async function newConversation(): Promise<void> {
-  const id = await create_conversation();
-  if (selected) await choose_model(id, targetOf(selected));
-  await refreshHistory();
-  await openConversation(id);
-}
-
-async function send(): Promise<void> {
+function send(): void {
   const content = textarea.value.trim();
   if (!ready || activeRequest || changingView || !selected || !content) return;
-  const active = { request_id: createId(), controller: new AbortController() };
-  activeRequest = active;
-  streamText = '';
-  showError();
-  updateControls();
-  if (messagesElement.querySelector('.empty-state')) messagesElement.replaceChildren();
-  appendMessage({ message_id: '', role: 'user', content, status: 'complete' });
-  streamNode = appendMessage({ message_id: '', role: 'assistant', content: '', status: 'pending' });
-  textarea.value = '';
-  scrollToBottom();
-  try {
-    await send_message(currentId, content, active.request_id);
-  } catch (error) {
-    if (!active.controller.signal.aborted) showError(error);
-  } finally {
-    streamNode = undefined;
-    try {
-      await refreshHistory();
-      await openConversation(currentId);
-    } catch (error) {
-      showError(error);
-    }
-    activeRequest = undefined;
-    updateControls();
-    textarea.focus({ preventScroll: true });
-  }
+  void changeView(async () => {
+    await applet.invoke('start_send', { conversation_id: currentId, content });
+    textarea.value = '';
+  });
+}
+
+function newConversation(): void {
+  void changeView(() =>
+    applet.invoke('create_conversation', { target: selected ? targetOf(selected) : null }),
+  );
 }
 
 element<HTMLFormElement>('form').addEventListener('submit', (event) => {
   event.preventDefault();
-  void send();
+  send();
 });
 textarea.addEventListener('input', updateControls);
 textarea.addEventListener('keydown', (event) => {
   if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
     event.preventDefault();
-    void send();
+    send();
   }
 });
 stopButton.addEventListener('click', () => {
   if (!activeRequest) return;
   stopButton.disabled = true;
-  activeRequest.controller.abort();
+  void applet
+    .invoke('stop', { request_id: activeRequest.request_id })
+    .then(refresh)
+    .catch(showError);
 });
-element<HTMLButtonElement>('.new-chat').addEventListener('click', () => {
-  void changeView(newConversation);
-});
-element<HTMLButtonElement>('.mobile-new').addEventListener('click', () => {
-  void changeView(newConversation);
-});
+element<HTMLButtonElement>('.new-chat').addEventListener('click', newConversation);
+element<HTMLButtonElement>('.mobile-new').addEventListener('click', newConversation);
 select.addEventListener('change', () => {
-  void changeView(() => openConversation(select.value));
+  void changeView(() => applet.invoke('open_conversation', { conversation_id: select.value }));
 });
 modelButton.addEventListener('click', () => {
   void changeView(async () => {
     const result = await llm.chooseModel(selected ? { current: targetOf(selected) } : {});
-    if (!result) return;
-    const id = await choose_model(currentId, targetOf(result));
-    await refreshHistory();
-    await openConversation(id);
+    if (result)
+      await applet.invoke('choose_model', { conversation_id: currentId, target: targetOf(result) });
   });
 });
 
 async function boot(): Promise<void> {
-  await init({
-    module_or_path: Uint8Array.from(atob('__WASM_BASE64__'), (character) =>
-      character.charCodeAt(0),
-    ),
+  applet.onEvent((event) => {
+    if (event.name !== 'chat_changed') return;
+    const change = event.payload as {
+      kind: string;
+      revision: number;
+      request_id?: string;
+      text?: string;
+    };
+    if (change.revision <= revision) return;
+    if (
+      change.kind === 'delta' &&
+      change.revision === revision + 1 &&
+      change.request_id === activeRequest?.request_id &&
+      activeRequest &&
+      streamNode &&
+      typeof change.text === 'string'
+    ) {
+      revision = change.revision;
+      const follow =
+        messagesElement.scrollHeight - messagesElement.scrollTop - messagesElement.clientHeight <
+        100;
+      activeRequest.partial += change.text;
+      streamNode.textContent = activeRequest.partial;
+      if (follow) scrollToBottom();
+    } else {
+      void refresh().catch(showError);
+    }
   });
-  await initialize();
-  await refreshHistory();
-  currentId = conversations[0]?.conversation_id ?? (await create_conversation());
-  await refreshHistory();
-  await openConversation(currentId);
+  await refresh();
   ready = true;
   updateControls();
 }
 
 void boot().catch((error) => {
   showError(error);
-  messagesElement.replaceChildren();
-  const retry = document.createElement('p');
-  retry.className = 'loading';
-  retry.textContent = 'The chatbot could not start. Close it and open it again from your library.';
-  messagesElement.appendChild(retry);
+  messagesElement.textContent =
+    'The conversation could not be loaded. Reload this applet to try again.';
 });

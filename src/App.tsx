@@ -1,8 +1,8 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Library } from './pages/Library';
 import { Settings } from './pages/Settings';
 import { AppletView } from './pages/AppletView';
-import { closeApplet, launchApplet, nativeAvailable } from './lib/tauri';
+import { closeApplet, reloadApplet, currentApplet, nativeAvailable } from './lib/tauri';
 import type { AppletSession } from './lib/types';
 import { Icon } from './components/Icon';
 import { useViewportHeight } from './lib/useViewportHeight';
@@ -13,18 +13,34 @@ export default function App() {
   const [install_open, setInstallOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [session, setSession] = useState<AppletSession | null>(null);
+  const [starting, setStarting] = useState(nativeAvailable());
+  useEffect(() => {
+    if (!nativeAvailable()) return;
+    let disposed = false;
+    currentApplet()
+      .then((running) => {
+        if (!disposed) setSession(running);
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!disposed) setStarting(false);
+      });
+    return () => {
+      disposed = true;
+    };
+  }, []);
+  if (starting) return <p className="status">Opening Apell…</p>;
   if (session)
     return (
       <AppletView
-        key={session.session_id}
+        key={session.view_id}
         session={session}
         onClose={async () => {
-          await closeApplet(session.session_id);
+          await closeApplet(session.session_id, session.view_id);
           setSession(null);
         }}
         onReload={async () => {
-          await closeApplet(session.session_id);
-          setSession(await launchApplet(session.manifest.applet_id));
+          setSession(await reloadApplet(session.session_id, session.view_id));
         }}
       />
     );

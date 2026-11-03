@@ -2,81 +2,115 @@
 
 ## Runtime boundary
 
+Apell compiles Tauri natively for each host platform. Each applet ships a web frontend and may include a portable Rust WebAssembly backend. The backend runs in the host's Wasmi interpreter. Existing Tauri applications need to adapt native dependencies and command handlers to these two execution environments.
+
 ```text
-Applet: HTML / TypeScript + optional Rust WASM
-  → SDK MessagePort requests
-  → trusted shell frontend
-  → authenticated native Tauri commands
-  → SQLite, LLM providers, HTTP, files, config, resources, device information
+Sandboxed applet view (HTML, CSS, JS, @apell/sdk)
+  └─ MessagePort → trusted shell → verified native command
+      ├─ direct host service call, owned by the current view
+      └─ applet.invoke → applet's Wasmi backend
+          └─ apell_guest::call → host service, owned by the backend run
 ```
 
-Tauri is compiled natively for the host platform. An applet contains portable code and calls host services asynchronously. Existing Tauri apps need adapters and separation of native dependencies; there is no general compilation of an arbitrary Tauri application into WASM.
+| Location                   | Responsibility                                                                                                  |
+| -------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `src/`                     | Shell library, provider settings, applet view and message broker                                                |
+| `src-tauri/`               | Native permissions, applet runs and views, package asset protocol, credentials                                  |
+| `crates/apell-core/`       | Package validation and storage, GitHub release downloads, SQLite, HTTP, files, config, resources, LLM transport |
+| `crates/apell-runtime/`    | Wasmi interpreter, guest actor, bounded messages and service dispatch                                           |
+| `crates/apell-guest/`      | Rust guest ABI exports, async service calls and applet events                                                   |
+| `packages/applet-sdk/`     | `@apell/sdk` TypeScript bridge, service helpers and backend command/event API                                   |
+| `crates/apell-cli/`        | `apell pack` command for an independent applet repository                                                       |
+| `examples/chatbot/`        | Companion frontend, manifest, and Rust backend                                                                  |
+| `scripts/build-chatbot.ts` | Builds and packs Companion for the shell's Add sheet                                                            |
 
-| Location                   | Responsibility                                                                                    |
-| -------------------------- | ------------------------------------------------------------------------------------------------- |
-| `src/`                     | React shell, applet library, shared model settings, iframe lifecycle, message broker              |
-| `src-tauri/`               | Tauri commands, session permissions, host persistence, native credential integration              |
-| `crates/apell-core/`       | Bundle validation and installation, native SQLite, files/config/resources, HTTP and LLM transport |
-| `packages/applet-sdk/`     | TypeScript request transport, service types/helpers, event subscriptions                          |
-| `examples/chatbot/`        | Sample interface and portable Rust conversation, schema, persistence, and prompt logic            |
-| `scripts/build-chatbot.ts` | WASM build and self-contained bundle packaging                                                    |
+## Runs and views
 
-The library presents an adaptive grid of applet icons, with installation in an Add sheet and shared model settings on a separate screen. Native window sizes are configured only for desktop; mobile uses device bounds, and the UI accounts for safe areas and the visible keyboard viewport. iOS declares a single scene in `Info.ios.plist` so UIKit supplies orientation-aware window geometry. Its WebView disables automatic scroll insets; the shell applies CSS safe-area padding once, including around the applet iframe.
+On first launch, the host loads the installed package and creates a run scoped to its `applet_id`. When `lib` is present, it starts a Wasmi instance and invokes the guest's `initialize` command once, with a 30-second initialization deadline. The host attaches the first view after initialization succeeds. A frontend-only package also gets a run and a pinned package snapshot.
 
-The UI exposes one foreground applet. Its host-owned header has a top-right menu and close capsule; the menu exposes reload and applet information. Each launch creates a fresh host-owned session; durable data is scoped to its stable `applet_id`. Reload suspends the iframe, closes the old session, and mounts a fresh iframe keyed by the replacement session ID. Failed reloads keep the old iframe suspended and offer retry or close. Closing a session invalidates its SQLite and LLM registrations, rolls back open transactions, and cancels active LLM requests, HTTP requests, and resource downloads. Local file/config operations already in progress finish before session closure is acknowledged; queued calls cannot write afterward. Applets never supply their own authoritative identity to a storage or provider service.
+Apell keeps up to eight runs and one attached view in a process. **Close** detaches the current view and returns to the library. **Reload applet** replaces that view and its bridge. Opening a previously launched applet attaches a new view to its existing run. If the shell frontend reloads while a run is foreground, it can resume with a fresh view. The native instance and its service context remain available through these view changes. A running applet retains the package version with which it started. An installed update is used on that applet's next run, which requires an Apell restart if it already ran in the current process.
 
-## Applet isolation and installation
+The host assigns independent opaque IDs to the run and view. A direct `hostCall` from the iframe uses the current view's service scope. Detaching it revokes that bridge, closes its SQLite handles and transactions, and cancels its LLM, HTTP, and resource work. Already-started local mutations finish before closure is acknowledged. Guest service calls use the backend run's scope and can complete while the view is detached. Both scopes access the same applet's durable data. A handle or transaction from one scope cannot be used in the other.
 
-The shell loads the installed HTML into an iframe with `sandbox="allow-scripts"`. It has an opaque origin, a restrictive content policy, and no same-origin access to the shell. The SDK announces readiness; the shell verifies the iframe's window before transferring a dedicated `MessagePort`. The shell attaches the session identity to forwarded requests. A host bootstrap secret authorizes native commands and stays outside applet content.
+A guest command's reply is delivered to the requesting view while it remains attached. Losing that receiver does not cancel an accepted backend command. Applet events are transient and can be missed while detached. Companion subscribes before requesting its current snapshot and uses later events to refresh it. Its reply work and stop operation belong to the backend, which commits the finished or interrupted result to SQLite. When Apell terminates, in-memory runs and pending operations end. After restart, Companion initializes from SQLite and marks leftover pending rows interrupted. Device suspension and termination are subject to the operating system.
 
-Manifest permissions select whole service groups: `sqlite`, `llm`, `resources`, `device`, `http`, `fs`, and `config`. Each service checks its permission in the native host before dispatch. Applets declare only the groups they use; the chatbot still requires only `sqlite` and `llm`. The broker additionally limits requests to known methods and caps concurrent calls. This is a boundary for trusted personal applets, not a third-party app store or a claim of complete hostile-code containment.
+A trap, fuel exhaustion, or another terminal interpreter failure retires that run and closes its service scopes. The shell shows a stopped-backend message when attached. Close and reopen the applet to create a new run from the installed package; other healthy runs retain their state and pinned versions.
 
-Bundles use this format:
+## Package format and installation
+
+An `.apel` is a ZIP32 archive. `manifest.json` and a non-empty UTF-8 `index.html` are required at the root. Reference other frontend assets relative to the entry document. The optional `lib` field names a contained WebAssembly module under `lib/`. Companion declares its backend in this manifest.
 
 ```json
 {
-  "manifest": {
-    "schema_version": 1,
-    "api_version": 1,
-    "applet_id": "chatbot",
-    "name": "Companion",
-    "version": "0.1.0",
-    "permissions": ["sqlite", "llm"]
-  },
-  "html": "<html>...inline CSS, JavaScript, and embedded WASM...</html>"
+  "schema_version": 1,
+  "api_version": 2,
+  "applet_id": "chatbot",
+  "name": "Companion",
+  "version": "0.4.0",
+  "permissions": ["sqlite", "llm"],
+  "lib": "lib/main.wasm"
 }
 ```
 
-Applet IDs contain at most 80 lowercase ASCII letters, digits, hyphens, or underscores. The current host accepts only schema/API version 1 and rejects unknown or duplicate permissions. The sample embeds WASM bytes as base64 and instantiates them directly, so it needs no network fetch inside the sandbox.
+Applet IDs use up to 80 lowercase ASCII letters, digits, hyphens, or underscores. Package versions use semantic versioning. The host rejects unknown or duplicate permission groups. The available groups are `sqlite`, `llm`, `resources`, `device`, `http`, `fs`, and `config`. Each service checks the verified manifest and the host-assigned scope.
 
-Installation verifies the expected SHA-256 before parsing or activation. A remote checksum must come from a trusted source; the native host computes the checksum for local bundle content selected by the shell. Local installs may supply an expected checksum, which is still enforced; URL installs always require one. Neither flow authenticates a publisher. Verified bytes are stored in immutable files named by their checksum. An atomic active-version pointer selects the installed version. Reads verify integrity again and keep the manifest and checksum from one snapshot. Invalid updates preserve the current active version.
+The parser accepts stored and deflated entries. Limits are 24 MiB of archive data, 64 MiB of actual expanded content, 1,024 ZIP records, and a 64 KiB manifest. It checks both directory records and decoded content, including CRC and declared sizes. Path traversal, absolute paths, symlinks, encryption, ambiguous entries, and case or Unicode normalization collisions are rejected. File names retain their original spelling for exact lookup. The declared backend is checked for a valid location and module header at install. Wasmi checks the complete module, imports, and ABI at launch.
 
-There is no code-signature infrastructure, version ordering, or schema downgrade management. Old version files remain available on disk but have no management UI yet.
+`apell pack <directory> --output <file.apel>` validates the staging directory, fixes file order, timestamps, and permissions, and writes a deterministic archive. Keep the output outside the staging directory. A separate applet repository can consume the local `@apell/sdk` package and `apell-guest` crate from a pinned Apell checkout and install `apell` from the CLI crate. See the [independent applet build example](../README.md#create-and-distribute-an-applet).
 
-## Bridge contract
+For GitHub installation, the host resolves `owner/repository` to its numeric repository ID and latest stable public release. It lists uploaded `.apel` assets from that release, so the user can choose when several are available. On installation it rechecks the release ID and selected numeric asset ID supplied by the shell. A replaced asset requires rediscovery even if its name and release stayed the same. It downloads that asset ID, permits bounded HTTPS redirects to supported GitHub download hosts, and checks the asset size and GitHub SHA-256 digest when supplied. Release lookup and download use unauthenticated GitHub requests. Local file installation computes the SHA-256 in the host. These hashes identify content. Publisher signatures are outside this format.
 
-`hostCall<T>(method, params)` in the applet SDK returns a promise. Request and response envelopes use snake_case fields:
+Each installed version is immutable and named by its content hash. A single atomic pointer selects the active hash, applet ID, and installation source. A GitHub source binds the numeric repository ID and stable asset name to the applet ID. Updates verify all three under the installation lock before publication. A different repository or asset cannot replace that applet, and a release asset cannot take over an existing file install. A changed GitHub package requires a higher semantic version. A developer may explicitly reinstall a local build at the same version. Neither source accepts a lower version. Installing changed local bytes over a GitHub applet makes it a file install. Reinstalling identical local bytes preserves its existing source.
+
+Old API-1 JSON bundles are read only from installed caches, with their HTML served as `index.html`. Fresh installations require the ZIP package and API revision 2. Updates keep databases, resources, files, and config under the existing applet ID. Version files are retained; the UI has no rollback or uninstall control.
+
+## Applet isolation and bridge
+
+The host serves verified package bytes through a custom `apel` protocol at a view-specific entry URL. Android and Windows use Tauri's local HTTP mapping for the protocol. Requests must name the attached view. The handler serves public package files and refuses `manifest.json`, `lib/`, and unsafe paths. It supplies MIME types, a restrictive content policy, `nosniff`, and disables caching. The iframe uses `sandbox="allow-scripts"` and has an opaque origin. The host bootstrap credential stays outside applet content.
+
+The TypeScript SDK announces readiness. The shell verifies the sending iframe and its live view before transferring a dedicated `MessagePort`. It supplies the authoritative run and view IDs when forwarding calls. Direct API methods must be on the bridge allowlist. `hostCall<T>(method, params)` returns the result or rejects with a host error. Each message carries an envelope `request_id`; long-running services may also use their own request ID for progress and cancellation. The bridge permits up to 32 concurrent requests and rejects duplicate in-flight envelope IDs.
+
+Use the TypeScript package's `applet.invoke(command, params)` to call an applet-defined backend command. `applet.onEvent(handler)` receives `{ name, payload }` events and returns an unsubscribe function. A frontend-only applet can call permitted host services directly. UI interactions such as `llm.chooseModel()` belong in the view.
 
 ```ts
-type Request = {
-  type: 'request';
-  request_id: string;
-  method: string;
-  params: Record<string, unknown>;
-};
-type Response =
-  | { type: 'response'; request_id: string; result: unknown }
-  | { type: 'response'; request_id: string; error: string };
-type Event = { type: 'event'; event: unknown };
+import { applet } from '@apell/sdk';
+
+const stop = applet.onEvent(() => void refresh());
+async function refresh() {
+  document.body.textContent = JSON.stringify(await applet.invoke('snapshot'));
+}
+void refresh();
+window.addEventListener('pagehide', stop, { once: true });
 ```
 
-The envelope `request_id` correlates a bridge call. Long-running operations also carry their own `request_id` inside `params`, which correlates progress and cancellation. Bridge errors reject the request promise; `llm.generate` additionally returns explicit terminal outcomes for provider and generation failures. The shell rejects duplicate in-flight envelope IDs and allows at most 32 concurrent calls per bridge.
+The current view contract uses one SDK instance per document and `index.html` as its entrypoint. Use client-side routing for SDK-enabled frontends. A new document announcing readiness resets the view to the entrypoint; loading the SDK twice in one document also triggers that reset. Static H5 documents need no SDK handshake.
 
-WASM uses the same asynchronous transport. The chatbot's `bridge.rs` adapts `apellHostCall` into Rust futures with `wasm-bindgen-futures`; `serde-wasm-bindgen` maps serialized request and result values. The applet has no direct SQLite file access or provider credential access.
+## Rust backend
+
+Build a `cdylib` for `wasm32-unknown-unknown` and place it at the manifest's `lib` path. The `apell_guest::export!` macro exports the allocation, release, and dispatch functions expected by the host. The guest module exports its linear memory. This minimal guest returns a snapshot when the view requests one.
+
+```rust
+use apell_guest::HostError;
+use serde_json::{json, Value};
+
+apell_guest::export!(handle);
+
+async fn handle(command: String, _params: Value) -> Result<Value, HostError> {
+  match command.as_str() {
+    "initialize" => Ok(Value::Null),
+    "snapshot" => Ok(json!({ "status": "ready" })),
+    _ => Err(HostError::new("Unknown command.")),
+  }
+}
+```
+
+`apell_guest::call` awaits a permitted native service. `call_with_events` also receives transient progress for that call. `emit(json!({"name": "changed", "payload": {}}))` sends an applet event, `spawn` schedules a guest future, and `create_id` and `now` obtain host-generated values. Native operations run asynchronously while guest code executes in serial interpreter turns. The guest receives no WASI filesystem or generic socket imports. Store persistent data through the applet's declared services.
+
+The interpreter accepts modules up to 16 MiB and limits linear memory to 64 MiB. It meters each turn with 32 million fuel units, caps individual ABI messages at 8 MiB, and bounds outstanding commands and host calls. A trap or exhausted fuel fails the backend. These bounds are independent of each service's SQL, network, and storage limits.
 
 ## Native SQLite
 
-Each opened handle has a dedicated native connection and belongs to one applet session. A validated database name resolves under the applet's private storage directory. The applet owns tables, indexes, migrations, and queries.
+Each opened handle has a dedicated native connection and belongs to the view or backend run that opened it. A validated database name resolves under the applet's private storage directory. The applet owns tables, indexes, migrations, and queries.
 
 | Method            | Parameters                                                                     | Result                                  |
 | ----------------- | ------------------------------------------------------------------------------ | --------------------------------------- |
@@ -101,11 +135,11 @@ type SqlValue =
 
 Integers and `last_insert_row_id` use decimal strings to preserve signed 64-bit precision across JavaScript. Real values must be finite. Rows are arrays aligned with `columns`, preserving duplicate column names without object-key collisions. Binary values are byte arrays.
 
-`begin` uses `BEGIN IMMEDIATE`. Every query or write on that database handle must then include its transaction handle. Transactions have a 30-second lifetime, with periodic expiry and automatic rollback on session closure. Keep transactions short and commit before awaiting an LLM request or download. Other connections encountering a write lock fail with a retryable busy error after a short wait.
+`begin` uses `BEGIN IMMEDIATE`. Every query or write on that database handle must then include its transaction handle. Transactions have a 30-second lifetime, with periodic expiry and automatic rollback when its owning scope closes. Keep transactions short and commit before awaiting an LLM request or download. Other connections encountering a write lock fail with a retryable busy error after a short wait.
 
 `PRAGMA user_version` supports applet migrations. Safe schema introspection pragmas are allowed; attachment, extension loading, virtual tables, unsafe pragmas, and SQL transaction-control statements are denied. Foreign keys are enabled, temporary storage is memory-backed, and applets cannot choose filesystem paths. The separate `fs` service cannot access these database files.
 
-The host limits SQL to 64 KiB, 256 parameters, 1 MiB of parameter data, 1 MiB SQLite values/rows, 1,000 result rows, and 4 MiB encoded query output. Queries have a two-second execution budget. There are at most eight open handles per session and 64 across the service. Page growth is capped at 32,768 pages per connection. These are per-operation/database bounds, not a complete applet disk quota.
+The host limits SQL to 64 KiB, 256 parameters, 1 MiB of parameter data, 1 MiB SQLite values/rows, 1,000 result rows, and 4 MiB encoded query output. Queries have a two-second execution budget. Each view or backend run can open at most eight handles, with 64 across the service. Page growth is capped at 32,768 pages per connection. These are per-operation/database bounds, not a complete applet disk quota.
 
 ## Shared LLM access
 
@@ -196,7 +230,7 @@ Direct Anthropic and Gemini drivers are absent from the integrated Tokn registry
 
 Provider URLs require HTTPS, except loopback HTTP, and reject embedded credentials, query parameters, and fragments. Provider errors are sanitized before crossing the bridge. Provider, HTTP, and resource requests share a TLS policy: Android uses bundled Mozilla roots with rustls verification, while Apple platforms use native certificate trust. Android device-installed private certificate authorities are not loaded; updating its bundled roots requires rebuilding the shell.
 
-Requests allow 1–256 messages, up to 64 tool definitions/calls, at most 512 KiB of encoded input including schemas and replay metadata, and temperature from 0 to 2. Optional `max_output_tokens` accepts 1–131072 and maps to the selected protocol's limit; actual model limits may be lower. Codex explicitly rejects that option because its upstream API does not support it. Output and replay metadata are bounded; generated output is capped at 1 MiB and raw provider responses at 8 MiB. The request timeout is 180 seconds, with a 60-second network read timeout. At most four requests run per applet session and 16 globally. The host rejects oversized context; it does not truncate history or summarize it for the applet.
+Requests allow 1–256 messages, up to 64 tool definitions/calls, at most 512 KiB of encoded input including schemas and replay metadata, and temperature from 0 to 2. Optional `max_output_tokens` accepts 1–131072 and maps to the selected protocol's limit; actual model limits may be lower. Codex explicitly rejects that option because its upstream API does not support it. Output and replay metadata are bounded; generated output is capped at 1 MiB and raw provider responses at 8 MiB. The request timeout is 180 seconds, with a 60-second network read timeout. At most four requests run per view or backend service scope and 16 globally. The host rejects oversized context; it does not truncate history or summarize it for the applet.
 
 Non-secret settings live in host application data. Credentials are scoped by connection identity and stored in Apple Keychain on iOS/macOS or encrypted with an Android Keystore key on Android. Android ciphertext is excluded from device backup. Applets cannot read keys, modify shared settings, or access a generic credential store. Secure provider credentials are currently implemented for iOS, Android, and macOS.
 
@@ -205,8 +239,7 @@ Non-secret settings live in host application data. Credentials are scoped by con
 Declare the `http` permission and call `http.request` through the SDK helper or `hostCall`:
 
 ```ts
-// Import path from examples/chatbot/src; adjust for your applet's location.
-import { http } from '../../../packages/applet-sdk/src';
+import { http } from '@apell/sdk';
 
 const response = await http.request({
   url: 'https://example.com/api/items',
@@ -272,6 +305,6 @@ Resource IDs are SHA-256 digests, and files are stored separately for each apple
 
 ## Migrating an existing Tauri app
 
-For a reader such as `read`, retain the frontend, PDF rendering, domain models, annotation rules, schema, migrations, and SQL in the applet where portable. Replace `rusqlite` calls with asynchronous host calls. Use `http.request` for general networking, `fs` for private files, and `config` for JSON preferences; declare their manifest permissions as needed. Separate network transport, downloadable files, secure credentials, and mobile operations from application-specific logic before compiling the portable Rust crate to WASM.
+Start with the existing frontend build and use relative asset URLs. Package its `index.html` and static assets. Replace Tauri frontend commands with direct SDK service calls, or with `applet.invoke` for applet-specific commands. Keep prompts, validation, migrations, and domain data in the applet. For a reader such as `read`, portable PDF rendering can stay in the frontend while annotations, schema migrations, and query logic move into the Rust guest.
 
-An applet-level adapter can preserve familiar frontend command names while routing each operation to WASM or a general host service. Provider transport and credentials belong in the host; prompts, conversations, and domain-specific workflows belong in the applet. Applet upgrades keep the same `applet_id` to retain stored data. Cloud synchronization remains deferred, and updating the bundle does not automatically migrate or roll back its database.
+To migrate a native command handler, separate its portable logic into a `wasm32-unknown-unknown` guest. Replace native filesystem access, `rusqlite`, and provider calls with the corresponding Apell services. Put database initialization and migrations in `initialize`. Let each new view request a snapshot of the running applet. Keep the same `applet_id` on code updates. The applet is responsible for schema compatibility and recovery from interrupted work.

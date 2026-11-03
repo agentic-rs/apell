@@ -1,4 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import type { GitHubRelease, InstalledApplet } from '../lib/types';
+import { githubRelease, message } from '../lib/tauri';
 import { Icon } from './Icon';
 import { Sheet } from './Sheet';
 
@@ -6,106 +8,178 @@ interface InstallSheetProps {
   open: boolean;
   busy: boolean;
   hasSample: boolean;
+  applets: InstalledApplet[];
   status: string;
   failed: boolean;
   onClose: () => void;
   onSample: () => void;
   onFile: (file: File) => void;
-  onUrl: (url: string, sha256: string) => void;
+  onGitHub: (release: GitHubRelease, asset_name: string) => void;
+  onUpdate: (applet_id: string) => void;
 }
 
-export function InstallSheet({
-  open,
-  busy,
-  hasSample,
-  status,
-  failed,
-  onClose,
-  onSample,
-  onFile,
-  onUrl,
-}: InstallSheetProps) {
-  const [url, setUrl] = useState('');
-  const [sha256, setSha256] = useState('');
-
+export function InstallSheet(props: InstallSheetProps) {
+  const [repository, setRepository] = useState('');
+  const [release, setRelease] = useState<GitHubRelease>();
+  const [asset_name, setAssetName] = useState('');
+  const [finding, setFinding] = useState(false);
+  const [lookup_error, setLookupError] = useState('');
+  const lookup = useRef(0);
+  useEffect(
+    () => () => {
+      lookup.current++;
+    },
+    [],
+  );
+  useEffect(() => {
+    if (!props.open) {
+      lookup.current++;
+      setFinding(false);
+    }
+  }, [props.open]);
+  const disabled = props.busy || finding;
   return (
-    <Sheet open={open} title="Add an applet" onClose={onClose}>
-      <button className="install-option" disabled={busy} onClick={onSample}>
+    <Sheet open={props.open} title="Add an applet" onClose={props.onClose}>
+      <button className="install-option" disabled={disabled} onClick={props.onSample}>
         <span className="option-icon">
           <Icon name="chat" />
         </span>
         <span>
-          <strong>{hasSample ? 'Update Companion' : 'Try Companion'}</strong>
-          <small>
-            {hasSample ? 'Refresh the sample app and keep your chats' : 'A sample chatbot'}
-          </small>
+          <strong>{props.hasSample ? 'Update Companion' : 'Try Companion'}</strong>
+          <small>A chatbot with a native WASM backend</small>
         </span>
         <Icon name="add" />
       </button>
-      <label className={`install-option file-option${busy ? ' disabled' : ''}`}>
+      <label className={`install-option file-option${disabled ? ' disabled' : ''}`}>
         <span className="option-icon">
           <Icon name="file" />
         </span>
         <span>
-          <strong>Choose a bundle</strong>
-          <small>From Files on this device</small>
+          <strong>Install an .apel file</strong>
+          <small>Choose a package from this device</small>
         </span>
         <input
           type="file"
-          accept=".json,.apell"
-          aria-label="Choose a bundle"
-          disabled={busy}
+          accept=".apel"
+          aria-label="Choose an .apel file"
+          disabled={disabled}
           onChange={(event) => {
             const file = event.target.files?.[0];
             event.target.value = '';
-            if (file) onFile(file);
+            if (file) props.onFile(file);
           }}
         />
       </label>
       <details className="url-install">
-        <summary>Install from a URL</summary>
+        <summary>Install from GitHub</summary>
         <form
-          onSubmit={(event) => {
+          onSubmit={async (event) => {
             event.preventDefault();
-            onUrl(url.trim(), sha256.trim());
+            const attempt = ++lookup.current;
+            setFinding(true);
+            setLookupError('');
+            setRelease(undefined);
+            try {
+              const found = await githubRelease(repository.trim());
+              if (lookup.current !== attempt) return;
+              setRelease(found);
+              setAssetName(found.assets.length === 1 ? found.assets[0].name : '');
+            } catch (error) {
+              if (lookup.current === attempt) setLookupError(message(error));
+            } finally {
+              if (lookup.current === attempt) setFinding(false);
+            }
           }}
         >
           <label>
-            Bundle URL
+            Public repository
             <input
-              type="url"
               required
+              value={repository}
+              placeholder="owner/repository"
               autoCapitalize="none"
               autoCorrect="off"
               spellCheck={false}
-              placeholder="https://example.com/app.apell.json"
-              value={url}
-              disabled={busy}
-              onChange={(event) => setUrl(event.target.value)}
+              disabled={disabled}
+              onChange={(event) => {
+                setRepository(event.target.value);
+                setRelease(undefined);
+                setLookupError('');
+              }}
             />
           </label>
-          <label>
-            SHA-256 checksum
-            <input
-              required
-              pattern="[a-fA-F0-9]{64}"
-              autoCapitalize="none"
-              autoCorrect="off"
-              spellCheck={false}
-              placeholder="64-character checksum"
-              value={sha256}
-              disabled={busy}
-              onChange={(event) => setSha256(event.target.value)}
-            />
-          </label>
-          <button className="primary" disabled={busy}>
-            {busy ? 'Installing…' : 'Download & install'}
+          <button type="submit" disabled={disabled}>
+            {finding ? 'Finding release…' : 'Find release'}
           </button>
         </form>
+        {release && (
+          <div className="provider-form">
+            <p>
+              {release.repository} · {release.tag}
+            </p>
+            <label>
+              Package
+              <select
+                value={asset_name}
+                disabled={props.busy}
+                onChange={(event) => setAssetName(event.target.value)}
+              >
+                <option value="" disabled>
+                  Choose an .apel package
+                </option>
+                {release.assets.map((asset) => (
+                  <option key={asset.name} value={asset.name}>
+                    {asset.name} ({Math.round(asset.size_bytes / 1024)} KiB)
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button
+              type="button"
+              className="primary"
+              disabled={props.busy || !asset_name}
+              onClick={() => props.onGitHub(release, asset_name)}
+            >
+              {props.busy ? 'Installing…' : 'Download & install'}
+            </button>
+          </div>
+        )}
+        {lookup_error && (
+          <p className="status error" role="alert">
+            {lookup_error}
+          </p>
+        )}
       </details>
-      {status && (
-        <p className={`status${failed ? ' error' : ''}`} role={failed ? 'alert' : 'status'}>
-          {status}
+      {props.applets.some((applet) => applet.source) && (
+        <div className="connection-list">
+          <h3>GitHub updates</h3>
+          {props.applets
+            .filter((applet) => applet.source)
+            .map((applet) => (
+              <div className="connection-row" key={applet.applet_id}>
+                <span>
+                  <strong>{applet.name}</strong>
+                  <small>
+                    {applet.version} · {applet.source!.repository}
+                  </small>
+                </span>
+                <button
+                  type="button"
+                  disabled={disabled}
+                  onClick={() => props.onUpdate(applet.applet_id)}
+                >
+                  Update
+                </button>
+              </div>
+            ))}
+        </div>
+      )}
+      {props.status && (
+        <p
+          className={`status${props.failed ? ' error' : ''}`}
+          role={props.failed ? 'alert' : 'status'}
+        >
+          {props.status}
         </p>
       )}
     </Sheet>

@@ -54,6 +54,9 @@ pub struct Host {
   pub provider_http: apell_core::providers::Client,
   pub provider_jobs: Arc<ProviderJobs>,
   pub sessions: Mutex<HashMap<String, Session>>,
+  pub running: Mutex<crate::applets::RunningApplets>,
+  pub run_gate: tokio::sync::Mutex<()>,
+  pub view_gate: Mutex<()>,
   pub root: PathBuf,
 }
 
@@ -77,6 +80,9 @@ impl Host {
       provider_http: apell_core::providers::http_client()?,
       provider_jobs: Arc::new(ProviderJobs::default()),
       sessions: Mutex::new(HashMap::new()),
+      running: Mutex::new(crate::applets::RunningApplets::default()),
+      run_gate: tokio::sync::Mutex::new(()),
+      view_gate: Mutex::new(()),
       root,
     })
   }
@@ -190,6 +196,7 @@ mod tests {
         applet_id: "fixture".into(),
         name: "Fixture".into(),
         version: "1".into(),
+        lib: None,
         permissions: permissions
           .iter()
           .map(|value| (*value).to_owned())

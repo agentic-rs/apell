@@ -1,0 +1,12 @@
+[package]
+name = "apell-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "apell"
+path = "src/main.rs"
+
+[dependencies]
+apell-core = { path = "../apell-core" }

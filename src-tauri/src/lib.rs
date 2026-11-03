@@ -1,5 +1,8 @@
+mod applets;
+mod assets;
 mod commands;
 mod host;
+mod install;
 #[cfg(target_os = "ios")]
 mod ios;
 mod navigation;
@@ -11,6 +14,9 @@ use tauri::Manager;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   tauri::Builder::default()
+    .register_uri_scheme_protocol("apel", |context, request| {
+      assets::respond(context.app_handle(), request)
+    })
     .plugin(tauri_plugin_apell_credentials::init())
     .plugin(
       tauri_plugin_opener::Builder::new()

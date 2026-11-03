@@ -1,5 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
-import { installBundle, launchApplet, listApplets, message, onInstallProgress } from '../lib/tauri';
+import {
+  installBundle,
+  updateApplet,
+  launchApplet,
+  listApplets,
+  message,
+  onInstallProgress,
+} from '../lib/tauri';
 import type { AppletSession, InstalledApplet } from '../lib/types';
 import { Icon } from '../components/Icon';
 import { InstallSheet } from '../components/InstallSheet';
@@ -87,7 +94,7 @@ export function Library({
   };
   const installed = async () => {
     setApplets(await listApplets());
-    setStatus('Applet added.');
+    setStatus('Package installed. Running applets use updates after Apell restarts.');
     onInstallClose();
   };
   return (
@@ -149,27 +156,43 @@ export function Library({
         onClose={onInstallClose}
         busy={busy || loading}
         hasSample={applets.some((applet) => applet.applet_id === 'chatbot')}
+        applets={applets}
         status={loading ? 'Loading applets…' : status}
         failed={failed}
         onSample={() =>
           void run(async () => {
-            const { default: bundle } = await import('../generated/chatbot.apell.json?raw');
-            await installBundle({ bundle });
+            const { sample_base64 } = await import('../generated/chatbot');
+            await installBundle({ bundle_base64: sample_base64 });
             await installed();
           }, 'Installing Companion…')
         }
         onFile={(file) =>
           void run(async () => {
             if (file.size > 24 * 1024 * 1024) throw new Error('Bundle exceeds 24 MiB.');
-            await installBundle({ bundle: await file.text() });
+            const bytes = new Uint8Array(await file.arrayBuffer());
+            let binary = '';
+            for (let offset = 0; offset < bytes.length; offset += 32768)
+              binary += String.fromCharCode(...bytes.subarray(offset, offset + 32768));
+            await installBundle({ bundle_base64: btoa(binary) });
             await installed();
           }, 'Installing applet…')
         }
-        onUrl={(url, sha256) =>
+        onGitHub={(release, asset_name) =>
           void run(async () => {
-            await installBundle({ url, sha256 });
+            await installBundle({
+              repository: release.repository,
+              release_id: release.release_id,
+              asset_id: release.assets.find((asset) => asset.name === asset_name)!.asset_id,
+              asset_name,
+            });
             await installed();
           }, 'Downloading applet…')
+        }
+        onUpdate={(applet_id) =>
+          void run(async () => {
+            await updateApplet(applet_id);
+            await installed();
+          }, 'Checking GitHub release…')
         }
       />
     </section>

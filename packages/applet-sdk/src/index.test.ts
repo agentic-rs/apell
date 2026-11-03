@@ -79,6 +79,46 @@ describe('applet bridge', () => {
     expect(channel.start).toHaveBeenCalledOnce();
   });
 
+  it('waits for a backend command that takes longer than the generic bridge timeout', async () => {
+    vi.useFakeTimers();
+    const sdk = await import('./index');
+    connect();
+    const result = sdk.applet.invoke('generate_report', { conversation_id: 'one' });
+    const completed = expect(result).resolves.toEqual({ report_id: 'stored-once' });
+    await vi.advanceTimersByTimeAsync(65_000);
+    expect(channel.postMessage).toHaveBeenCalledOnce();
+    const request = channel.postMessage.mock.calls[0][0];
+    expect(request).toMatchObject({
+      method: 'backend.invoke',
+      params: { command: 'generate_report', params: { conversation_id: 'one' } },
+    });
+    receive({
+      type: 'response',
+      request_id: request.request_id,
+      result: { report_id: 'stored-once' },
+    });
+    await completed;
+  });
+
+  it('delivers backend events independently of service streams and honors unsubscribe', async () => {
+    const sdk = await import('./index');
+    connect();
+    const handler = vi.fn();
+    sdk.applet.onEvent(() => {
+      throw new Error('Another view observer failed.');
+    });
+    const unsubscribe = sdk.applet.onEvent(handler);
+    const event = { name: 'reply', payload: { revision: 7, text: 'Hello' } };
+    receive({ type: 'event', event });
+    receive({ type: 'backend_event', event: { ...event, payload: { revision: NaN } } });
+    expect(handler).not.toHaveBeenCalled();
+    receive({ type: 'backend_event', event });
+    expect(handler).toHaveBeenCalledExactlyOnceWith(event);
+    unsubscribe();
+    receive({ type: 'backend_event', event });
+    expect(handler).toHaveBeenCalledOnce();
+  });
+
   it('returns partial text on failed streams for durable interrupted replies', async () => {
     const sdk = await import('./index');
     connect();
