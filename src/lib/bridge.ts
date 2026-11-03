@@ -2,6 +2,7 @@ import type { BridgeRequest } from './types';
 import { assertJsonValue } from '../../packages/applet-sdk/src/json';
 
 const methods = new Set([
+  'backend.invoke',
   'sqlite.open',
   'sqlite.close',
   'sqlite.query',
@@ -67,7 +68,8 @@ export function attachBridge(
       if (
         data.method === 'llm.generate' ||
         data.method === 'llm.config' ||
-        data.method === 'llm.choose_model'
+        data.method === 'llm.choose_model' ||
+        data.method === 'backend.invoke'
       ) {
         // Raw WASM callers bypass the SDK helper. Validate before native JSON
         // serialization can silently turn NaN into null or omit undefined.

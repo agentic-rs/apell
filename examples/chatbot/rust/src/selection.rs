@@ -1,6 +1,6 @@
-use crate::{bridge, storage};
+use crate::storage;
+use apell_guest::HostError;
 use serde::{Deserialize, Serialize};
-use wasm_bindgen::JsValue;
 
 #[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct Target {
@@ -22,7 +22,7 @@ struct Provenance {
   requested_model_id: String,
 }
 
-pub async fn load(id: &str, transaction: Option<&str>) -> Result<Option<Target>, JsValue> {
+pub async fn load(id: &str, transaction: Option<&str>) -> Result<Option<Target>, HostError> {
   let rows = storage::query(
     "SELECT model_target FROM conversations WHERE conversation_id = ?1",
     vec![storage::text(id)],
@@ -31,7 +31,7 @@ pub async fn load(id: &str, transaction: Option<&str>) -> Result<Option<Target>,
   .await?;
   let row = rows
     .first()
-    .ok_or_else(|| bridge::error("This conversation no longer exists."))?;
+    .ok_or_else(|| HostError::new("This conversation no longer exists."))?;
   if let Some(value) = storage::optional_cell(row, 0)? {
     return Ok(
       serde_json::from_str::<Target>(&value)
@@ -71,11 +71,11 @@ pub async fn load(id: &str, transaction: Option<&str>) -> Result<Option<Target>,
   Ok(inferred)
 }
 
-async fn store(id: &str, target: &Target, transaction: &str) -> Result<(), JsValue> {
+async fn store(id: &str, target: &Target, transaction: &str) -> Result<(), HostError> {
   storage::execute(
     "UPDATE conversations SET model_target = ?1 WHERE conversation_id = ?2",
     vec![
-      storage::text(serde_json::to_string(target).map_err(bridge::error)?),
+      storage::text(serde_json::to_string(target).map_err(HostError::new)?),
       storage::text(id),
     ],
     Some(transaction),
@@ -83,9 +83,9 @@ async fn store(id: &str, target: &Target, transaction: &str) -> Result<(), JsVal
   .await
 }
 
-pub async fn choose(id: &str, target: Target) -> Result<String, JsValue> {
+pub async fn choose(id: &str, target: Target) -> Result<String, HostError> {
   if !target.valid() {
-    return Err(bridge::error("Choose a provider and model."));
+    return Err(HostError::new("Choose a provider and model."));
   }
   let transaction = storage::begin().await?;
   let result = async {
@@ -99,11 +99,11 @@ pub async fn choose(id: &str, target: Target) -> Result<String, JsValue> {
     .await?
     .is_empty();
     let selected_id = if populated && !same_target {
-      storage::create_conversation(Some(&transaction)).await?
+      create(Some(&target), Some(&transaction)).await?
     } else {
+      store(id, &target, &transaction).await?;
       id.to_owned()
     };
-    store(&selected_id, &target, &transaction).await?;
     storage::commit(&transaction).await?;
     Ok(selected_id)
   }
@@ -112,4 +112,23 @@ pub async fn choose(id: &str, target: Target) -> Result<String, JsValue> {
     storage::rollback(&transaction).await;
   }
   result
+}
+
+pub async fn create(
+  target: Option<&Target>,
+  transaction: Option<&str>,
+) -> Result<String, HostError> {
+  if target.is_some_and(|target| !target.valid()) {
+    return Err(HostError::new("Choose a provider and model."));
+  }
+  let id = apell_guest::create_id();
+  let encoded = target
+    .map(serde_json::to_string)
+    .transpose()
+    .map_err(HostError::new)?;
+  storage::execute(
+    "INSERT INTO conversations (conversation_id, title, created_at, updated_at, model_target) VALUES (?1, 'New conversation', ?2, ?2, ?3)",
+    vec![storage::text(&id), storage::text(apell_guest::now()), storage::optional_text(encoded)], transaction
+  ).await?;
+  Ok(id)
 }

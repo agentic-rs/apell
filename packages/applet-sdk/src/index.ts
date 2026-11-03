@@ -1,5 +1,6 @@
 import type {
   ConfigEntry,
+  AppletBackendEvent,
   DirectoryEntry,
   DownloadProgress,
   FileReadOptions,
@@ -52,6 +53,7 @@ export class HostError extends Error {
 const pending = new Map<string, Pending>();
 const activeLlm = new Map<string, ActiveLlm>();
 const downloadSubscribers = new Set<(event: DownloadProgress) => void>();
+const backendSubscribers = new Set<(event: AppletBackendEvent) => void>();
 let port: MessagePort | undefined;
 let resolveReady: (value: MessagePort) => void;
 const ready = new Promise<MessagePort>((resolve) => {
@@ -62,6 +64,23 @@ function handleMessage(event: MessageEvent<unknown>): void {
   const message = event.data;
   if (!message || typeof message !== 'object') return;
   const envelope = message as Record<string, unknown>;
+  if (envelope.type === 'backend_event') {
+    const event = envelope.event as AppletBackendEvent | undefined;
+    if (!event || typeof event.name !== 'string') return;
+    try {
+      assertJsonValue(event.payload);
+    } catch {
+      return;
+    }
+    for (const handler of backendSubscribers) {
+      try {
+        handler(event);
+      } catch {
+        /* One listener cannot break the connection. */
+      }
+    }
+    return;
+  }
   if (envelope.type === 'event') {
     if (envelope.event && typeof envelope.event === 'object') {
       const download = envelope.event as DownloadProgress;
@@ -138,6 +157,22 @@ export async function hostCall<T = unknown>(
 ): Promise<T> {
   return callHost(method, params);
 }
+
+/** Applet commands execute in its native-owned WASM instance. */
+export const applet = {
+  invoke<T = JsonValue>(command: string, params: unknown = {}): Promise<T> {
+    if (!command || command.length > 128 || /[\u0000-\u001f\u007f]/u.test(command))
+      return Promise.reject(new HostError('Invalid applet command.'));
+    assertJsonValue(params);
+    return hostCall<T>('backend.invoke', { command, params });
+  },
+  onEvent(handler: (event: AppletBackendEvent) => void): () => void {
+    backendSubscribers.add(handler);
+    return () => {
+      backendSubscribers.delete(handler);
+    };
+  },
+};
 
 function releaseLlm(active: ActiveLlm | undefined): void {
   if (!active) return;
@@ -224,9 +259,10 @@ async function callHost<T>(
     }
     const request_id = createId();
     return await new Promise<T>((resolve, reject) => {
-      // A visible picker stays open while the user chooses a model.
+      // A backend command can outlive its UI, and a picker waits for the user.
+      // Both settle with the host's response while this view remains attached.
       const request_timeout =
-        method === 'llm.choose_model'
+        method === 'llm.choose_model' || method === 'backend.invoke'
           ? undefined
           : setTimeout(
               () => {

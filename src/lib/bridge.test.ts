@@ -5,6 +5,7 @@ describe('applet bridge boundary', () => {
   it('accepts scoped SDK operations and rejects administrative operations', () => {
     const request = { type: 'request', request_id: 'one', method: 'sqlite.query', params: {} };
     for (const method of [
+      'backend.invoke',
       'sqlite.query',
       'llm.config',
       'llm.choose_model',
@@ -25,6 +26,7 @@ describe('applet bridge boundary', () => {
       expect(isBridgeRequest({ ...request, method })).toBe(true);
     }
     for (const method of [
+      'view.check',
       'llm.complete',
       'llm.save_settings',
       'llm.settings',

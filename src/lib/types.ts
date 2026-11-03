@@ -5,14 +5,29 @@ export interface Manifest {
   name: string;
   version: string;
   permissions: string[];
+  lib?: string;
 }
 export interface InstalledApplet extends Manifest {
   sha256: string;
+  source?: { repository_id: number; repository: string; asset_name: string } | null;
 }
 export interface AppletSession {
   session_id: string;
   manifest: Manifest;
-  html: string;
+  view_id: string;
+  entry_url: string;
+  has_lib: boolean;
+}
+export interface GitHubRelease {
+  repository_id: number;
+  repository: string;
+  release_id: number;
+  tag: string;
+  assets: { asset_id: number; name: string; size_bytes: number; sha256: string | null }[];
+}
+export interface BackendEvent {
+  session_id: string;
+  event: { name: string; payload: unknown };
 }
 export type CredentialStatus = 'present' | 'absent' | 'unavailable';
 export type ProviderAuthMethod = 'api_key' | 'device_code' | 'none';

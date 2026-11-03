@@ -118,6 +118,10 @@ export interface LlmResult {
 
 export type JsonValue =
   null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
+export interface AppletBackendEvent {
+  name: string;
+  payload: JsonValue;
+}
 export type ConfigEntry = { found: false } | { found: true; value: JsonValue };
 
 export interface HttpHeader {

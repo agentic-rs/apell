@@ -1,0 +1,19 @@
+[package]
+name = "apell-runtime-fixture"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+apell-guest = { path = "../../../../apell-guest" }
+serde_json = "1"
+
+[profile.release]
+panic = "abort"
+opt-level = "s"
+strip = true

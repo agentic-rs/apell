@@ -1,48 +1,37 @@
 # Apell
 
-Apell is a personal applet host targeting iOS and Android, with a macOS development shell. Install your own applet bundles, keep their data in native SQLite, and share one LLM connection without passing provider keys into applets.
+Apell is a personal Tauri shell for iOS and Android, with a macOS development host. Install a `.apel` package from a file or a public GitHub release. Its frontend runs in a sandboxed web view. An optional Rust WebAssembly backend runs in the native shell through the Wasmi interpreter. Applets use host APIs for SQLite, files, resources, HTTP, configuration, device information, and shared model access.
 
-The included **Companion** chatbot exercises the whole boundary: a TypeScript interface calls Rust WASM, which owns conversation logic and SQL migrations, then uses asynchronous host APIs for SQLite and LLM requests. The installed Tauri runtime stays native.
+The included **Companion** chatbot keeps conversations, SQL migrations, model targets, and in-flight replies in its Rust backend. The interface can close or reload while the backend completes a reply. Reopening the interface asks the backend for its current state. Saved chats survive an Apell restart.
 
 ## First run
 
-Install a current stable Rust toolchain, Node.js 24 or newer, pnpm, and the [Tauri platform prerequisites](https://v2.tauri.app/start/prerequisites/). Node's built-in SQLite module is used by the WASM integration test.
+Install a current stable Rust toolchain, Node.js 24 or newer, pnpm, and the [Tauri platform prerequisites](https://v2.tauri.app/start/prerequisites/).
 
 ```sh
 rustup target add wasm32-unknown-unknown
-cargo install wasm-bindgen-cli --version 0.2.126 --locked
 pnpm install --frozen-lockfile
 pnpm desktop:dev
 ```
 
-The `wasm-bindgen` CLI version must match the chatbot's pinned Rust dependency. Development and production frontend builds compile the chatbot automatically.
+The development and production builds compile Companion's Rust guest for `wasm32-unknown-unknown`, bundle its TypeScript and CSS, and pack the result with the Rust CLI. Rust emits the guest module directly.
 
-In the shell:
+1. Open **Settings**, choose a provider, enter its API key or complete sign-in, select a model, then **Save connection**.
+2. Tap **+ → Try Companion** and open its icon. Use Companion's model button to choose the provider and model for a chat. Provider credentials stay in Apell's native credential store.
+3. Send a message. Use **… → Reload applet** during a reply, or close Companion and reopen its icon. Both actions attach a fresh interface to the same running backend. **About this applet** shows the version and declared permissions.
 
-1. Tap **+**, choose **Try Companion**, then tap the **Companion** icon.
-2. Open **Settings** to configure a provider connection using an API key or account sign-in, choose its model, then save.
-3. Open Companion, tap its model button, choose your provider and model, and start a conversation. The host uses the embedded [Tokn SDK](https://github.com/tokn-ai/tokn). Keys remain in native secure storage.
-
-The library shows each applet as one icon and its name. Add and Settings stay in the header. To refresh the bundled sample after updating the shell, choose **+ → Update Companion**; existing chats are preserved.
-
-Inside an applet, the top-right capsule contains **…** and **Close**. The menu offers **Reload applet** and **About this applet**. Reload starts a fresh session and keeps saved data; unsaved input is reset. About shows the applet's version and requested access. Close returns to the library.
-
-Closing and reopening the applet preserves conversations. A stopped reply is marked interrupted; interrupted replies are excluded from later model context. A pending reply left by an applet shutdown is marked interrupted when the applet next initializes.
-
-`pnpm dev` alone serves the frontend in a browser. SQLite, applet execution, and credentials require the native shell.
+`pnpm dev` serves the shell frontend for development. Launch the native Tauri application to install and run applets.
 
 ## Build and test
 
 ```sh
 pnpm build
 pnpm test
-cargo test -p apell-core
-cargo test --manifest-path examples/chatbot/Cargo.toml
-cargo check -p apell
+cargo test --workspace --locked
 pnpm desktop:build
 ```
 
-`pnpm test` builds and executes the actual chatbot WASM against a SQLite-backed host substitute, and tests the bridge request contract. The Rust core tests cover native SQLite isolation and transactions, bundle integrity and concurrent installation, resources, HTTP transport, applet files and config, and LLM parsing and cancellation. These checks complement device testing; they do not establish mobile packaging, signing, or runtime behavior.
+The TypeScript suite exercises the SDK and shell bridge. The Rust suites cover package integrity, source-bound updates, native services, guest execution, and run/view isolation. The runtime integration tests compile and execute Companion in Wasmi with native SQLite and controlled model responses. See the [verification notes](docs/verification.md) for platform checks.
 
 ## Mobile development
 
@@ -75,7 +64,7 @@ xcrun simctl install booted src-tauri/gen/apple/build/arm64-sim/Apell.app
 xcrun simctl launch --terminate-running-process booted dev.apell.shell
 ```
 
-Verify the installed executable matches the build before reporting the simulator updated. Reinstalling the shell retains applet data. If the bundled Companion code changed, use **+ → Update Companion** and reopen it; rebuilding the host alone does not update an installed applet bundle.
+Verify the installed executable matches the build before reporting the simulator updated. Reinstalling the shell retains applet data. If the bundled Companion changed, choose **+ → Update Companion**. If Companion had already started, restart Apell before checking the new version.
 
 Keep signing enabled for runnable simulator builds. Xcode's local simulator signing embeds the app identity required by Keychain; `--no-sign` is suitable only for compile checks and cannot verify provider credentials or sign-in.
 
@@ -83,36 +72,74 @@ For installation from Xcode, run `pnpm tauri ios build --debug --open`, keep tha
 
 iOS build/dev commands automatically run `pnpm ios:prepare`. It prepares the generated Xcode Rust build phase to find Node, pnpm, and Rust even when Xcode was opened from the Dock. Tool locations are resolved from the current terminal into an ignored local environment file; personal paths and signing settings stay out of source files. After changing Node or Rust installations, rerun the Tauri command or `pnpm ios:prepare`. If Xcode reports `pnpm: command not found`, run the prepare command and retry the build. Keep the Tauri terminal running during Xcode builds so its build-options service remains available.
 
-## Applet bundles
+## Create and distribute an applet
 
-```sh
-pnpm build:chatbot
+An applet can live in its own repository. Stage the built frontend and optional backend in one directory. Use relative asset URLs so the frontend loads correctly from its view-specific package URL.
+
+```text
+stage/
+  manifest.json
+  index.html
+  assets/main.js
+  assets/main.css
+  lib/main.wasm
 ```
 
-This produces `artifacts/chatbot.apell.json` and `artifacts/chatbot.sha256`. The bundle is JSON containing a versioned manifest and a self-contained HTML document. CSS, JavaScript, and the compiled WASM bytes are embedded; installation does not need a separate asset server.
+```json
+{
+  "schema_version": 1,
+  "api_version": 2,
+  "applet_id": "example",
+  "name": "Example",
+  "version": "1.0.0",
+  "permissions": ["sqlite", "llm"],
+  "lib": "lib/main.wasm"
+}
+```
 
-Tap **+ → Choose a bundle** for a local file. Use **Install from a URL** to provide a URL and the SHA-256 from a trusted copy of the build output. Downloads require HTTPS, with loopback HTTP allowed for local development. Remote redirects are not followed. No hosting or publication is performed by this project.
+For a frontend-only applet, omit `lib`. Keep `applet_id` stable across releases so the applet retains its databases, files, resources, and preferences. Use a semantic version for each release.
 
-A checksum pins exact bytes; it is not a publisher signature. This version is for applets you build and trust. Installing another bundle with the same `applet_id` updates its code while retaining its local databases, resources, files, and config.
+To use the SDKs from a separate repository, keep a pinned checkout of Apell available to the build. With that checkout under `vendor/apell`, run these commands from the applet repository.
+
+```sh
+pnpm add ./vendor/apell/packages/applet-sdk
+cargo install --locked --path vendor/apell/crates/apell-cli
+```
+
+Import `@apell/sdk` in the frontend and bundle it with the applet. For a Rust backend, add these entries to the backend's `Cargo.toml`, adjusting the path relative to that file.
+
+```toml
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+apell-guest = { path = "vendor/apell/crates/apell-guest" }
+serde_json = "1"
+```
+
+Build with `cargo build --release --target wasm32-unknown-unknown` and copy the resulting `.wasm` file into `stage/` at the manifest's `lib` path. Companion’s build script remaps compiler source paths before packaging its guest for distribution. The guest SDK exports the ABI used by Wasmi. A minimal command handler is documented in the [architecture guide](docs/architecture.md#rust-backend).
+
+```sh
+apell pack stage --output artifacts/example.apel
+```
+
+The output must be outside the input directory. The CLI writes a deterministic ZIP archive and prints its SHA-256. From the Apell checkout, `pnpm build:chatbot` produces `artifacts/chatbot.apel` and `artifacts/chatbot.sha256` for Companion 0.4.0.
+
+Install a local `.apel` file from the **+** sheet. For GitHub distribution, attach the `.apel` file to a published stable release in a public applet repository. Use the same asset name for later releases, such as `example.apel`. In Apell, choose **Install from GitHub**, enter `owner/repository`, find the release, and choose its package if several are available. The package contains its own manifest. The host checks GitHub's asset digest when available and computes its own content hash. Only install packages from developers you trust. Publisher signatures are outside the current format.
+
+A GitHub install records the numeric repository ID, repository name, stable asset name, and applet ID. **+ → GitHub updates → Update** checks that binding before switching versions. A file install accepts updates from a file. Installing changed local content over a GitHub applet clears its GitHub update source. Versions cannot decrease, and a GitHub release with changed bytes must advance the applet version. An identical reinstall keeps the existing source.
+
+An update makes the new package available for the next run. If the applet already has a run in this Apell process, it keeps its current code and assets across close, reopen, and reload. Restart Apell to start that applet with the updated package. Previously installed API-1 JSON applets can still load from their existing cache. New installs require `.apel` packages.
 
 ## Current scope
 
-- One foreground applet with a restricted message bridge.
-- Native SQLite with applet-owned schemas and SQL, typed parameters, and transaction handles.
-- Shared LLM configuration, tool calling, separate answer/reasoning events, and cancellation.
-- Client-owned complete assistant messages, explicit generation outcomes, and per-request model attribution.
-- Saved provider connections, model discovery, and Codex/GitHub Copilot device sign-in.
-- Provider keys and refreshed tokens in Apple Keychain or Android Keystore-backed encrypted storage.
-- Applet-scoped resource downloads and bounded binary reads.
-- Native HTTP requests with binary bodies, headers, timeouts, and session cancellation.
-- Applet-private file operations and persistent JSON configuration.
-- A basic `device.info` API for platform and host API version.
+Apell supports one attached view and up to eight applet runs per process. Backends can continue work without a view while the host process runs. A mobile OS may suspend or terminate the process. Persist state that must survive termination in the host's SQLite, file, or config service. Cloud synchronization, automatic resource eviction, an uninstall flow, and a rollback selector are deferred.
 
-In Settings, choose a provider, enter its API key or sign in, load and choose a model (or enter its ID), then **Save connection**. Sign-in and model lookup work before saving; leaving setup discards its temporary credentials. Choose **Use connection** to make a saved connection active. Connections remain saved when switching the active model. **Test connection** sends a short model request and can be cancelled; saving or discovering models does not generate an answer.
+Applets own their SQLite schema and migrations and issue asynchronous SQL calls through the native service. Each applet has a private file area, downloadable resources, and non-secret JSON preferences. Credentials and provider settings are managed by the shell.
 
-Tokn-backed providers include OpenAI, Codex, GitHub Copilot, DeepSeek, OpenCode Go, llama.cpp, Z.ai/Zhipu and their coding plans, plus custom OpenAI-compatible endpoints. OpenAI/Codex use Responses; Copilot/OpenCode use their model's supported protocol; compatible endpoints retain Chat Completions. See the [provider settings and protocol details](docs/architecture.md#provider-settings).
+Settings supports saved named connections, model discovery and manual IDs, API keys, and Codex/GitHub Copilot device sign-in. **Use connection** selects the shared default. The applet's model picker can select a different target for one conversation. Companion starts a new conversation when changing the target of a populated chat. **Test connection** sends a short model request.
 
-Cloud synchronization, schema-constrained answers, generic per-applet credential APIs, background applets, direct Anthropic/Gemini drivers, and additional device integrations are deferred. Version files are retained, but there is no rollback selector, uninstall flow, or automatic resource eviction yet. Reinstall a known bundle to select its code version; database downgrade compatibility remains the applet's responsibility.
+The native host uses the embedded Tokn SDK for provider routing. Supported connections include OpenAI, Codex, GitHub Copilot, DeepSeek, OpenCode Go, llama.cpp, Z.ai/Zhipu and their coding plans, and custom OpenAI-compatible endpoints. Applets keep their complete assistant messages and inspect the returned generation status. See the [provider settings contract](docs/architecture.md#provider-settings) and [LLM history and tool example](docs/llm.md).
 
 ## Tokn development dependency
 
@@ -121,10 +148,6 @@ Apell consumes `tokn-sdk` directly from Tokn's Git `main` branch. `Cargo.lock` r
 The SDK runs inside the native host with an in-memory configuration. No Tokn gateway process or separate Tokn configuration/auth files are required. See [the integration boundary](docs/architecture.md#shared-llm-access) for the current protocol and continuation limits.
 
 See [the architecture and API contract](docs/architecture.md) for migration guidance and limits, and [verification notes](docs/verification.md) for tested behavior.
-
-Applets use `llm.generate(request, { signal, on_event })` and inspect the returned status. Save and replay the complete `result.message`; Apell keeps no conversation or continuation cache. See the [LLM history and tool example](docs/llm.md). This is a breaking API update: rebuild existing applets and update Companion from the install sheet.
-
-Companion's model button opens Apell's provider/model picker. Configure provider connections in Settings, then choose one and its model from inside the chatbot. Each conversation retains its chosen model. Selecting another provider or model for a populated chat starts a new conversation. Companion requires a real provider selection before sending. Update the installed Companion bundle to version 0.3.0 to receive this behavior.
 
 ## Repository hygiene
 

@@ -1,14 +1,20 @@
-use crate::{
-  bridge,
-  models::{Conversation, Message},
-};
+use crate::models::{Conversation, Message};
+use apell_guest::HostError;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::cell::RefCell;
-use wasm_bindgen::JsValue;
+use std::{cell::RefCell, future::Future, rc::Rc};
 
 thread_local! {
   static DATABASE: RefCell<Option<String>> = const { RefCell::new(None) };
+  static DB_GATE: Rc<futures_util::lock::Mutex<()>> = Rc::default();
+}
+
+// A transaction on a handle must finish before another guest operation uses it.
+// Generation itself runs outside this gate so attached views can still read.
+pub async fn serialized<T>(operation: impl Future<Output = T>) -> T {
+  let gate = DB_GATE.with(Rc::clone);
+  let _guard = gate.lock().await;
+  operation.await
 }
 
 #[derive(Deserialize)]
@@ -26,10 +32,10 @@ struct Rows {
   rows: Vec<Vec<Value>>,
 }
 
-fn database() -> Result<String, JsValue> {
+fn database() -> Result<String, HostError> {
   DATABASE
     .with(|database| database.borrow().clone())
-    .ok_or_else(|| bridge::error("The chatbot database is not open."))
+    .ok_or_else(|| HostError::new("The chatbot database is not open."))
 }
 
 pub fn text(value: impl Into<String>) -> Value {
@@ -40,16 +46,16 @@ pub fn optional_text(value: Option<String>) -> Value {
   value.map(text).unwrap_or_else(|| json!({"type": "null"}))
 }
 
-pub fn cell(row: &[Value], index: usize) -> Result<String, JsValue> {
+pub fn cell(row: &[Value], index: usize) -> Result<String, HostError> {
   row
     .get(index)
     .and_then(|value| value.get("value"))
     .and_then(Value::as_str)
     .map(str::to_owned)
-    .ok_or_else(|| bridge::error("The chatbot database returned an invalid value."))
+    .ok_or_else(|| HostError::new("The chatbot database returned an invalid value."))
 }
 
-pub fn optional_cell(row: &[Value], index: usize) -> Result<Option<String>, JsValue> {
+pub fn optional_cell(row: &[Value], index: usize) -> Result<Option<String>, HostError> {
   if row
     .get(index)
     .and_then(|value| value.get("type"))
@@ -66,8 +72,8 @@ pub async fn query(
   sql: &str,
   parameters: Vec<Value>,
   transaction: Option<&str>,
-) -> Result<Vec<Vec<Value>>, JsValue> {
-  let result: Rows = bridge::call(
+) -> Result<Vec<Vec<Value>>, HostError> {
+  let result: Rows = apell_guest::call(
     "sqlite.query",
     json!({
       "database_handle": database()?, "transaction_handle": transaction,
@@ -82,8 +88,8 @@ pub async fn execute(
   sql: &str,
   parameters: Vec<Value>,
   transaction: Option<&str>,
-) -> Result<(), JsValue> {
-  let _: Value = bridge::call(
+) -> Result<(), HostError> {
+  let _: Value = apell_guest::call(
     "sqlite.execute",
     json!({
       "database_handle": database()?, "transaction_handle": transaction,
@@ -94,14 +100,14 @@ pub async fn execute(
   Ok(())
 }
 
-pub async fn begin() -> Result<String, JsValue> {
+pub async fn begin() -> Result<String, HostError> {
   let result: Transaction =
-    bridge::call("sqlite.begin", json!({"database_handle": database()?})).await?;
+    apell_guest::call("sqlite.begin", json!({"database_handle": database()?})).await?;
   Ok(result.transaction_handle)
 }
 
-pub async fn commit(transaction: &str) -> Result<(), JsValue> {
-  let _: Value = bridge::call(
+pub async fn commit(transaction: &str) -> Result<(), HostError> {
+  let _: Value = apell_guest::call(
     "sqlite.commit",
     json!({
       "database_handle": database()?, "transaction_handle": transaction,
@@ -113,7 +119,7 @@ pub async fn commit(transaction: &str) -> Result<(), JsValue> {
 
 pub async fn rollback(transaction: &str) {
   if let Ok(database_handle) = database() {
-    let _: Result<Value, JsValue> = bridge::call(
+    let _: Result<Value, HostError> = apell_guest::call(
       "sqlite.rollback",
       json!({
         "database_handle": database_handle, "transaction_handle": transaction,
@@ -123,13 +129,30 @@ pub async fn rollback(transaction: &str) {
   }
 }
 
-pub async fn initialize() -> Result<(), JsValue> {
-  let result: Opened = bridge::call("sqlite.open", json!({"database_name": "chatbot"})).await?;
-  DATABASE.with(|database| database.replace(Some(result.database_handle)));
+pub async fn initialize() -> Result<(), HostError> {
+  if DATABASE.with(|database| database.borrow().is_some()) {
+    return Ok(());
+  }
+  let result: Opened =
+    apell_guest::call("sqlite.open", json!({"database_name": "chatbot"})).await?;
+  DATABASE.with(|database| database.replace(Some(result.database_handle.clone())));
+  let migration = migrate().await;
+  if migration.is_err() {
+    let _: Result<Value, HostError> = apell_guest::call(
+      "sqlite.close",
+      json!({"database_handle": result.database_handle}),
+    )
+    .await;
+    DATABASE.with(|database| database.replace(None));
+  }
+  migration
+}
+
+async fn migrate() -> Result<(), HostError> {
   let transaction = begin().await?;
   let result = async {
     let version = query("PRAGMA user_version", vec![], Some(&transaction)).await?;
-    let version = cell(version.first().ok_or_else(|| bridge::error("Missing schema version."))?, 0)?;
+    let version = cell(version.first().ok_or_else(|| HostError::new("Missing schema version."))?, 0)?;
     match version.as_str() {
       "0" => {
         execute("CREATE TABLE conversations (conversation_id TEXT PRIMARY KEY, title TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)", vec![], Some(&transaction)).await?;
@@ -141,7 +164,7 @@ pub async fn initialize() -> Result<(), JsValue> {
         execute("ALTER TABLE messages ADD COLUMN provenance TEXT", vec![], Some(&transaction)).await?;
       }
       "2" | "3" => {}
-      _ => return Err(bridge::error("This chatbot database requires a newer applet.")),
+      _ => return Err(HostError::new("This chatbot database requires a newer applet.")),
     }
     if version != "3" {
       execute("ALTER TABLE conversations ADD COLUMN model_target TEXT", vec![], Some(&transaction)).await?;
@@ -156,21 +179,14 @@ pub async fn initialize() -> Result<(), JsValue> {
   result
 }
 
-pub async fn conversations() -> Result<Vec<Conversation>, JsValue> {
+pub async fn conversations() -> Result<Vec<Conversation>, HostError> {
   query("SELECT conversation_id, title, updated_at FROM conversations ORDER BY updated_at DESC, rowid DESC LIMIT 500", vec![], None).await?
     .into_iter().map(|row| Ok(Conversation {
       conversation_id: cell(&row, 0)?, title: cell(&row, 1)?, updated_at: cell(&row, 2)?,
     })).collect()
 }
 
-pub async fn create_conversation(transaction: Option<&str>) -> Result<String, JsValue> {
-  let conversation_id = bridge::create_id();
-  let now = bridge::now();
-  execute("INSERT INTO conversations (conversation_id, title, created_at, updated_at) VALUES (?1, 'New conversation', ?2, ?2)", vec![text(&conversation_id), text(now)], transaction).await?;
-  Ok(conversation_id)
-}
-
-pub async fn messages(conversation_id: &str) -> Result<Vec<Message>, JsValue> {
+pub async fn messages(conversation_id: &str) -> Result<Vec<Message>, HostError> {
   query("SELECT message_id, role, content, status FROM messages WHERE conversation_id = ?1 ORDER BY rowid LIMIT 1000", vec![text(conversation_id)], None).await?
     .into_iter().map(|row| Ok(Message {
       message_id: cell(&row, 0)?, role: cell(&row, 1)?, content: cell(&row, 2)?, status: cell(&row, 3)?,

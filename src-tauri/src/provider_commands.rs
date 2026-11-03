@@ -9,10 +9,11 @@ use apell_core::{
 use serde_json::{json, Value};
 use std::{
   collections::HashMap,
+  future::Future,
   sync::Mutex,
   time::{Duration, Instant},
 };
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 use tauri_plugin_opener::OpenerExt;
 
 const MAX_VAULT_BYTES: usize = 128 * 1024;
@@ -267,20 +268,50 @@ pub struct ModelSnapshot {
   pub account: Result<Option<AccountConfig>, String>,
 }
 
+// Dropping the waiter's JoinHandle detaches the task. The same task owns the
+// mutation gate across the provider exchange and the final blocking vault write.
+async fn finish_snapshot<T: Send + 'static>(
+  work: impl Future<Output = Result<T, String>> + Send + 'static,
+) -> Result<T, String> {
+  tauri::async_runtime::spawn(work)
+    .await
+    .map_err(|_| "The provider connection snapshot was interrupted.".to_owned())?
+}
+
 /// Resolve the destination and read its current credential under the same
 /// mutation gate. An unavailable selection fails before the secure store is read.
 pub async fn snapshot(
   app: &AppHandle,
-  host: &Host,
+  _host: &Host,
   route: ModelRoute<'_>,
 ) -> Result<ModelSnapshot, String> {
-  let _gate = host.credential_gate.lock().await;
-  let connection = route.resolve(&*host.settings.lock().await)?;
-  let account = current_account(app, host, &connection).await;
-  Ok(ModelSnapshot {
-    config: connection.config(),
-    account,
+  enum Destination {
+    Active,
+    Saved(String),
+    Selected(LlmTarget),
+  }
+  let destination = match route {
+    ModelRoute::Active => Destination::Active,
+    ModelRoute::Saved(id) => Destination::Saved(id.to_owned()),
+    ModelRoute::Selected(target) => Destination::Selected(target.clone()),
+  };
+  let app = app.clone();
+  finish_snapshot(async move {
+    let host = app.state::<Host>();
+    let _gate = host.credential_gate.lock().await;
+    let route = match &destination {
+      Destination::Active => ModelRoute::Active,
+      Destination::Saved(id) => ModelRoute::Saved(id),
+      Destination::Selected(target) => ModelRoute::Selected(target),
+    };
+    let connection = route.resolve(&*host.settings.lock().await)?;
+    let account = current_account(&app, &host, &connection).await;
+    Ok(ModelSnapshot {
+      config: connection.config(),
+      account,
+    })
   })
+  .await
 }
 
 async fn current_account(
@@ -499,6 +530,51 @@ pub async fn dispatch(
 mod tests {
   use super::*;
   use std::cell::{Cell, RefCell};
+
+  #[tokio::test]
+  async fn cancelling_snapshot_waiter_cannot_let_rotated_credentials_overwrite_a_newer_save() {
+    use std::sync::Arc;
+    use std::task::{Context, Waker};
+    use tokio::sync::{oneshot, Mutex as AsyncMutex};
+
+    let gate = Arc::new(AsyncMutex::new(()));
+    let writes = Arc::new(Mutex::new(Vec::new()));
+    let (writing, write_started) = oneshot::channel();
+    let (release_write, released) = oneshot::channel();
+    let snapshot_gate = gate.clone();
+    let snapshot_writes = writes.clone();
+    let waiter = tokio::spawn(finish_snapshot(async move {
+      let _gate = snapshot_gate.lock().await;
+      // Model a provider that has rotated the token, with its vault commit
+      // blocked in the same kind of native worker used by current_account.
+      blocking(move || {
+        let _ = writing.send(());
+        released
+          .blocking_recv()
+          .map_err(|_| "Fixture write cancelled.")?;
+        snapshot_writes.lock().unwrap().push("rotated");
+        Ok(())
+      })
+      .await
+    }));
+    write_started.await.unwrap();
+    // Poll the second writer ourselves so no scheduling race can obscure
+    // whether the mutation became runnable immediately after cancellation.
+    let mut save = Box::pin(gate.lock());
+    let mut context = Context::from_waker(Waker::noop());
+    assert!(save.as_mut().poll(&mut context).is_pending());
+    waiter.abort();
+    assert!(waiter.await.unwrap_err().is_cancelled());
+    assert!(
+      save.as_mut().poll(&mut context).is_pending(),
+      "the rotation must retain its gate"
+    );
+    assert!(writes.lock().unwrap().is_empty());
+    release_write.send(()).unwrap();
+    let _gate = save.await;
+    writes.lock().unwrap().push("replacement");
+    assert_eq!(*writes.lock().unwrap(), ["rotated", "replacement"]);
+  }
 
   #[test]
   fn applet_route_overrides_only_the_selected_model_and_never_falls_back() {
