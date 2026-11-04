@@ -92,11 +92,11 @@ export function InstallSheet(props: InstallSheetProps) {
           }}
         >
           <label>
-            Public repository
+            Public repository or release
             <input
               required
               value={repository}
-              placeholder="owner/repository"
+              placeholder="owner/repository or release URL"
               autoCapitalize="none"
               autoCorrect="off"
               spellCheck={false}
@@ -108,6 +108,7 @@ export function InstallSheet(props: InstallSheetProps) {
               }}
             />
           </label>
+          <small>Use owner/repository@nightly or paste a release URL to choose a prerelease.</small>
           <button type="submit" disabled={disabled}>
             {finding ? 'Finding release…' : 'Find release'}
           </button>
@@ -116,6 +117,7 @@ export function InstallSheet(props: InstallSheetProps) {
           <div className="provider-form">
             <p>
               {release.repository} · {release.tag}
+              {release.prerelease ? ' · Prerelease' : ''}
             </p>
             <label>
               Package
@@ -161,6 +163,9 @@ export function InstallSheet(props: InstallSheetProps) {
                   <strong>{applet.name}</strong>
                   <small>
                     {applet.version} · {applet.source!.repository}
+                    {applet.source!.release_tag
+                      ? ` · ${applet.source!.release_tag}`
+                      : ' · Latest stable'}
                   </small>
                 </span>
                 <button

@@ -9,7 +9,13 @@ export interface Manifest {
 }
 export interface InstalledApplet extends Manifest {
   sha256: string;
-  source?: { repository_id: number; repository: string; asset_name: string } | null;
+  source?: {
+    repository_id: number;
+    repository: string;
+    asset_name: string;
+    release_tag?: string | null;
+    prerelease?: boolean;
+  } | null;
 }
 export interface AppletSession {
   session_id: string;
@@ -23,6 +29,8 @@ export interface GitHubRelease {
   repository: string;
   release_id: number;
   tag: string;
+  release_tag: string | null;
+  prerelease: boolean;
   assets: { asset_id: number; name: string; size_bytes: number; sha256: string | null }[];
 }
 export interface BackendEvent {
