@@ -181,6 +181,7 @@ export function Library({
           void run(async () => {
             await installBundle({
               repository: release.repository,
+              release_tag: release.release_tag,
               release_id: release.release_id,
               asset_id: release.assets.find((asset) => asset.name === asset_name)!.asset_id,
               asset_name,

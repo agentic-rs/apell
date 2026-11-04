@@ -37,7 +37,13 @@ export const listApplets = () => shellCall<InstalledApplet[]>('applets.list');
 export const installBundle = (
   params:
     | { bundle_base64: string }
-    | { repository: string; asset_name: string; release_id: number; asset_id: number },
+    | {
+        repository: string;
+        release_tag: string | null;
+        asset_name: string;
+        release_id: number;
+        asset_id: number;
+      },
 ) => shellCall<InstalledApplet>('applets.install', params);
 export const githubRelease = (repository: string) =>
   shellCall<GitHubRelease>('applets.github_release', { repository });

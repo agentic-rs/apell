@@ -12,6 +12,10 @@ pub struct GitHubSource {
   pub repository_id: u64,
   pub repository: String,
   pub asset_name: String,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub release_tag: Option<String>,
+  #[serde(default)]
+  pub prerelease: bool,
 }
 
 impl GitHubSource {
@@ -19,6 +23,11 @@ impl GitHubSource {
     if self.repository_id == 0
       || !crate::github::valid_repository(&self.repository)
       || !crate::github::valid_asset_name(&self.asset_name)
+      || self
+        .release_tag
+        .as_ref()
+        .is_some_and(|tag| !crate::github::valid_release_tag(tag))
+      || (self.prerelease && self.release_tag.is_none())
     {
       return Err("Invalid GitHub package source.".into());
     }
@@ -26,7 +35,9 @@ impl GitHubSource {
   }
 
   fn same_release_asset(&self, other: &Self) -> bool {
-    self.repository_id == other.repository_id && self.asset_name == other.asset_name
+    self.repository_id == other.repository_id
+      && self.asset_name == other.asset_name
+      && self.release_tag == other.release_tag
   }
 }
 
@@ -167,8 +178,28 @@ impl BundleStore {
           semver::Version::parse(&manifest.version).map_err(|_| "Invalid package version.")?;
         match next.cmp_precedence(&prior) {
           std::cmp::Ordering::Less => return Err("A newer version is already installed.".into()),
-          std::cmp::Ordering::Equal if source.is_some() && hash != old.sha256 => {
-            return Err("This release changed content without increasing its version.".into())
+          std::cmp::Ordering::Equal => {
+            if let Some(incoming) = &source {
+              let prior = old
+                .source
+                .as_ref()
+                .ok_or("Invalid installed package source.")?;
+              // A metadata-only promotion must not make a previously stable
+              // version replaceable by a second update with different bytes.
+              if !prior.prerelease && incoming.prerelease {
+                return Err(
+                  "A stable release cannot become a prerelease without increasing its version."
+                    .into(),
+                );
+              }
+              let rolling_prerelease = prior.prerelease
+                && incoming.prerelease
+                && prior.release_tag.is_some()
+                && prior.same_release_asset(incoming);
+              if hash != old.sha256 && !rolling_prerelease {
+                return Err("This release changed content without increasing its version.".into());
+              }
+            }
           }
           _ => {}
         }

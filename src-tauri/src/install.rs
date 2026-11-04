@@ -1,7 +1,7 @@
 use crate::host::{string, Host};
 use apell_core::{
   bundles::{GitHubSource, InstalledApplet, MAX_BUNDLE_BYTES},
-  github::GitHubClient,
+  github::{GitHubClient, GitHubTarget},
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde_json::{json, Value};
@@ -16,9 +16,15 @@ fn file_bytes(params: &Value) -> Result<Option<Vec<u8>>, String> {
   let Some(encoded) = params.get("bundle_base64") else {
     return Ok(None);
   };
-  if ["repository", "asset_name", "release_id", "asset_id"]
-    .iter()
-    .any(|key| params.get(key).is_some())
+  if [
+    "repository",
+    "release_tag",
+    "asset_name",
+    "release_id",
+    "asset_id",
+  ]
+  .iter()
+  .any(|key| params.get(key).is_some())
   {
     return Err("Choose a file or a GitHub repository.".into());
   }
@@ -33,6 +39,19 @@ fn file_bytes(params: &Value) -> Result<Option<Vec<u8>>, String> {
     return Err("Package exceeds 24 MiB.".into());
   }
   Ok(Some(bytes))
+}
+
+fn github_target(params: &Value) -> Result<GitHubTarget, String> {
+  let repository = string(params, "repository")?.to_owned();
+  let release_tag = match params.get("release_tag") {
+    None | Some(Value::Null) => None,
+    Some(Value::String(tag)) => Some(tag.clone()),
+    Some(_) => return Err("Invalid GitHub release tag.".into()),
+  };
+  Ok(GitHubTarget {
+    repository,
+    release_tag,
+  })
 }
 
 fn check_release_snapshot(params: &Value, release_id: u64, asset_id: u64) -> Result<(), String> {
@@ -66,7 +85,7 @@ pub async fn update(app: AppHandle, host: &Host, applet_id: &str) -> Result<Valu
   install_inner(
     app,
     host,
-    json!({"repository":source.repository,"asset_name":source.asset_name}),
+    json!({"repository":source.repository,"release_tag":source.release_tag,"asset_name":source.asset_name}),
     Some((applet_id.to_owned(), source)),
   )
   .await
@@ -87,9 +106,8 @@ async fn install_inner(
   let (bytes, source, expected) = if let Some(bytes) = local {
     (bytes, None, None)
   } else {
-    let repository = string(&params, "repository")?;
     let github = GitHubClient::new()?;
-    let release = github.resolve(repository).await?;
+    let release = github.resolve_target(&github_target(&params)?).await?;
     if let Some((_, source)) = &update_source {
       if source.repository_id != release.repository_id {
         return Err("The GitHub repository identity changed. This update was rejected.".into());
@@ -156,12 +174,28 @@ mod tests {
       json!({"bundle_base64":"!"}),
       json!({"bundle_base64":"","repository":"owner/repo"}),
       json!({"bundle_base64":"","release_id":1}),
+      json!({"bundle_base64":"","release_tag":"nightly"}),
     ] {
       assert!(file_bytes(&input).is_err());
     }
     assert!(file_bytes(&json!({"repository":"owner/repo"}))
       .unwrap()
       .is_none());
+  }
+
+  #[test]
+  fn github_install_preserves_the_explicit_selector_and_rejects_malformed_tags() {
+    let target =
+      github_target(&json!({"repository":"example/project","release_tag":"nightly"})).unwrap();
+    assert_eq!(target.repository, "example/project");
+    assert_eq!(target.release_tag.as_deref(), Some("nightly"));
+    assert!(github_target(&json!({"repository":"example/project"}))
+      .unwrap()
+      .release_tag
+      .is_none());
+    for tag in [json!(1), json!(true), json!([])] {
+      assert!(github_target(&json!({"repository":"example/project","release_tag":tag})).is_err());
+    }
   }
 
   #[test]

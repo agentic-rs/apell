@@ -29,6 +29,15 @@ fn source(id: u64, asset: &str) -> GitHubSource {
     repository_id: id,
     repository: "sample/project".into(),
     asset_name: asset.into(),
+    release_tag: None,
+    prerelease: false,
+  }
+}
+fn tagged_source(tag: &str, prerelease: bool) -> GitHubSource {
+  GitHubSource {
+    release_tag: Some(tag.into()),
+    prerelease,
+    ..source(10, "sample.apel")
   }
 }
 fn replace_all(bytes: &mut [u8], old: &[u8], new: &[u8]) {
@@ -320,6 +329,167 @@ fn binds_release_repo_asset_and_applet_id_and_rejects_replacements_or_downgrades
   assert!(store
     .install_with_source(&package("sample", "4.0.0"), None, Some(bound))
     .is_err());
+}
+
+#[test]
+fn rolling_prerelease_updates_equal_versions_and_retains_its_channel_on_reopen() {
+  let dir = tempfile::tempdir().unwrap();
+  let first = package("sample", "1.0.0");
+  let bound = tagged_source("nightly", true);
+  BundleStore::new(dir.path().into())
+    .install_with_source(&first, None, Some(bound.clone()))
+    .unwrap();
+  let store = BundleStore::new(dir.path().into());
+  assert_eq!(
+    store.installed("sample").unwrap().source,
+    Some(bound.clone())
+  );
+  let changed = archive(&[
+    ("manifest.json", &manifest("sample", "1.0.0")),
+    ("index.html", b"nightly replacement"),
+  ]);
+  let updated = store
+    .update_from_source("sample", &changed, None, bound.clone())
+    .unwrap();
+  assert_ne!(updated.sha256, digest(&first));
+  assert_eq!(updated.source, Some(bound.clone()));
+  assert_eq!(store.load("sample").unwrap().html, "nightly replacement");
+  assert!(store
+    .update_from_source("sample", &first, None, tagged_source("nightly", false))
+    .is_err());
+  assert!(store
+    .update_from_source("sample", &package("sample", "0.9.0"), None, bound.clone())
+    .is_err());
+  assert!(store
+    .update_from_source("sample", &package("another", "2.0.0"), None, bound.clone())
+    .is_err());
+  for foreign in [
+    GitHubSource {
+      repository_id: 11,
+      ..bound.clone()
+    },
+    GitHubSource {
+      asset_name: "another.apel".into(),
+      ..bound.clone()
+    },
+  ] {
+    assert!(store
+      .update_from_source("sample", &package("sample", "2.0.0"), None, foreign)
+      .is_err());
+  }
+  let reopened = BundleStore::new(dir.path().into());
+  assert_eq!(reopened.installed("sample").unwrap().source, Some(bound));
+  assert_eq!(reopened.installed("sample").unwrap().sha256, updated.sha256);
+}
+
+#[test]
+fn stable_release_cannot_gain_same_version_replacement_through_prerelease_metadata() {
+  let dir = tempfile::tempdir().unwrap();
+  let store = BundleStore::new(dir.path().into());
+  let first = package("sample", "1.0.0");
+  let stable = tagged_source("preview", false);
+  let prerelease = tagged_source("preview", true);
+  store
+    .install_with_source(&first, None, Some(stable.clone()))
+    .unwrap();
+  let changed = archive(&[
+    ("manifest.json", &manifest("sample", "1.0.0")),
+    ("index.html", b"changed release"),
+  ]);
+  for bytes in [&first, &changed] {
+    assert!(store
+      .update_from_source("sample", bytes, None, prerelease.clone())
+      .is_err());
+    assert_eq!(
+      store.installed("sample").unwrap().source,
+      Some(stable.clone())
+    );
+    assert_eq!(store.installed("sample").unwrap().sha256, digest(&first));
+  }
+  assert!(store
+    .update_from_source("sample", &changed, None, stable)
+    .is_err());
+  store
+    .update_from_source(
+      "sample",
+      &package("sample", "2.0.0"),
+      None,
+      prerelease.clone(),
+    )
+    .unwrap();
+  assert_eq!(store.installed("sample").unwrap().source, Some(prerelease));
+}
+
+#[test]
+fn release_tags_are_bound_to_the_installation_and_prereleases_require_an_explicit_tag() {
+  let dir = tempfile::tempdir().unwrap();
+  let store = BundleStore::new(dir.path().into());
+  let first = package("sample", "1.0.0");
+  for invalid in [
+    GitHubSource {
+      prerelease: true,
+      ..source(10, "sample.apel")
+    },
+    tagged_source("", true),
+    tagged_source("nightly\n", true),
+  ] {
+    assert!(store
+      .install_with_source(&first, None, Some(invalid))
+      .is_err());
+  }
+  let bound = tagged_source("nightly", true);
+  store
+    .install_with_source(&first, None, Some(bound.clone()))
+    .unwrap();
+  for foreign in [tagged_source("preview", true), source(10, "sample.apel")] {
+    let next = package("sample", "2.0.0");
+    assert!(store
+      .install_with_source(&next, None, Some(foreign.clone()))
+      .is_err());
+    assert!(store
+      .update_from_source("sample", &next, None, foreign)
+      .is_err());
+  }
+  assert_eq!(store.installed("sample").unwrap().source, Some(bound));
+  assert_eq!(store.installed("sample").unwrap().sha256, digest(&first));
+}
+
+#[test]
+fn persisted_sources_without_channel_fields_remain_latest_stable() {
+  let dir = tempfile::tempdir().unwrap();
+  let store = BundleStore::new(dir.path().into());
+  let bound = source(10, "sample.apel");
+  let installed = store
+    .install_with_source(&package("sample", "1.0.0"), None, Some(bound.clone()))
+    .unwrap();
+  // Reproduce the persisted record written before release channels existed.
+  let old = serde_json::json!({
+    "applet_id": "sample",
+    "sha256": installed.sha256,
+    "source": {"repository_id": 10, "repository": "sample/project", "asset_name": "sample.apel"}
+  });
+  std::fs::write(
+    dir.path().join("sample/active"),
+    serde_json::to_vec(&old).unwrap(),
+  )
+  .unwrap();
+  let reopened = BundleStore::new(dir.path().into());
+  assert_eq!(
+    reopened.installed("sample").unwrap().source,
+    Some(bound.clone())
+  );
+  assert!(reopened
+    .update_from_source(
+      "sample",
+      &package("sample", "2.0.0"),
+      None,
+      tagged_source("nightly", true)
+    )
+    .is_err());
+  let updated = reopened
+    .update_from_source("sample", &package("sample", "2.0.0"), None, bound.clone())
+    .unwrap();
+  assert_eq!(updated.source, Some(bound));
 }
 
 #[test]
