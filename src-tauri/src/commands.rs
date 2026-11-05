@@ -115,6 +115,16 @@ pub async fn service_call(
 ) -> Result<Value, String> {
   let host = app.state::<Host>();
   let session = host.session(&session_id, &method)?;
+  if matches!(
+    method.split('.').next(),
+    Some("websocket" | "secrets" | "crypto" | "runtime")
+  ) {
+    if backend_events.is_none() {
+      return Err("This host service is available only to an applet backend.".into());
+    }
+    return crate::backend_services::dispatch(&app, &host, &session_id, session, &method, params)
+      .await;
+  }
   if method.starts_with("sqlite.") {
     let sqlite = host.sqlite.clone();
     return blocking(move || {
@@ -267,7 +277,7 @@ pub async fn service_call(
   }
 }
 
-async fn blocking(
+pub(crate) async fn blocking(
   task: impl FnOnce() -> Result<Value, String> + Send + 'static,
 ) -> Result<Value, String> {
   tauri::async_runtime::spawn_blocking(task)

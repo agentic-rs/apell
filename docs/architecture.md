@@ -52,7 +52,7 @@ An `.apel` is a ZIP32 archive. `manifest.json` and a non-empty UTF-8 `index.html
 }
 ```
 
-Applet IDs use up to 80 lowercase ASCII letters, digits, hyphens, or underscores. Package versions use semantic versioning. The host rejects unknown or duplicate permission groups. The available groups are `sqlite`, `llm`, `resources`, `device`, `http`, `fs`, and `config`. Each service checks the verified manifest and the host-assigned scope.
+Applet IDs use up to 80 lowercase ASCII letters, digits, hyphens, or underscores. Package versions use semantic versioning. The host rejects unknown or duplicate permission groups. The available groups are `sqlite`, `llm`, `resources`, `device`, `http`, `fs`, `config`, `websocket`, `secrets`, `crypto`, and `runtime`. Each service checks the verified manifest and the host-assigned scope. The last four groups are backend-only: direct view calls are rejected even when declared.
 
 The parser accepts stored and deflated entries. Limits are 24 MiB of archive data, 64 MiB of actual expanded content, 1,024 ZIP records, and a 64 KiB manifest. It checks both directory records and decoded content, including CRC and declared sizes. Path traversal, absolute paths, symlinks, encryption, ambiguous entries, and case or Unicode normalization collisions are rejected. File names retain their original spelling for exact lookup. The declared backend is checked for a valid location and module header at install. Wasmi checks the complete module, imports, and ABI at launch.
 
@@ -66,7 +66,7 @@ Old API-1 JSON bundles are read only from installed caches, with their HTML serv
 
 ## Applet isolation and bridge
 
-The host serves verified package bytes through a custom `apel` protocol at a view-specific entry URL. Android and Windows use Tauri's local HTTP mapping for the protocol. Requests must name the attached view. The handler serves public package files and refuses `manifest.json`, `lib/`, and unsafe paths. It supplies MIME types, a restrictive content policy, `nosniff`, and disables caching. The iframe uses `sandbox="allow-scripts"` and has an opaque origin. The host bootstrap credential stays outside applet content.
+The host serves verified package bytes through a custom `apel` protocol at a view-specific entry URL. Android and Windows use Tauri's local HTTP mapping for the protocol. Requests must name the attached view. The handler serves public package files and refuses `manifest.json`, `lib/`, and unsafe paths. It supplies MIME types, a restrictive content policy, `nosniff`, and disables caching. Images may use package, data, and locally created blob URLs; direct network connections remain restricted to package assets. The iframe uses `sandbox="allow-scripts"` and has an opaque origin. The host bootstrap credential stays outside applet content.
 
 The TypeScript SDK announces readiness. The shell verifies the sending iframe and its live view before transferring a dedicated `MessagePort`. It supplies the authoritative run and view IDs when forwarding calls. Direct API methods must be on the bridge allowlist. `hostCall<T>(method, params)` returns the result or rejects with a host error. Each message carries an envelope `request_id`; long-running services may also use their own request ID for progress and cancellation. The bridge permits up to 32 concurrent requests and rejects duplicate in-flight envelope IDs.
 
@@ -258,6 +258,30 @@ Headers are arrays of `{ name, value }`, preserving repeated fields. Header valu
 URLs require HTTPS or loopback HTTP and reject embedded credentials and fragments. Queries are supported. Native networking is independent of browser CORS. This service has no cookie jar, adds no authorization, and cannot retrieve the shared provider key. An applet can supply its own authentication headers.
 
 Each body is limited to 16 MiB; request headers to 64 fields and 32 KiB; response headers to 64 KiB; URLs to 8 KiB. Timeouts range from 100 to 120,000 milliseconds and cover the response body. The service allows four active requests across applets and returns a busy error when full. Closing the applet cancels its requests. The SDK allows 135 seconds for the bridge response. Streaming responses and individual request cancellation are not exposed yet.
+
+## Backend networking and secure state
+
+Declare `websocket`, `secrets`, `crypto`, and/or `runtime` for these generic Rust backend services. Use `apell_guest::services` or the equivalent `apell_guest::call` JSON contract. Handles belong to the native backend run, survive detaching/reloading its view, and close when the run retires. They cannot be used by another run or by frontend host calls. These APIs do not create a domain-specific connection manager or access shared provider credentials.
+
+| Method                | Parameters                                   | Result                      |
+| --------------------- | -------------------------------------------- | --------------------------- |
+| `websocket.open`      | `url`, optional `headers: [{ name, value }]` | `{ socket_handle }`         |
+| `websocket.send`      | `socket_handle`, `data`                      | `null`                      |
+| `websocket.receive`   | `socket_handle`, optional `timeout_ms`       | `{ data: string \| null }`  |
+| `websocket.close`     | `socket_handle`                              | `null`                      |
+| `secrets.get`         | `key`                                        | `{ value: string \| null }` |
+| `secrets.set`         | `key`, `value`                               | `null`                      |
+| `secrets.delete`      | `key`                                        | `null`                      |
+| `crypto.random_bytes` | `length`                                     | `{ data }`                  |
+| `runtime.sleep`       | `duration_ms`                                | `null`                      |
+
+All binary `data` fields use canonical unpadded URL-safe base64. WebSockets carry binary records only, bounded to 1 MiB; text frames fail explicitly. The service allows 16 sockets per run and 64 globally. Send and receive can overlap; only one receive may be pending per socket. A successful handshake never follows redirects or supplies ambient credentials. WSS is required except numeric loopback or localhost WS. Authentication headers may be supplied explicitly; connection, Upgrade, and WebSocket protocol headers are managed by the host. Apple builds use system certificate roots; Android uses bundled Mozilla roots, matching native HTTP's trust policy. There is no automatic reconnect, retry, or replay.
+
+Connection setup is bounded to 15 seconds, writes to 10 seconds, and reads default to 90 seconds (`timeout_ms` accepts 100–120000). A clean peer close yields `data: null`. Abnormal close, invalid frames, and timeout reject and retire the handle. Explicit close/retiring the backend wakes pending operations. Callers must treat a failed write as potentially delivered and decide recovery using their own protocol.
+
+Secret keys use 1–128 ASCII letters, digits, dots, underscores or hyphens; values are at most 16 KiB. The host derives the secure-store namespace from the verified applet ID. Secrets live in Keychain on Apple platforms or Android Keystore-backed encrypted storage and persist across applet runs. No fallback writes secrets to JSON/config/files. Only the backend receives a secret value; the frontend must use applet commands that expose public state. Applet code remains responsible for not emitting its own secrets.
+
+`crypto.random_bytes` accepts 1–4096 bytes from the native operating system CSPRNG. Use it for keys or private cryptographic RNG seeds; UUID/time APIs are not substitutes. `runtime.sleep` accepts 1–120000 milliseconds and cancels on backend retirement. Networking and sleep do not keep the mobile process alive against OS suspension or termination.
 
 ## Applet files
 

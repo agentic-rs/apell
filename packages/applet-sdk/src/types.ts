@@ -156,3 +156,21 @@ export interface FileStat {
 export interface DirectoryEntry extends FileStat {
   name: string;
 }
+/** Backend-only capabilities are invoked from Rust through apell_guest::services.
+ * These wire types describe the JSON contract; the view bridge rejects them. */
+export interface BackendWebSocketOpen {
+  url: string;
+  headers?: HttpHeader[];
+}
+export interface BackendWebSocketHandle {
+  socket_handle: string;
+}
+export interface BackendWebSocketRecord {
+  data: string | null;
+}
+export interface BackendSecret {
+  value: string | null;
+}
+export interface BackendRandomBytes {
+  data: string;
+}

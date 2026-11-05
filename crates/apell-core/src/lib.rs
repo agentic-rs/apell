@@ -8,6 +8,7 @@ pub mod llm;
 pub mod providers;
 pub mod resources;
 pub mod sqlite;
+pub mod websocket;
 
 pub fn valid_name(value: &str) -> bool {
   !value.is_empty()
