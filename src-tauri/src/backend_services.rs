@@ -47,9 +47,12 @@ pub async fn dispatch(
         .receive(owner, string(&params, "socket_handle")?, timeout_ms)
         .await
     }
-    "websocket.close" => host
-      .websocket
-      .close(owner, string(&params, "socket_handle")?),
+    "websocket.close" => {
+      host
+        .websocket
+        .close(owner, string(&params, "socket_handle")?)
+        .await
+    }
     "crypto.random_bytes" => {
       let length = params
         .get("length")
@@ -89,21 +92,36 @@ pub async fn dispatch(
       };
       let method = method.to_owned();
       let app = app.clone();
-      let _gate = host.credential_gate.lock().await;
-      crate::commands::blocking(move || {
-        session.run_local(|| {
-          if method == "secrets.get" {
-            Ok(json!({"value":tauri_plugin_apell_credentials::read(&app, &account)?}))
-          } else {
-            tauri_plugin_apell_credentials::write(&app, &account, value.as_deref())?;
-            Ok(Value::Null)
-          }
-        })
+      with_applet_vault(host, session, move || {
+        if method == "secrets.get" {
+          Ok(json!({"value":tauri_plugin_apell_credentials::read(&app, &account)?}))
+        } else {
+          tauri_plugin_apell_credentials::write(&app, &account, value.as_deref())?;
+          Ok(Value::Null)
+        }
       })
       .await
     }
     _ => Err("Unknown backend service operation.".into()),
   }
+}
+
+async fn with_applet_vault(
+  host: &Host,
+  session: Session,
+  operation: impl FnOnce() -> Result<Value, String> + Send + 'static,
+) -> Result<Value, String> {
+  // Provider refreshes may wait on the network. Apple stores each account in
+  // its own Keychain item. Android runs synchronous vault commands serially
+  // on the Tauri Android context, including creation of its shared Keystore key.
+  let gate = host.applet_secret_gate.clone().lock_owned().await;
+  crate::commands::blocking(move || {
+    // The worker can outlive its waiter when the guest traps. Keep the lock
+    // through the platform call and recheck the session after queueing.
+    let _guard = gate;
+    session.run_local(operation)
+  })
+  .await
 }
 
 fn secret_account(applet_id: &str, key: &str) -> Result<String, String> {
@@ -127,20 +145,4 @@ fn secret_account(applet_id: &str, key: &str) -> Result<String, String> {
 }
 
 #[cfg(test)]
-mod tests {
-  use super::*;
-  #[test]
-  fn secret_slots_cannot_escape_the_verified_applet_namespace() {
-    let slot = secret_account("one", "identity").unwrap();
-    assert_eq!(slot.len(), 64);
-    assert!(slot.bytes().all(|byte| byte.is_ascii_hexdigit()));
-    assert_ne!(
-      secret_account("one", "identity").unwrap(),
-      secret_account("two", "identity").unwrap()
-    );
-    for key in ["", ":another:identity", "../key", "with space", "\n"] {
-      assert!(secret_account("one", key).is_err());
-    }
-    assert!(secret_account("one", &"a".repeat(129)).is_err());
-  }
-}
+mod tests;
