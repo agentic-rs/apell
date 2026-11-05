@@ -47,10 +47,12 @@ pub struct Host {
   pub resources: Arc<ResourceStore>,
   pub llm: Arc<LlmService>,
   pub http: Arc<HttpService>,
+  pub websocket: Arc<apell_core::websocket::WebSocketService>,
   pub files: Arc<FileStore>,
   pub config: Arc<ConfigStore>,
   pub settings: tokio::sync::Mutex<Settings>,
   pub credential_gate: tokio::sync::Mutex<()>,
+  pub applet_secret_gate: Arc<tokio::sync::Mutex<()>>,
   pub provider_http: apell_core::providers::Client,
   pub provider_jobs: Arc<ProviderJobs>,
   pub sessions: Mutex<HashMap<String, Session>>,
@@ -73,10 +75,12 @@ impl Host {
       resources: Arc::new(ResourceStore::new(root.join("resources"))?),
       llm,
       http: Arc::new(HttpService::new()?),
+      websocket: Arc::new(apell_core::websocket::WebSocketService::new()),
       files: Arc::new(FileStore::new(root.join("files"))),
       config: Arc::new(ConfigStore::new(root.join("config"))),
       settings: tokio::sync::Mutex::new(settings),
       credential_gate: tokio::sync::Mutex::new(()),
+      applet_secret_gate: Arc::default(),
       provider_http: apell_core::providers::http_client()?,
       provider_jobs: Arc::new(ProviderJobs::default()),
       sessions: Mutex::new(HashMap::new()),
@@ -127,6 +131,7 @@ impl Host {
     }
     self.llm.close_session(session_id);
     self.sqlite.close_session(session_id);
+    self.websocket.close_session(session_id);
     Ok(())
   }
 }

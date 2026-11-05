@@ -1,5 +1,6 @@
 mod applets;
 mod assets;
+mod backend_services;
 mod commands;
 mod host;
 mod install;

@@ -75,6 +75,10 @@ fn validate_manifest(manifest: &Manifest, legacy: bool) -> Result<(), String> {
     "http",
     "fs",
     "config",
+    "websocket",
+    "secrets",
+    "crypto",
+    "runtime",
   ];
   let mut seen = HashSet::new();
   if manifest

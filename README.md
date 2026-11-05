@@ -135,7 +135,7 @@ An update makes the new package available for the next run. If the applet alread
 
 Apell supports one attached view and up to eight applet runs per process. Backends can continue work without a view while the host process runs. A mobile OS may suspend or terminate the process. Persist state that must survive termination in the host's SQLite, file, or config service. Cloud synchronization, automatic resource eviction, an uninstall flow, and a rollback selector are deferred.
 
-Applets own their SQLite schema and migrations and issue asynchronous SQL calls through the native service. Each applet has a private file area, downloadable resources, and non-secret JSON preferences. Credentials and provider settings are managed by the shell.
+Applets own their SQLite schema and migrations and issue asynchronous SQL calls through the native service. Each applet has a private file area, downloadable resources, and non-secret JSON preferences. Rust backends can additionally declare generic binary WebSocket, applet-scoped secure-secret, secure-randomness and timer permissions; see [backend services](docs/architecture.md#backend-networking-and-secure-state). Shared provider credentials and provider settings remain managed by the shell.
 
 Settings supports saved named connections, model discovery and manual IDs, API keys, and Codex/GitHub Copilot device sign-in. **Use connection** selects the shared default. The applet's model picker can select a different target for one conversation. Companion starts a new conversation when changing the target of a populated chat. **Test connection** sends a short model request.
 
