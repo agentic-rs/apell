@@ -2,6 +2,7 @@
 //! are polled on serial VM turns, independently of any attached frontend.
 mod executor;
 pub mod protocol;
+pub mod services;
 
 pub use executor::{call, call_with_events, emit, spawn};
 pub use protocol::HostError;

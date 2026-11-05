@@ -21,7 +21,7 @@ pub fn entry_url(view_id: &str) -> String {
 
 fn csp() -> String {
   let origin = package_origin();
-  format!("default-src 'none'; script-src 'unsafe-inline' 'wasm-unsafe-eval' {origin}; style-src 'unsafe-inline' {origin}; img-src data: {origin}; font-src {origin}; connect-src {origin}; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'")
+  format!("default-src 'none'; script-src 'unsafe-inline' 'wasm-unsafe-eval' {origin}; style-src 'unsafe-inline' {origin}; img-src data: blob: {origin}; font-src {origin}; connect-src {origin}; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'")
 }
 
 fn asset_path(uri_path: &str) -> Result<(String, String), StatusCode> {
@@ -150,6 +150,7 @@ mod tests {
   fn opaque_frontends_can_load_relative_modules_without_network_access() {
     let policy = csp();
     assert!(policy.contains(&format!("connect-src {}", package_origin())));
+    assert!(policy.contains(&format!("img-src data: blob: {}", package_origin())));
     assert!(!policy.contains("https:"));
     #[cfg(not(any(target_os = "android", target_os = "windows")))]
     assert!(!policy.contains("http:"));

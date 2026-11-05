@@ -47,6 +47,7 @@ pub struct Host {
   pub resources: Arc<ResourceStore>,
   pub llm: Arc<LlmService>,
   pub http: Arc<HttpService>,
+  pub websocket: Arc<apell_core::websocket::WebSocketService>,
   pub files: Arc<FileStore>,
   pub config: Arc<ConfigStore>,
   pub settings: tokio::sync::Mutex<Settings>,
@@ -73,6 +74,7 @@ impl Host {
       resources: Arc::new(ResourceStore::new(root.join("resources"))?),
       llm,
       http: Arc::new(HttpService::new()?),
+      websocket: Arc::new(apell_core::websocket::WebSocketService::new()),
       files: Arc::new(FileStore::new(root.join("files"))),
       config: Arc::new(ConfigStore::new(root.join("config"))),
       settings: tokio::sync::Mutex::new(settings),
@@ -127,6 +129,7 @@ impl Host {
     }
     self.llm.close_session(session_id);
     self.sqlite.close_session(session_id);
+    self.websocket.close_session(session_id);
     Ok(())
   }
 }

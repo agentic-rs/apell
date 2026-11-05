@@ -6,6 +6,8 @@ license.workspace = true
 
 [dependencies]
 base64 = "0.22"
+futures-util = { version = "0.3", features = ["sink"] }
+tokio-tungstenite = { version = "0.26", features = ["rustls-tls-native-roots"] }
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "stream"] }
 rusqlite = { version = "0.32", features = ["bundled", "hooks", "limits"] }
 serde = { version = "1", features = ["derive"] }

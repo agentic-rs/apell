@@ -26,6 +26,15 @@ describe('applet bridge boundary', () => {
       expect(isBridgeRequest({ ...request, method })).toBe(true);
     }
     for (const method of [
+      'websocket.open',
+      'websocket.send',
+      'websocket.receive',
+      'websocket.close',
+      'secrets.get',
+      'secrets.set',
+      'secrets.delete',
+      'crypto.random_bytes',
+      'runtime.sleep',
       'view.check',
       'llm.complete',
       'llm.save_settings',
