@@ -2,6 +2,7 @@
 //! are polled on serial VM turns, independently of any attached frontend.
 mod executor;
 pub mod protocol;
+pub mod services;
 
 pub use executor::{call, call_with_events, emit, spawn};
 pub use protocol::HostError;
@@ -18,7 +19,14 @@ unsafe extern "C" {
 }
 
 fn send(record: &Outbound) -> Result<(), HostError> {
-  let bytes = serde_json::to_vec(record).map_err(HostError::new)?;
+  let bytes = match record {
+    Outbound::HostCall {
+      request_id,
+      method,
+      params,
+    } if method == "websocket.send" => services::encode_socket_send(request_id, params)?,
+    _ => serde_json::to_vec(record).map_err(HostError::new)?,
+  };
   if bytes.len() > MAX_MESSAGE_BYTES {
     return Err(HostError::new(
       "The backend message exceeds the ABI size limit.",

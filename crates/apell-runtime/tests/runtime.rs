@@ -4,7 +4,7 @@ use std::{
   path::Path,
   process::Command,
   sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
     Arc, OnceLock,
   },
   time::Duration,
@@ -204,6 +204,87 @@ async fn null_results_typed_errors_and_host_values_round_trip_through_real_wasm(
   let metadata = run.invoke("metadata", Value::Null).await.unwrap();
   assert!(uuid::Uuid::parse_str(metadata["id"].as_str().unwrap()).is_ok());
   assert!(metadata["now"].as_str().unwrap().ends_with('Z'));
+  run.stop().await;
+}
+
+#[tokio::test]
+async fn maximum_websocket_record_round_trips_without_exhausting_guest_fuel() {
+  struct SocketPeer {
+    record: String,
+    sends: AtomicUsize,
+  }
+  impl HostServices for SocketPeer {
+    fn call(&self, method: String, params: Value, _: HostEvents) -> ServiceFuture {
+      assert_eq!(params["socket_handle"], "fixture\"socket");
+      let result = match method.as_str() {
+        "websocket.receive" => Ok(json!({"data":self.record})),
+        "websocket.send" => {
+          self.sends.fetch_add(1, Ordering::Relaxed);
+          assert!(
+            params["data"].as_str() == Some(self.record.as_str()),
+            "record changed"
+          );
+          Ok(Value::Null)
+        }
+        _ => Err(HostError::new("Unexpected fixture service.")),
+      };
+      Box::pin(std::future::ready(result))
+    }
+  }
+  assert_eq!(
+    apell_guest::services::MAX_RECORD_BYTES,
+    apell_core::websocket::MAX_RECORD_BYTES
+  );
+  let len = (apell_guest::services::MAX_RECORD_BYTES * 4).div_ceil(3);
+  let alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+  let mut record = alphabet.repeat(len.div_ceil(alphabet.len()));
+  record.truncate(len - 1);
+  record.push('A'); // Zero unused bits in the final base64 digit.
+  let peer = Arc::new(SocketPeer {
+    record,
+    sends: AtomicUsize::new(0),
+  });
+  let run = RuntimeHandle::start(fixture(), peer.clone()).await.unwrap();
+  assert_eq!(
+    run.invoke("receive_record", Value::Null).await.unwrap(),
+    json!(len)
+  );
+  assert_eq!(
+    run.invoke("send_record", Value::Null).await.unwrap(),
+    Value::Null
+  );
+  // A forwarder often sends immediately in the Wasm turn that decodes a
+  // receive. A frontend command can supply a complete record in one turn too.
+  assert_eq!(
+    run.invoke("echo_record", Value::Null).await.unwrap(),
+    json!(len)
+  );
+  assert_eq!(
+    run
+      .invoke("send_record", Value::String(peer.record.clone()))
+      .await
+      .unwrap(),
+    Value::Null
+  );
+
+  let mut oversized = peer.record.clone();
+  oversized.push('A');
+  let error = run
+    .invoke("send_record", Value::String(oversized))
+    .await
+    .unwrap_err();
+  assert!(error.message.contains("exceeds 1 MiB"), "{error}");
+  let mut malformed = peer.record.clone();
+  malformed.replace_range(len - 2..len - 1, "!");
+  for invalid in ["A", "AB", "AAB", "AA==", "\\u0041", "quote\"", &malformed] {
+    let error = run.invoke("send_record", json!(invalid)).await.unwrap_err();
+    assert!(
+      error.message.contains("canonical unpadded base64url"),
+      "{error}"
+    );
+  }
+  assert_eq!(peer.sends.load(Ordering::Relaxed), 3);
+  assert_eq!(run.invoke("increment", Value::Null).await.unwrap(), 1);
   run.stop().await;
 }
 
