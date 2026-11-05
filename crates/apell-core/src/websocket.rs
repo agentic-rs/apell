@@ -9,7 +9,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{
   collections::HashMap,
-  sync::{Arc, Mutex},
+  sync::{Arc, Mutex, OnceLock},
   time::Duration,
 };
 use tokio::{
@@ -20,15 +20,17 @@ use tokio_tungstenite::{
   connect_async_tls_with_config,
   tungstenite::{
     client::IntoClientRequest,
+    error::ProtocolError,
     http::{HeaderName, HeaderValue},
     protocol::WebSocketConfig,
-    Message,
+    Error as WsError, Message,
   },
-  MaybeTlsStream, WebSocketStream,
+  Connector, MaybeTlsStream, WebSocketStream,
 };
 use url::Url;
 
 pub const MAX_RECORD_BYTES: usize = 1024 * 1024;
+const CLOSE_TIMEOUT: Duration = Duration::from_secs(2);
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 #[derive(Deserialize)]
@@ -39,12 +41,37 @@ pub struct OpenRequest {
   pub headers: Vec<HttpHeader>,
 }
 
-struct Connection {
-  owner: String,
+struct Transport {
   writer: AsyncMutex<SplitSink<Socket, Message>>,
   reader: AsyncMutex<SplitStream<Socket>>,
-  closed: watch::Sender<bool>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum State {
+  Open,
+  Closing,
+  Aborted,
+}
+
+struct Connection {
+  owner: String,
+  transport: OnceLock<Transport>,
+  state: watch::Sender<State>,
   _slot: OwnedSemaphorePermit,
+}
+
+// Opening and closing both await I/O. Dropping either future must release its
+// reserved handle and wake other operations, including when its task is aborted.
+struct RetireOnDrop<'a> {
+  service: &'a WebSocketService,
+  handle: Option<String>,
+}
+impl Drop for RetireOnDrop<'_> {
+  fn drop(&mut self) {
+    if let Some(handle) = &self.handle {
+      self.service.retire(handle);
+    }
+  }
 }
 
 pub struct WebSocketService {
@@ -66,6 +93,40 @@ impl WebSocketService {
     }
   }
 
+  fn reserve(&self, owner: &str) -> Result<(RetireOnDrop<'_>, Arc<Connection>), String> {
+    let mut connections = self
+      .connections
+      .lock()
+      .map_err(|_| "WebSocket state is unavailable.")?;
+    if connections
+      .values()
+      .filter(|entry| entry.owner == owner)
+      .count()
+      >= 16
+    {
+      return Err("This applet already owns sixteen WebSockets.".into());
+    }
+    let entry = Arc::new(Connection {
+      owner: owner.into(),
+      transport: OnceLock::new(),
+      state: watch::channel(State::Open).0,
+      _slot: self
+        .slots
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| "The WebSocket service is busy.")?,
+    });
+    let handle = uuid::Uuid::new_v4().to_string();
+    connections.insert(handle.clone(), entry.clone());
+    Ok((
+      RetireOnDrop {
+        service: self,
+        handle: Some(handle),
+      },
+      entry,
+    ))
+  }
+
   pub async fn open(
     &self,
     owner: &str,
@@ -76,64 +137,39 @@ impl WebSocketService {
       return Err(closed());
     }
     let request = validate(request)?;
-    let slot = self
-      .slots
-      .clone()
-      .try_acquire_owned()
-      .map_err(|_| "The WebSocket service is busy.")?;
+    let (mut reservation, connection) = self.reserve(owner)?;
+    let mut state = connection.state.subscribe();
     let config = WebSocketConfig::default()
       .max_message_size(Some(MAX_RECORD_BYTES))
       .max_frame_size(Some(MAX_RECORD_BYTES));
-    #[cfg(target_os = "android")]
-    let connector = {
-      let roots = rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-      let config = rustls::ClientConfig::builder_with_provider(Arc::new(
-        rustls::crypto::aws_lc_rs::default_provider(),
-      ))
-      .with_safe_default_protocol_versions()
-      .map_err(|_| "Could not initialize secure networking.")?
-      .with_root_certificates(roots)
-      .with_no_client_auth();
-      Some(tokio_tungstenite::Connector::Rustls(Arc::new(config)))
+    let connector = if request.uri().scheme_str() == Some("wss") {
+      tls_connector()?
+    } else {
+      Connector::Plain
     };
-    #[cfg(not(target_os = "android"))]
-    let connector = None;
-    // The WebSocket handshake does not follow redirects, attach cookies, or use
-    // proxy environment variables. Only caller-supplied authentication is sent.
+    // The handshake does not follow redirects, attach cookies, or use proxy
+    // environment variables. Only caller-supplied authentication is sent.
     let connected = tokio::select! {
       biased;
-      _ = cancellation.changed() => return Err(closed()),
-      result = tokio::time::timeout(Duration::from_secs(15), connect_async_tls_with_config(request, Some(config), false, connector)) => result,
+      _ = cancellation.wait_for(|closed| *closed) => return Err(closed()),
+      _ = state.wait_for(|s| *s != State::Open) => return Err(closed()),
+      result = tokio::time::timeout(Duration::from_secs(15), connect_async_tls_with_config(request, Some(config), false, Some(connector))) => result,
     };
     let (socket, _) = connected
       .map_err(|_| "WebSocket connection timed out.")?
       .map_err(|_| "Could not connect to the WebSocket endpoint.")?;
     let (writer, reader) = socket.split();
-    let connection = Arc::new(Connection {
-      owner: owner.into(),
-      writer: AsyncMutex::new(writer),
-      reader: AsyncMutex::new(reader),
-      closed: watch::channel(false).0,
-      _slot: slot,
-    });
-    let mut connections = self
-      .connections
-      .lock()
-      .map_err(|_| "WebSocket state is unavailable.")?;
-    if *cancellation.borrow() {
+    connection
+      .transport
+      .set(Transport {
+        writer: AsyncMutex::new(writer),
+        reader: AsyncMutex::new(reader),
+      })
+      .map_err(|_| "WebSocket was already connected.")?;
+    if *cancellation.borrow() || *state.borrow() != State::Open {
       return Err(closed());
     }
-    if connections
-      .values()
-      .filter(|connection| connection.owner == owner)
-      .count()
-      >= 16
-    {
-      return Err("This applet already owns sixteen WebSockets.".into());
-    }
-    let handle = uuid::Uuid::new_v4().to_string();
-    connections.insert(handle.clone(), connection);
-    Ok(json!({"socket_handle": handle}))
+    Ok(json!({"socket_handle": reservation.handle.take()}))
   }
 
   pub async fn send(&self, owner: &str, handle: &str, data: &str) -> Result<Value, String> {
@@ -147,19 +183,20 @@ impl WebSocketService {
       return Err("Invalid WebSocket record encoding or size.".into());
     }
     let connection = self.connection(owner, handle)?;
-    let mut stopped = connection.closed.subscribe();
-    if *stopped.borrow() {
-      return Err(closed());
-    }
+    let io = connection.transport.get().ok_or_else(closed)?;
+    let mut state = connection.state.subscribe();
     let result = tokio::select! {
       biased;
-      _ = stopped.changed() => return Err(closed()),
-      result = tokio::time::timeout(Duration::from_secs(10), async { connection.writer.lock().await.send(Message::Binary(bytes.into())).await }) => result,
+      _ = state.wait_for(|s| *s != State::Open) => return Err(closed()),
+      result = tokio::time::timeout(Duration::from_secs(10), async { io.writer.lock().await.send(Message::Binary(bytes.into())).await }) => result,
     };
     match result {
       Ok(Ok(())) => Ok(Value::Null),
+      // Receiving a Close disables writes before its acknowledgment has been
+      // flushed. Leave the transport to the task completing that handshake.
+      Ok(Err(WsError::Protocol(ProtocolError::SendAfterClosing))) => Err(closed()),
       _ => {
-        self.close(owner, handle)?;
+        self.retire(handle);
         Err("WebSocket write failed; delivery may be uncertain. It was not retried.".into())
       }
     }
@@ -170,23 +207,31 @@ impl WebSocketService {
       return Err("WebSocket timeout must be between 100 and 120000 milliseconds.".into());
     }
     let connection = self.connection(owner, handle)?;
-    let mut stopped = connection.closed.subscribe();
-    if *stopped.borrow() {
-      return Err(closed());
-    }
-    let mut reader = connection
+    let io = connection.transport.get().ok_or_else(closed)?;
+    let mut state = connection.state.subscribe();
+    let mut reader = io
       .reader
       .try_lock()
       .map_err(|_| "A WebSocket receive is already pending.")?;
     let result = tokio::select! {
       biased;
-      _ = stopped.changed() => return Err(closed()),
+      _ = state.wait_for(|s| *s != State::Open) => return Err(closed()),
       result = tokio::time::timeout(Duration::from_millis(timeout_ms), async {
         loop {
           match reader.next().await {
             Some(Ok(Message::Binary(bytes))) => return Ok(Some(URL_SAFE_NO_PAD.encode(bytes))),
-            Some(Ok(Message::Close(frame))) if frame.as_ref().is_none_or(|frame| matches!(u16::from(frame.code), 1000 | 1001)) => return Ok(None),
-            Some(Ok(Message::Ping(_))) => connection.writer.lock().await.flush().await.map_err(|_| ())?,
+            Some(Ok(Message::Close(frame))) => {
+              // Tungstenite queued the peer's close reply while reading. Drive
+              // it to the network before releasing either half of the socket.
+              tokio::time::timeout(CLOSE_TIMEOUT, async { io.writer.lock().await.flush().await })
+                .await.map_err(|_| ())?.map_err(|_| ())?;
+              return if frame.as_ref().is_none_or(|frame| matches!(u16::from(frame.code), 1000 | 1001)) {
+                Ok(None)
+              } else {
+                Err(())
+              };
+            }
+            Some(Ok(Message::Ping(_))) => io.writer.lock().await.flush().await.map_err(|_| ())?,
             Some(Ok(Message::Pong(_))) => {},
             _ => return Err(()),
           }
@@ -196,11 +241,11 @@ impl WebSocketService {
     match result {
       Ok(Ok(Some(data))) => Ok(json!({"data": data})),
       Ok(Ok(None)) => {
-        self.close(owner, handle)?;
+        self.retire(handle);
         Ok(json!({"data": null}))
       }
       _ => {
-        self.close(owner, handle)?;
+        self.retire(handle);
         Err("WebSocket receive failed or timed out; the connection was closed.".into())
       }
     }
@@ -212,33 +257,69 @@ impl WebSocketService {
       .lock()
       .map_err(|_| "WebSocket state is unavailable.")?
       .get(handle)
-      .filter(|connection| connection.owner == owner && !*connection.closed.borrow())
+      .filter(|entry| entry.owner == owner && *entry.state.borrow() == State::Open)
       .cloned()
       .ok_or_else(closed)
   }
 
-  pub fn close(&self, owner: &str, handle: &str) -> Result<Value, String> {
-    let mut connections = self
-      .connections
-      .lock()
-      .map_err(|_| "WebSocket state is unavailable.")?;
-    if connections
-      .get(handle)
-      .is_some_and(|connection| connection.owner != owner)
-    {
-      return Err(closed());
+  fn retire(&self, handle: &str) {
+    if let Ok(mut connections) = self.connections.lock() {
+      if let Some(connection) = connections.remove(handle) {
+        connection.state.send_replace(State::Aborted);
+      }
     }
-    if let Some(connection) = connections.remove(handle) {
-      connection.closed.send_replace(true);
+  }
+
+  pub async fn close(&self, owner: &str, handle: &str) -> Result<Value, String> {
+    let connection = {
+      let entries = self
+        .connections
+        .lock()
+        .map_err(|_| "WebSocket state is unavailable.")?;
+      let Some(entry) = entries.get(handle) else {
+        return Ok(Value::Null);
+      };
+      if entry.owner != owner {
+        return Err(closed());
+      }
+      if *entry.state.borrow() == State::Closing {
+        return Ok(Value::Null);
+      }
+      entry.state.send_replace(State::Closing);
+      entry.clone()
+    };
+    let _retire = RetireOnDrop {
+      service: self,
+      handle: Some(handle.to_owned()),
+    };
+    let io = connection.transport.get().ok_or_else(closed)?;
+    let mut state = connection.state.subscribe();
+    let handshake = async {
+      // Marking Closing wakes pending sends and reads. Own both halves before
+      // sending Close so a competing receive cannot consume the peer's reply.
+      let mut reader = io.reader.lock().await;
+      io.writer.lock().await.close().await.map_err(|_| closed())?;
+      while let Some(message) = reader.next().await {
+        match message {
+          Ok(Message::Close(_)) => break,
+          Ok(_) => continue,
+          Err(_) => return Err("WebSocket close was not acknowledged.".to_owned()),
+        }
+      }
+      Ok(Value::Null)
+    };
+    tokio::select! {
+      biased;
+      _ = state.wait_for(|s| *s == State::Aborted) => Err(closed()),
+      result = tokio::time::timeout(CLOSE_TIMEOUT, handshake) => result.map_err(|_| "WebSocket close timed out.")?,
     }
-    Ok(Value::Null)
   }
 
   pub fn close_session(&self, owner: &str) {
     if let Ok(mut connections) = self.connections.lock() {
-      connections.retain(|_, connection| {
-        if connection.owner == owner {
-          connection.closed.send_replace(true);
+      connections.retain(|_, entry| {
+        if entry.owner == owner {
+          entry.state.send_replace(State::Aborted);
           false
         } else {
           true
@@ -246,6 +327,26 @@ impl WebSocketService {
       });
     }
   }
+}
+
+fn tls_connector() -> Result<Connector, String> {
+  let builder = rustls::ClientConfig::builder_with_provider(Arc::new(
+    rustls::crypto::aws_lc_rs::default_provider(),
+  ))
+  .with_safe_default_protocol_versions()
+  .map_err(|_| "Could not initialize secure networking.")?;
+  #[cfg(target_os = "android")]
+  let builder = builder.with_root_certificates(rustls::RootCertStore::from_iter(
+    webpki_roots::TLS_SERVER_ROOTS.iter().cloned(),
+  ));
+  #[cfg(not(target_os = "android"))]
+  let builder = {
+    use rustls_platform_verifier::BuilderVerifierExt;
+    builder
+      .with_platform_verifier()
+      .map_err(|_| "Could not initialize the system certificate verifier.")?
+  };
+  Ok(Connector::Rustls(Arc::new(builder.with_no_client_auth())))
 }
 
 fn closed() -> String {
@@ -277,8 +378,8 @@ fn validate(
       "WebSockets require WSS or loopback WS without embedded credentials or fragments.".into(),
     );
   }
-  let mut wire = request
-    .url
+  let mut wire = url
+    .as_str()
     .into_client_request()
     .map_err(|_| "Invalid WebSocket URL.")?;
   if request.headers.len() > 64 {
