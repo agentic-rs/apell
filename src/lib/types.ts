@@ -17,6 +17,14 @@ export interface InstalledApplet extends Manifest {
     prerelease?: boolean;
   } | null;
 }
+export interface UnavailableApplet {
+  applet_id: string;
+  error: string;
+}
+export interface AppletListReport {
+  applets: InstalledApplet[];
+  unavailable: UnavailableApplet[];
+}
 export interface AppletSession {
   session_id: string;
   manifest: Manifest;

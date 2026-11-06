@@ -28,6 +28,21 @@ const methods = new Set([
   'config.get',
   'config.set',
   'config.delete',
+  'audio.capabilities',
+  'audio.start',
+  'audio.pause',
+  'audio.resume',
+  'audio.stop',
+  'audio.import',
+  'audio.share',
+  'audio.play',
+  'audio.playback_pause',
+  'audio.seek',
+  'audio.status',
+  'speech.status',
+  'speech.download_model',
+  'speech.transcribe',
+  'speech.cancel',
 ]);
 export function isBridgeRequest(value: unknown): value is BridgeRequest {
   if (!value || typeof value !== 'object') return false;

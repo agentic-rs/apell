@@ -141,6 +141,12 @@ Settings supports saved named connections, model discovery and manual IDs, API k
 
 The native host uses the embedded Tokn SDK for provider routing. Supported connections include OpenAI, Codex, GitHub Copilot, DeepSeek, OpenCode Go, llama.cpp, Z.ai/Zhipu and their coding plans, and custom OpenAI-compatible endpoints. Applets keep their complete assistant messages and inspect the returned generation status. See the [provider settings contract](docs/architecture.md#provider-settings) and [LLM history and tool example](docs/llm.md).
 
+## Recorder applet services
+
+The host supports native iOS/Android recording, audio import/playback, and file sharing through the `audio` permission. The `speech` permission provides offline Whisper transcription and language detection after an explicit multilingual model download. Audio stays on the device. See [the audio and speech contract](docs/architecture.md#audio-and-offline-speech) for methods, formats, lifecycle, and limits.
+
+Native speech compilation additionally requires CMake and a C/C++ toolchain. Models and recordings live in application data and are never bundled into source control.
+
 ## Tokn development dependency
 
 Apell consumes `tokn-sdk` directly from Tokn's Git `main` branch. `Cargo.lock` records the exact revision so device builds stay reproducible. To dogfood the latest upstream changes, run `cargo update -p tokn-sdk`, run the checks and mobile build, then commit the updated lockfile. A normal locked build does not fetch a newer revision automatically.

@@ -88,6 +88,30 @@ impl FileStore {
     }
   }
 
+  /// Resolve a host-only path without exposing private roots to an applet.
+  /// Existing paths and every parent reject links and special files. A caller
+  /// creating a new file must request a fresh destination, never overwrite one.
+  pub fn native_path(&self, applet_id: &str, path: &str, create: bool) -> Result<PathBuf> {
+    if !valid_name(applet_id) {
+      return Err("Invalid applet identity.".into());
+    }
+    let _operation = self
+      .operations
+      .lock()
+      .map_err(|_| "Applet filesystem unavailable.")?;
+    let components = validate_path(path, false)?;
+    let root = self.applet_root(applet_id)?;
+    if create {
+      let path = destination(&root, &components)?;
+      if metadata_if_present(&path)?.is_some() {
+        return Err("The destination already exists.".into());
+      }
+      Ok(path)
+    } else {
+      resolve(&root, &components).map(|(path, _)| path)
+    }
+  }
+
   /// Call on a blocking worker. One lock serializes path validation and mutations
   /// so another applet API call cannot replace a checked directory mid-operation.
   pub fn dispatch(&self, applet_id: &str, method: &str, params: Value) -> Result<Value> {
@@ -368,6 +392,53 @@ mod tests {
     let directory = tempfile::tempdir().unwrap();
     let store = FileStore::new(directory.path().join("files"));
     (directory, store)
+  }
+
+  #[test]
+  fn native_paths_remain_private_and_require_fresh_destinations() {
+    let (_directory, store) = fixture();
+    store
+      .dispatch("first", "fs.mkdir", json!({"path":"recordings"}))
+      .unwrap();
+    let fresh = store
+      .native_path("first", "recordings/new.m4a", true)
+      .unwrap();
+    assert!(fresh.ends_with("first/recordings/new.m4a"));
+    assert!(store
+      .native_path("second", "recordings/new.m4a", false)
+      .is_err());
+    for path in ["../second/data", "/tmp/data", "recordings/../../data"] {
+      assert!(store.native_path("first", path, true).is_err());
+    }
+    write(&store, "first", "recordings/new.m4a", b"audio").unwrap();
+    assert!(store
+      .native_path("first", "recordings/new.m4a", true)
+      .is_err());
+    assert!(store
+      .native_path("first", "recordings/new.m4a", false)
+      .is_ok());
+  }
+
+  #[cfg(unix)]
+  #[test]
+  fn native_paths_reject_symlink_targets_and_parents() {
+    let (directory, store) = fixture();
+    store
+      .dispatch("first", "fs.mkdir", json!({"path":"recordings"}))
+      .unwrap();
+    let outside = directory.path().join("outside");
+    std::fs::create_dir(&outside).unwrap();
+    std::os::unix::fs::symlink(
+      &outside,
+      directory.path().join("files/first/recordings/link"),
+    )
+    .unwrap();
+    assert!(store
+      .native_path("first", "recordings/link", false)
+      .is_err());
+    assert!(store
+      .native_path("first", "recordings/link/audio.m4a", true)
+      .is_err());
   }
 
   fn write(store: &FileStore, applet: &str, path: &str, bytes: &[u8]) -> Result<Value> {

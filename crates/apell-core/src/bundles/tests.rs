@@ -519,3 +519,78 @@ fn concurrent_sources_cannot_claim_the_same_applet_id() {
   });
   assert_eq!(winners, 1);
 }
+
+#[test]
+fn list_report_isolates_incompatible_and_corrupt_packages_without_mutating_them() {
+  let directory = tempfile::tempdir().unwrap();
+  let store = BundleStore::new(directory.path().into());
+  let healthy = package("healthy", "1.0.0");
+  store.install(&healthy, &digest(&healthy)).unwrap();
+
+  let mut unsupported: serde_json::Value =
+    serde_json::from_slice(&manifest("unsupported", "1.0.0")).unwrap();
+  unsupported["permissions"] = serde_json::json!(["future-service"]);
+  let incompatible = archive(&[
+    ("manifest.json", &serde_json::to_vec(&unsupported).unwrap()),
+    ("index.html", b"unsupported"),
+  ]);
+  let corrupt_original = package("corrupt", "1.0.0");
+  let mut preserved = Vec::new();
+  for (id, expected, stored) in [
+    (
+      "unsupported",
+      incompatible.as_slice(),
+      incompatible.as_slice(),
+    ),
+    (
+      "corrupt",
+      corrupt_original.as_slice(),
+      b"corrupted bytes".as_slice(),
+    ),
+  ] {
+    let applet = directory.path().join(id);
+    std::fs::create_dir(&applet).unwrap();
+    let sha256 = digest(expected);
+    let active = serde_json::json!({"applet_id":id,"sha256":sha256,"source":null}).to_string();
+    let package_path = applet.join(format!("{sha256}.apel"));
+    std::fs::write(&package_path, stored).unwrap();
+    std::fs::write(applet.join("active"), &active).unwrap();
+    preserved.push((package_path, stored.to_vec()));
+    preserved.push((applet.join("active"), active.into_bytes()));
+  }
+  let invalid = directory.path().join("invalid-pointer");
+  std::fs::create_dir(&invalid).unwrap();
+  std::fs::write(invalid.join("active"), b"not a pointer").unwrap();
+  preserved.push((invalid.join("active"), b"not a pointer".to_vec()));
+
+  let report = store.list_report().unwrap();
+  assert_eq!(report.applets.len(), 1);
+  assert_eq!(report.applets[0].manifest.applet_id, "healthy");
+  assert_eq!(
+    report
+      .unavailable
+      .iter()
+      .map(|issue| issue.applet_id.as_str())
+      .collect::<Vec<_>>(),
+    ["corrupt", "invalid-pointer", "unsupported"]
+  );
+  assert!(report
+    .unavailable
+    .iter()
+    .find(|issue| issue.applet_id == "unsupported")
+    .unwrap()
+    .error
+    .contains("permission"));
+  assert!(
+    store.list().is_err(),
+    "the existing strict API retains its contract"
+  );
+  assert!(
+    store.load("unsupported").is_err(),
+    "listing does not bypass launch validation"
+  );
+  assert!(store.load("corrupt").is_err());
+  for (path, bytes) in preserved {
+    assert_eq!(std::fs::read(path).unwrap(), bytes);
+  }
+}

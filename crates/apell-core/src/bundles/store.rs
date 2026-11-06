@@ -49,6 +49,19 @@ pub struct InstalledApplet {
   pub source: Option<GitHubSource>,
 }
 
+/// A failed installed package remains on disk and is reported independently.
+#[derive(Clone, Debug, Serialize)]
+pub struct UnavailableApplet {
+  pub applet_id: String,
+  pub error: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct AppletListReport {
+  pub applets: Vec<InstalledApplet>,
+  pub unavailable: Vec<UnavailableApplet>,
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Active {
@@ -248,13 +261,42 @@ impl BundleStore {
         installed.push(record.installed(self.read_active(&record)?.manifest));
       }
     }
-    installed.sort_by(|a, b| {
-      a.manifest
-        .name
-        .cmp(&b.manifest.name)
-        .then_with(|| a.manifest.applet_id.cmp(&b.manifest.applet_id))
-    });
+    sort_installed(&mut installed);
     Ok(installed)
+  }
+
+  /// List healthy applets while reporting each unreadable or incompatible package.
+  /// This never changes active pointers, package bytes, or applet-owned data.
+  /// Store-wide access failures remain errors; one broken package is isolated.
+  pub fn list_report(&self) -> Result<AppletListReport, String> {
+    let mut report = AppletListReport {
+      applets: Vec::new(),
+      unavailable: Vec::new(),
+    };
+    for id in self.ids()? {
+      let result = self.active(&id).and_then(|record| {
+        record
+          .map(|active| {
+            self
+              .read_active(&active)
+              .map(|bundle| active.installed(bundle.manifest))
+          })
+          .transpose()
+      });
+      match result {
+        Ok(Some(applet)) => report.applets.push(applet),
+        Ok(None) => {}
+        Err(error) => report.unavailable.push(UnavailableApplet {
+          applet_id: id,
+          error,
+        }),
+      }
+    }
+    sort_installed(&mut report.applets);
+    report
+      .unavailable
+      .sort_by(|a, b| a.applet_id.cmp(&b.applet_id));
+    Ok(report)
   }
 
   fn ids(&self) -> Result<Vec<String>, String> {
@@ -335,6 +377,15 @@ impl BundleStore {
     }
     Ok(bundle)
   }
+}
+
+fn sort_installed(applets: &mut [InstalledApplet]) {
+  applets.sort_by(|a, b| {
+    a.manifest
+      .name
+      .cmp(&b.manifest.name)
+      .then_with(|| a.manifest.applet_id.cmp(&b.manifest.applet_id))
+  });
 }
 
 fn legacy_bundle(bytes: &[u8]) -> Result<Bundle, String> {
