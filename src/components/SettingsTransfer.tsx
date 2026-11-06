@@ -96,11 +96,9 @@ function ExportForm({
     connections.map((connection) => connection.connection_id),
   );
   const [passphrase, setPassphrase] = useState('');
-  const [confirmation, setConfirmation] = useState('');
   const [backup, setBackup] = useState<SettingsTransferExport>();
   const heading = useRef<HTMLHeadingElement>(null);
-  const can_export =
-    selected.length > 0 && validPassphrase(passphrase) && passphrase === confirmation;
+  const can_export = selected.length > 0 && validPassphrase(passphrase);
   useEffect(() => {
     if (backup) heading.current?.focus();
   }, [backup]);
@@ -111,7 +109,6 @@ function ExportForm({
       const encrypted = await exportSettingsTransfer(selected, passphrase);
       if (!operation.isCurrent()) return;
       setPassphrase('');
-      setConfirmation('');
       setBackup(encrypted);
     });
   };
@@ -213,16 +210,6 @@ function ExportForm({
           new sign-in after import.
         </p>
         <PassphraseField label="Backup passphrase" value={passphrase} onChange={setPassphrase} />
-        <PassphraseField
-          label="Confirm passphrase"
-          value={confirmation}
-          onChange={setConfirmation}
-        />
-        {confirmation && passphrase !== confirmation && (
-          <p className="status error" role="status">
-            The passphrases do not match.
-          </p>
-        )}
         {passphrase && new TextEncoder().encode(passphrase).length > MAX_PASSPHRASE_BYTES && (
           <p className="status error" role="status">
             Use a shorter passphrase.
