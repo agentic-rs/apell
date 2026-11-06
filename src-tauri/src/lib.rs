@@ -6,9 +6,11 @@ mod host;
 mod install;
 #[cfg(target_os = "ios")]
 mod ios;
+mod media;
 mod navigation;
 mod provider_commands;
 mod settings;
+mod speech;
 
 use tauri::Manager;
 
@@ -19,6 +21,7 @@ pub fn run() {
       assets::respond(context.app_handle(), request)
     })
     .plugin(tauri_plugin_apell_credentials::init())
+    .plugin(tauri_plugin_apell_audio::init())
     .plugin(
       tauri_plugin_opener::Builder::new()
         .open_js_links_on_click(false)

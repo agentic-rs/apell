@@ -325,7 +325,34 @@ The SDK exports `config.get(key)`, `set(key, value)`, and `delete(key)`. Values 
 
 Resource IDs are SHA-256 digests, and files are stored separately for each applet. Downloads require HTTPS or loopback HTTP, reject URL credentials, and do not follow redirects. Each download is limited to 32 MiB and 120 seconds. Reads return at most 1 MiB; the default length is 65,536 bytes and the default offset is zero. Reading beyond the end returns fewer bytes, including an empty array.
 
-`onDownloadProgress` subscribes to `download_progress` events with `request_id`, `received_bytes`, and nullable `total_bytes`. The SDK allows 135 seconds for the download request, longer than the native transfer timeout. Resource data and bundles stay local. Resource deletion, eviction, overall disk quotas, and cloud synchronization are not implemented. Device information currently reports the platform and host API version; orientation, sharing, camera, and other mobile operations need separate host services.
+`onDownloadProgress` subscribes to `download_progress` events with `request_id`, `received_bytes`, and nullable `total_bytes`. The SDK allows 135 seconds for the download request, longer than the native transfer timeout. Resource data and bundles stay local. Resource deletion, eviction, overall disk quotas, and cloud synchronization are not implemented. Device information currently reports the platform and host API version; orientation and camera need separate host services. Native audio and file sharing use the permission-gated services below.
+
+## Audio and offline speech
+
+Applets declare `audio` for native recording, playback, import, and sharing on iOS and Android. These operations run in a host-owned plugin; the applet iframe remains opaque and cannot access the microphone directly. Declare `speech` for on-device transcription. Call the methods below from the attached frontend with SDK `hostCall(method, params)`. Audio and speech calls from a persistent WASM backend are rejected, so a backend cannot retain microphone access or speech work after its view closes.
+
+| Method                        | Parameters                       | Result                                                               |
+| ----------------------------- | -------------------------------- | -------------------------------------------------------------------- |
+| `audio.capabilities`          | none                             | booleans `recording`, `import`, `sharing`, `playback`                |
+| `audio.start`                 | none                             | `{ path, mime_type }`                                                |
+| `audio.pause`, `audio.resume` | none                             | null                                                                 |
+| `audio.stop`                  | none                             | audio asset                                                          |
+| `audio.import`                | none                             | audio asset, or null after picker cancellation                       |
+| `audio.play`                  | `path`                           | null; resumes an already loaded file                                 |
+| `audio.playback_pause`        | none                             | null                                                                 |
+| `audio.seek`                  | `position_ms`                    | null                                                                 |
+| `audio.status`                | none                             | `{ recording_state, elapsed_ms, playing, position_ms, duration_ms }` |
+| `audio.share`                 | `path`, `file_name`, `mime_type` | null after native handoff                                            |
+| `speech.status`               | none                             | `{ model_ready, model_size_bytes, busy, progress, stage }`           |
+| `speech.download_model`       | none                             | null                                                                 |
+| `speech.transcribe`           | `path`, optional `language`      | `{ text, language, segments, duration_ms, model_id }`                |
+| `speech.cancel`               | none                             | null; signals the caller's current speech job                        |
+
+An audio asset contains `path`, `file_name`, `mime_type`, `duration_ms`, and `size_bytes`. Paths are relative to the applet's private file store. Native recordings use mono AAC in M4A. Import copies a user-selected audio file into private storage, with a 128 MiB limit. Sharing accepts an existing private file, including transcript text written through `fs.write`; it never gives the applet an arbitrary native path. Each transcript segment has `start_ms`, `end_ms`, and `text`. Microphone permission is requested on first recording. Desktop hosts return false audio capabilities; applets can provide a separate browser preview.
+
+The multilingual Whisper tiny model (77,691,713 bytes) downloads only after an explicit request. The host checks its pinned SHA-256, keeps it outside applet storage, and checks integrity again before inference. Recognition runs locally on CPU; audio and transcripts are never uploaded. It supports WAV, MP3, AAC/ALAC in M4A, FLAC, and Ogg Vorbis. WebM/Opus is not supported. Input is downmixed and resampled to 16 kHz, with a 30-minute decoded-duration limit. Omitting `language` enables detection; supplying a Whisper language code overrides it. Short or noisy recordings may need manual correction.
+
+One speech job runs across applets at a time. `progress` is 0–100; stages are `idle`, `downloading`, `transcribing`, or `busy` for another view's job. Poll status while awaiting the original request. Speech jobs and user-facing native pickers do not use the ordinary 35-second bridge timeout. Closing or reloading the applet cancels its speech work and releases its microphone/player. A stopped partial recording remains in private storage so the applet can recover it. Background recording and background task completion are not guaranteed by the mobile OS.
 
 ## Migrating an existing Tauri app
 

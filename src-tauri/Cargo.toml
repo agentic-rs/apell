@@ -15,6 +15,8 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+apell-speech = { path = "../crates/apell-speech" }
+tauri-plugin-apell-audio = { path = "plugins/tauri-plugin-apell-audio" }
 apell-core = { path = "../crates/apell-core" }
 apell-runtime = { path = "../crates/apell-runtime" }
 base64 = "0.22"

@@ -79,6 +79,25 @@ describe('applet bridge', () => {
     expect(channel.start).toHaveBeenCalledOnce();
   });
 
+  it.each([
+    'speech.transcribe',
+    'speech.download_model',
+    'audio.start',
+    'audio.import',
+    'audio.share',
+  ])('keeps %s pending until the host completes it', async (method) => {
+    vi.useFakeTimers();
+    const sdk = await import('./index');
+    connect();
+    const response = sdk.hostCall(method);
+    const completed = expect(response).resolves.toBeNull();
+    await vi.advanceTimersByTimeAsync(360_000);
+    expect(channel.postMessage).toHaveBeenCalledOnce();
+    const request = channel.postMessage.mock.calls[0][0];
+    receive({ type: 'response', request_id: request.request_id, result: null });
+    await completed;
+  });
+
   it('waits for a backend command that takes longer than the generic bridge timeout', async () => {
     vi.useFakeTimers();
     const sdk = await import('./index');

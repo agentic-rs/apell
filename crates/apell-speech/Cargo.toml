@@ -1,0 +1,23 @@
+[package]
+name = "apell-speech"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "stream"] }
+rubato = "=0.16.2"
+serde = { version = "1", features = ["derive"] }
+sha2 = "0.10"
+symphonia = { version = "=0.5.5", default-features = false, features = ["aac", "alac", "flac", "isomp4", "mp3", "ogg", "pcm", "vorbis", "wav"] }
+tokio = { version = "1", features = ["fs", "io-util", "sync", "time", "macros"] }
+whisper-rs = { version = "=0.16.0", default-features = false }
+
+[target.'cfg(target_os = "android")'.dependencies]
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
+webpki-roots = "1"
+
+[dev-dependencies]
+hound = "3.5"
+tempfile = "3"
+tokio = { version = "1", features = ["rt-multi-thread"] }

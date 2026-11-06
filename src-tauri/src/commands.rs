@@ -47,7 +47,7 @@ pub async fn shell_command(
     "applets.list" => {
       let store = host.bundles.clone();
       blocking(move || {
-        serde_json::to_value(store.list()?).map_err(|_| "Could not encode applets.".into())
+        serde_json::to_value(store.list_report()?).map_err(|_| "Could not encode applets.".into())
       })
       .await
     }
@@ -106,6 +106,16 @@ pub async fn applet_call(
   service_call(app, view_id, method, params, None).await
 }
 
+// Native UI and speech work belong to an attached view, whose cancellation
+// signal fires on close/reload. Persistent backend runs outlive that signal.
+fn require_view_for_media(method: &str, from_backend: bool) -> Result<(), String> {
+  if from_backend && matches!(method.split('.').next(), Some("audio" | "speech")) {
+    Err("Audio and speech services are available only to an attached applet view.".into())
+  } else {
+    Ok(())
+  }
+}
+
 pub async fn service_call(
   app: AppHandle,
   session_id: String,
@@ -115,6 +125,7 @@ pub async fn service_call(
 ) -> Result<Value, String> {
   let host = app.state::<Host>();
   let session = host.session(&session_id, &method)?;
+  require_view_for_media(&method, backend_events.is_some())?;
   if matches!(
     method.split('.').next(),
     Some("websocket" | "secrets" | "crypto" | "runtime")
@@ -124,6 +135,12 @@ pub async fn service_call(
     }
     return crate::backend_services::dispatch(&app, &host, &session_id, session, &method, params)
       .await;
+  }
+  if method.starts_with("audio.") {
+    return crate::media::dispatch(app.clone(), &host, &session_id, session, &method, params).await;
+  }
+  if method.starts_with("speech.") {
+    return crate::speech::dispatch(&host, &session_id, session, &method, params).await;
   }
   if method.starts_with("sqlite.") {
     let sqlite = host.sqlite.clone();
@@ -283,4 +300,45 @@ pub(crate) async fn blocking(
   tauri::async_runtime::spawn_blocking(task)
     .await
     .map_err(|_| "Host operation was interrupted.".to_string())?
+}
+
+#[cfg(test)]
+mod media_origin_tests {
+  use super::require_view_for_media;
+
+  #[test]
+  fn persistent_backends_cannot_start_media_or_keep_it_alive_after_view_close() {
+    for method in [
+      "audio.start",
+      "audio.pause",
+      "audio.resume",
+      "audio.stop",
+      "audio.import",
+      "audio.share",
+      "audio.play",
+      "audio.status",
+      "audio.capabilities",
+      "speech.transcribe",
+      "speech.download_model",
+      "speech.status",
+      "speech.cancel",
+    ] {
+      let error = require_view_for_media(method, true).unwrap_err();
+      assert!(error.contains("attached applet view"));
+      assert!(require_view_for_media(method, false).is_ok());
+    }
+  }
+
+  #[test]
+  fn other_backend_services_retain_their_own_origin_policy() {
+    for method in [
+      "http.request",
+      "fs.read",
+      "llm.generate",
+      "websocket.connect",
+      "runtime.info",
+    ] {
+      assert!(require_view_for_media(method, true).is_ok());
+    }
+  }
 }
