@@ -1,5 +1,6 @@
 use super::{
-  Failure, LlmConfig, LlmRequest, LlmTarget, LlmToolCall, LlmToolChoice, MAX_INPUT_BYTES, MAX_TOOLS,
+  media, Failure, LlmConfig, LlmRequest, LlmTarget, LlmToolCall, LlmToolChoice, MAX_INPUT_BYTES,
+  MAX_TOOLS,
 };
 use reqwest::Url;
 use std::collections::HashSet;
@@ -183,11 +184,14 @@ pub(super) fn request(request: &LlmRequest) -> Result<(), Failure> {
     let role = object["role"]
       .as_str()
       .expect("message_fields validates the role");
-    let content = object
-      .get("content")
-      .and_then(serde_json::Value::as_str)
-      .unwrap_or("");
-    meaningful |= !content.is_empty() || !tool_calls.is_empty() || role == "tool";
+    let has_content = match media::parts(message) {
+      Some(parts) => media::validate_parts(parts)?,
+      None => object
+        .get("content")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|text| !text.is_empty()),
+    };
+    meaningful |= has_content || !tool_calls.is_empty() || role == "tool";
     if role == "tool" {
       let id = object
         .get("tool_call_id")
@@ -237,11 +241,12 @@ pub(super) fn message_fields(
     .and_then(serde_json::Value::as_str)
     .filter(|role| matches!(*role, "system" | "user" | "assistant" | "tool"))
     .ok_or_else(|| invalid("The LLM message role is unsupported."))?;
-  if object
-    .get("content")
-    .is_some_and(|value| !value.is_null() && !value.is_string())
-  {
-    return Err(invalid("Message content must be a string or null."));
+  if let Some(content) = object.get("content") {
+    if !(content.is_null() || content.is_string() || (role == "user" && content.is_array())) {
+      return Err(invalid(
+        "Message content must be a string or null, or a list of parts in a user message.",
+      ));
+    }
   }
   if role == "tool" {
     if object

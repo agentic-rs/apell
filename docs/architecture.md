@@ -162,7 +162,7 @@ An explicit generation target captures that saved connection and requested model
 
 ### Messages, tools, and continuation
 
-The applet message shape uses `role`, string or null `content`, and optional provider fields. Roles are `system`, `user`, `assistant`, and `tool`. Assistant messages may contain raw `tool_calls: [{ id, type: 'function', function: { name, arguments } }]`; tool messages require `tool_call_id`. Chat Completions metadata, including fields inside tool calls, is passed through unchanged. Native Responses/Messages replies include client-owned `provider_state` containing the complete native records needed for replay. Tool definitions remain `{ name, description?, parameters }`, where `parameters` is a JSON Schema object. `tool_choice` accepts `auto`, `none`, `required`, or `{ name }`. Every outstanding tool call must receive exactly one tool result before generating the next response.
+The applet message shape uses `role`, string or null `content`, and optional provider fields. Roles are `system`, `user`, `assistant`, and `tool`. User messages also accept an ordered array of [text and attachment parts](#media-input). Assistant messages may contain raw `tool_calls: [{ id, type: 'function', function: { name, arguments } }]`; tool messages require `tool_call_id`. Chat Completions metadata, including fields inside tool calls, is passed through unchanged. Native Responses/Messages replies include client-owned `provider_state` containing the complete native records needed for replay. Tool definitions remain `{ name, description?, parameters }`, where `parameters` is a JSON Schema object. `tool_choice` accepts `auto`, `none`, `required`, or `{ name }`. Every outstanding tool call must receive exactly one tool result before generating the next response.
 
 A `tool_calls` outcome hands control to the applet. Append `result.message` unchanged, execute or reject the finalized calls in `result.tool_calls`, append their tool results, and generate again. Normalized result calls are a convenience for execution; they are not a replacement for the complete assistant message. A required or named choice that the provider silently ignores is an error. The host does not enforce application-specific schemas or execute partial tool-call fragments. See the [tool continuation example](llm.md).
 
@@ -171,6 +171,39 @@ The applet stores the complete assistant message with its history, including rea
 The `provider_state` field is reserved for this native replay record. Conflicting fields from Chat Completions providers return an explicit unsupported outcome with partial display text, rather than an unreplayable successful message.
 
 Buffered Chat responses preserve complete assistant JSON, including unknown metadata and nested tool fields. Responses retains its authoritative final output items; Messages preserves native content blocks, including thinking/signature deltas. Unknown Chat metadata or Messages deltas whose merge semantics are unclear fail explicitly as unsupported. Clients can set `stream: false` to suppress progress and request buffered metadata where supported; Codex always streams upstream. There is no automatic retry that could repeat a generation. Metadata remains bounded as part of the request and result. Displaying reasoning transiently does not imply that client-persisted replay messages contain no reasoning.
+
+### Media input
+
+Pass ordered parts in a user message to `llm.generate`. In this example, `target` is the provider/model selection and `photo.path` is the private file path returned by `camera.capture()`.
+
+```ts
+const result = await llm.generate({
+  target,
+  messages: [
+    {
+      role: 'user',
+      content: [
+        { type: 'text', text: 'Describe this photo.' },
+        { type: 'image', path: photo.path },
+      ],
+    },
+  ],
+});
+```
+
+| Part                         | File formats         | Eligible protocols                    |
+| ---------------------------- | -------------------- | ------------------------------------- |
+| `{ type: 'image', path }`    | JPEG, PNG, GIF, WebP | Chat Completions, Responses, Messages |
+| `{ type: 'document', path }` | PDF                  | Chat Completions, Responses, Messages |
+| `{ type: 'audio', path }`    | WAV, MP3             | Chat Completions                      |
+
+File attachments require `llm` and `fs` manifest permissions and enabled network access. Paths identify regular files in the calling applet's private file store. The attachment format accepts only these relative paths. Apell reads and encodes the file bytes for the selected provider and model. Show the destination before sending, since a photo or recording stored locally can become part of an upstream request. A selected library photo can contain embedded metadata.
+
+A request can reference up to eight file parts totaling at most 8 MiB. Files must use an accepted format. Camera JPEGs work directly. Photo imports in HEIC, HEIF, or AVIF and native recordings in M4A need conversion first. Applets that keep attachments in message history must keep the corresponding files available for future requests.
+
+Check `llm.config(target).capabilities` for advisory `image_input`, `pdf_input`, and `audio_input` states. Demo mode reports media input as unsupported. Protocol compatibility does not establish model support, and attaching a file keeps the selected route. The generation result still carries text, tools, and replay metadata.
+
+For an OpenAI model that accepts Chat Completions audio, use a **Custom compatible endpoint** connection pointed at the OpenAI API. The **OpenAI** preset uses Responses.
 
 ### Outcomes, events, and attribution
 
@@ -228,11 +261,11 @@ Settings validates the same routing rules as generation. Provider hosts must be 
 
 The integration executes Chat Completions, Responses, and Messages through Tokn with SSE or buffered JSON and does not follow redirects. Apell retains SSE framing and semantic validation on opaque response bytes so client message metadata, provider-reported model identity, structured stream errors, and explicit finish reasons remain intact. At the integrated revision, Tokn's higher-level generation API cannot carry all required assistant metadata, so Apell uses its low-level execution path without maintaining host conversation state.
 
-Direct Anthropic and Gemini drivers are absent from the integrated Tokn registry; support for Messages through Copilot/OpenCode does not imply a direct Anthropic connection. A service exposing compatible Chat Completions can use the custom connection. Schema-constrained answers and multimodal input remain outside this contract. Demo mode returns scripted local text without a model request.
+Direct Anthropic and Gemini drivers are absent from the integrated Tokn registry; support for Messages through Copilot/OpenCode does not imply a direct Anthropic connection. A service exposing compatible Chat Completions can use the custom connection. Schema-constrained answers are outside this contract. Demo mode returns scripted local text without a model request.
 
 Provider URLs require HTTPS, except loopback HTTP, and reject embedded credentials, query parameters, and fragments. Provider errors are sanitized before crossing the bridge. Provider, HTTP, and resource requests share a TLS policy: Android uses bundled Mozilla roots with rustls verification, while Apple platforms use native certificate trust. Android device-installed private certificate authorities are not loaded; updating its bundled roots requires rebuilding the shell.
 
-Requests allow 1–256 messages, up to 64 tool definitions/calls, at most 512 KiB of encoded input including schemas and replay metadata, and temperature from 0 to 2. Optional `max_output_tokens` accepts 1–131072 and maps to the selected protocol's limit; actual model limits may be lower. Codex explicitly rejects that option because its upstream API does not support it. Output and replay metadata are bounded; generated output is capped at 1 MiB and raw provider responses at 8 MiB. The request timeout is 180 seconds, with a 60-second network read timeout. At most four requests run per view or backend service scope and 16 globally. The host rejects oversized context; it does not truncate history or summarize it for the applet.
+Requests allow 1–256 messages, up to 64 tool definitions/calls, at most 512 KiB of JSON input including schemas and replay metadata, and temperature from 0 to 2. File bytes resolved by the host count against the separate attachment budget. Optional `max_output_tokens` accepts 1–131072 and maps to the selected protocol's limit; actual model limits may be lower. Codex explicitly rejects that option because its upstream API does not support it. Output and replay metadata are bounded; generated output is capped at 1 MiB and raw provider responses at 8 MiB. The request timeout is 180 seconds, with a 60-second network read timeout. At most four requests run per view or backend service scope and 16 globally. The host rejects oversized context; it does not truncate history or summarize it for the applet.
 
 Non-secret settings live in host application data. Credentials are scoped by connection identity and stored in Apple Keychain on iOS/macOS or encrypted with an Android Keystore key on Android. Android ciphertext is excluded from device backup. Applets cannot read keys, modify shared settings, or access a generic credential store. Secure provider credentials are currently implemented for iOS, Android, and macOS.
 

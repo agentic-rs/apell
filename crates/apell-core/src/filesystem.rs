@@ -23,6 +23,12 @@ pub struct FileStore {
   operations: Mutex<()>,
 }
 
+pub(crate) enum BoundedReadError {
+  InvalidPath,
+  Unavailable,
+  TooLarge,
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ReadRequest {
@@ -113,6 +119,45 @@ impl FileStore {
     } else {
       resolve(&root, &components).map(|(path, _)| path)
     }
+  }
+
+  /// Read an entire applet file for a native service on a blocking worker.
+  /// Hold the same lock as applet mutations through path validation and read.
+  pub(crate) fn read_bounded(
+    &self,
+    applet_id: &str,
+    path: &str,
+    max_bytes: usize,
+  ) -> std::result::Result<Vec<u8>, BoundedReadError> {
+    use BoundedReadError::*;
+    if !valid_name(applet_id) {
+      return Err(InvalidPath);
+    }
+    let mut components = validate_path(path, false).map_err(|_| InvalidPath)?;
+    components.insert(0, applet_id);
+    let _operation = self.operations.lock().map_err(|_| Unavailable)?;
+    let (path, metadata) = resolve(&self.root, &components).map_err(|_| Unavailable)?;
+    if !metadata.is_file() {
+      return Err(Unavailable);
+    }
+    let file = File::open(path).map_err(|_| Unavailable)?;
+    let metadata = file.metadata().map_err(|_| Unavailable)?;
+    if !metadata.is_file() {
+      return Err(Unavailable);
+    }
+    let limit = max_bytes as u64;
+    if metadata.len() > limit {
+      return Err(TooLarge);
+    }
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    file
+      .take(limit.saturating_add(1))
+      .read_to_end(&mut bytes)
+      .map_err(|_| Unavailable)?;
+    if bytes.len() > max_bytes {
+      return Err(TooLarge);
+    }
+    Ok(bytes)
   }
 
   /// Publish a host-owned staging file from the same filesystem. Applets

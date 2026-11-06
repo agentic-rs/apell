@@ -1,7 +1,8 @@
-use super::{validation, Failure, LlmConfig, LlmRequest, LlmToolCall, LlmToolChoice};
+use super::{media, validation, Failure, LlmConfig, LlmRequest, LlmToolCall, LlmToolChoice};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tokn_sdk::Endpoint;
+use tokn_convert::{error::ConvertError, media::content_to_parts};
+use tokn_sdk::{Content, Endpoint};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -18,6 +19,10 @@ impl Protocol {
       Self::Responses => Endpoint::Responses,
       Self::Messages => Endpoint::Messages,
     }
+  }
+
+  pub(super) fn supports_audio_input(self) -> bool {
+    self == Self::ChatCompletions
   }
 }
 
@@ -190,10 +195,54 @@ fn portable(message: &Value) -> Result<(), Failure> {
   Ok(())
 }
 
+fn invalid_input_part() -> Failure {
+  Failure::new("invalid_request", "Could not prepare the model input.")
+}
+
+fn structured_content(
+  protocol: Protocol,
+  message_index: usize,
+  parts: &[Value],
+  attachments: &media::Attachments,
+) -> Result<Value, Failure> {
+  let mut native = Vec::with_capacity(parts.len());
+  for (part_index, part) in parts.iter().enumerate() {
+    let text;
+    let content = if part["type"] == "text" {
+      text = Content::text(part["text"].as_str().ok_or_else(invalid_input_part)?);
+      &text
+    } else {
+      attachments
+        .get(&(message_index, part_index))
+        .ok_or_else(invalid_input_part)?
+    };
+    let capability = match content {
+      Content::Text(_) => None,
+      Content::Image(_) => Some("image_input"),
+      Content::Document(_) => Some("pdf_input"),
+      Content::Audio(_) if protocol.supports_audio_input() => Some("audio_input"),
+      Content::Audio(_) => return Err(Failure::unsupported("audio_input")),
+      _ => return Err(invalid_input_part()),
+    };
+    let lowered =
+      content_to_parts(protocol.endpoint(), content, "user").map_err(|error| {
+        match (error, capability) {
+          (ConvertError::UnsupportedFeature { .. }, Some(capability)) => {
+            Failure::unsupported(capability)
+          }
+          _ => invalid_input_part(),
+        }
+      })?;
+    native.extend(lowered);
+  }
+  Ok(Value::Array(native))
+}
+
 pub(super) fn request(
   request: &LlmRequest,
   config: &LlmConfig,
   protocol: Protocol,
+  attachments: &media::Attachments,
 ) -> Result<Value, Failure> {
   let mut body = json!({"model":config.model_id, "messages":[], "stream":request.stream});
   if let Some(temperature) = request.temperature {
@@ -231,7 +280,13 @@ pub(super) fn request(
     {
       return Err(mismatch());
     }
-    body["messages"] = json!(request.messages);
+    let mut messages = request.messages.clone();
+    for (message_index, message) in messages.iter_mut().enumerate() {
+      if let Some(parts) = media::parts(message) {
+        message["content"] = structured_content(protocol, message_index, parts, attachments)?;
+      }
+    }
+    body["messages"] = Value::Array(messages);
   } else {
     if config.provider_id == "codex" && request.max_output_tokens.is_some() {
       return Err(Failure::unsupported("max_output_tokens"));
@@ -245,7 +300,7 @@ pub(super) fn request(
       })?;
     let mut records = Vec::new();
     let mut instructions = Vec::new();
-    for message in &request.messages {
+    for (message_index, message) in request.messages.iter().enumerate() {
       if let Some(output) = replay(message, config, protocol)? {
         if protocol == Protocol::Responses {
           records.extend(output);
@@ -270,6 +325,15 @@ pub(super) fn request(
         continue;
       }
       portable(message)?;
+      if let Some(parts) = media::parts(message) {
+        // Lower directly to this endpoint so media bytes do not pass through
+        // the Chat conversion or touch provider-native replay records.
+        records.push(json!({
+          "role": "user",
+          "content": structured_content(protocol, message_index, parts, attachments)?,
+        }));
+        continue;
+      }
       let converted = tokn_convert::convert_request(
         Endpoint::ChatCompletions,
         protocol.endpoint(),

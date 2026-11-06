@@ -49,6 +49,9 @@ export interface LlmCapabilities {
   tools: LlmCapability;
   required_tool_choice: LlmCapability;
   exposed_reasoning: LlmCapability;
+  image_input: LlmCapability;
+  pdf_input: LlmCapability;
+  audio_input: LlmCapability;
 }
 
 export interface LlmToolCall {
@@ -65,11 +68,15 @@ export interface LlmTool {
 
 export type LlmToolChoice = 'auto' | 'none' | 'required' | { name: string };
 
+/** Media paths are relative to the caller's private files. Documents are PDFs. */
+export type LlmInputPart =
+  { type: 'text'; text: string } | { type: 'image' | 'document' | 'audio'; path: string };
+
 /** Applet-owned message. Preserve all returned fields, including native provider_state, on replay. */
-export type LlmMessage = {
-  role: 'system' | 'user' | 'assistant' | 'tool';
-  [key: string]: JsonValue;
-};
+export type LlmMessage = (
+  | { role: 'user'; content?: string | null | LlmInputPart[] }
+  | { role: 'system' | 'assistant' | 'tool'; content?: string | null }
+) & { [key: string]: JsonValue };
 
 export interface LlmRequest {
   request_id?: string;

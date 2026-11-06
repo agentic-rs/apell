@@ -1,3 +1,4 @@
+mod media;
 mod platform;
 mod provider;
 mod sse;
@@ -16,7 +17,7 @@ use std::{
   sync::{Arc, Mutex},
   time::{Duration, Instant},
 };
-use tokio::sync::watch;
+use tokio::sync::{watch, Semaphore};
 use tokn_sdk::account::AccountConfig;
 use uuid::Uuid;
 
@@ -83,6 +84,20 @@ type Requests = Arc<Mutex<RequestRegistry>>;
 pub struct LlmService {
   client: Client,
   requests: Requests,
+  attachment_jobs: Arc<Semaphore>,
+}
+
+/// Applet files supplied by the host only after checking the manifest.
+pub struct LlmFiles {
+  pub store: Arc<crate::filesystem::FileStore>,
+  pub applet_id: String,
+}
+
+struct Generation<'a> {
+  request: &'a LlmRequest,
+  config: &'a LlmConfig,
+  account: Option<AccountConfig>,
+  files: Option<LlmFiles>,
 }
 
 impl LlmService {
@@ -97,6 +112,7 @@ impl LlmService {
     Ok(Self {
       client,
       requests: Arc::new(Mutex::new(RequestRegistry::default())),
+      attachment_jobs: Arc::new(Semaphore::new(2)),
     })
   }
 
@@ -125,13 +141,37 @@ impl LlmService {
     account: Option<AccountConfig>,
     emit: impl Fn(LlmEvent) + Send + Sync + 'static,
   ) -> LlmResult {
+    self
+      .generate_with_files(session_id, request, config, account, None, emit)
+      .await
+  }
+
+  pub async fn generate_with_files(
+    &self,
+    session_id: &str,
+    request: LlmRequest,
+    config: LlmConfig,
+    account: Option<AccountConfig>,
+    files: Option<LlmFiles>,
+    emit: impl Fn(LlmEvent) + Send + Sync + 'static,
+  ) -> LlmResult {
     let provenance = request
       .target
       .as_ref()
       .map_or_else(|| config.provenance(), LlmTarget::provenance);
     let mut output = Output::new(&request.request_id, provenance);
     let result = self
-      .run(session_id, &request, &config, account, &mut output, &emit)
+      .run(
+        session_id,
+        Generation {
+          request: &request,
+          config: &config,
+          account,
+          files,
+        },
+        &mut output,
+        &emit,
+      )
       .await;
     output.result(result)
   }
@@ -139,12 +179,16 @@ impl LlmService {
   async fn run(
     &self,
     session_id: &str,
-    request: &LlmRequest,
-    config: &LlmConfig,
-    account: Option<AccountConfig>,
+    generation: Generation<'_>,
     output: &mut Output,
     emit: &impl Fn(LlmEvent),
   ) -> Result<LlmStatus, Failure> {
+    let Generation {
+      request,
+      config,
+      account,
+      files,
+    } = generation;
     if let Some(target) = &request.target {
       target
         .validate_for(config)
@@ -160,7 +204,18 @@ impl LlmService {
     validation::request(request)?;
     tokn_config::validate_account(config, account.as_ref())?;
     let (mut cancellation, guard) = self.register(session_id, &request.request_id)?;
-    if config.base_url == "demo"
+    let protocol = (config.base_url != "demo")
+      .then(|| wire::protocol(config))
+      .transpose()?;
+    let mut file_kinds = request
+      .messages
+      .iter()
+      .filter_map(media::parts)
+      .flatten()
+      .filter_map(|part| part["type"].as_str())
+      .filter(|kind| *kind != "text");
+    let first_file = file_kinds.next();
+    if protocol.is_none()
       && (!request.tools.is_empty()
         || request.messages.iter().any(|message| {
           message
@@ -172,6 +227,20 @@ impl LlmService {
     {
       return Err(Failure::unsupported("tools"));
     }
+    if let Some(kind) = first_file {
+      let Some(protocol) = protocol else {
+        return Err(Failure::unsupported(match kind {
+          "image" => "image_input",
+          "document" => "pdf_input",
+          _ => "audio_input",
+        }));
+      };
+      if !protocol.supports_audio_input()
+        && (kind == "audio" || file_kinds.any(|kind| kind == "audio"))
+      {
+        return Err(Failure::unsupported("audio_input"));
+      }
+    }
     emit(LlmEvent {
       provenance: Some(output.provenance.clone()),
       ..event(&request.request_id, "started", "")
@@ -180,11 +249,45 @@ impl LlmService {
     // failures return the exact partial answer regardless of event delivery order.
     let status = {
       let work = async {
-        if config.base_url == "demo" {
-          provider::demo(request, output, emit).await
-        } else {
-          provider::remote(&self.client, request, config, account, output, emit).await
+        if protocol.is_none() {
+          return provider::demo(request, output, emit).await;
         }
+        let (attachments, _permit) = if first_file.is_some() {
+          let permit = self
+            .attachment_jobs
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| Failure {
+              retryable: true,
+              ..Failure::new("busy", "Too many LLM requests with attachments are active.")
+            })?;
+          let messages = request.messages.clone();
+          // The blocking worker retains the permit even if the awaiting
+          // request is canceled before the bounded file read has finished.
+          tokio::task::spawn_blocking(move || {
+            let access = files.as_ref().map(|files| media::FileAccess {
+              files: &files.store,
+              applet_id: &files.applet_id,
+            });
+            media::resolve(&messages, access).map(|attachments| (attachments, Some(permit)))
+          })
+          .await
+          .map_err(|_| {
+            Failure::new("internal_error", "The attachment worker could not finish.")
+          })??
+        } else {
+          (media::Attachments::new(), None)
+        };
+        provider::remote(
+          &self.client,
+          request,
+          config,
+          account,
+          attachments,
+          output,
+          emit,
+        )
+        .await
       };
       tokio::select! {
         biased;

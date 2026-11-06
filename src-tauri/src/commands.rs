@@ -3,8 +3,8 @@ use crate::permissions::ManagedPermission;
 use crate::provider_commands::{snapshot, ModelRoute, ModelSnapshot};
 use crate::settings::Settings;
 use apell_core::llm::{
-  deserialize_target, LlmConfig, LlmEvent, LlmFailure, LlmProvenance, LlmRequest, LlmResult,
-  LlmStatus, LlmTarget,
+  deserialize_target, LlmConfig, LlmEvent, LlmFailure, LlmFiles, LlmProvenance, LlmRequest,
+  LlmResult, LlmStatus, LlmTarget,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -344,9 +344,19 @@ pub async fn service_call(
           )
         }
       };
+      let files = (session.manifest.network
+        && session
+          .manifest
+          .permissions
+          .iter()
+          .any(|group| group == "fs"))
+      .then(|| LlmFiles {
+        store: host.files.clone(),
+        applet_id: session.manifest.applet_id.clone(),
+      });
       let result = host
         .llm
-        .generate(&session_id, request, config, key, emit)
+        .generate_with_files(&session_id, request, config, key, files, emit)
         .await;
       serde_json::to_value(result).map_err(|_| "Could not encode LLM result.".into())
     }

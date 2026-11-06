@@ -1,6 +1,9 @@
+use apell_core::filesystem::FileStore;
 use apell_core::llm::{
-  LlmConfig, LlmEvent, LlmRequest, LlmResult, LlmService, LlmStatus, LlmTarget, LlmToolChoice,
+  LlmConfig, LlmEvent, LlmFiles, LlmRequest, LlmResult, LlmService, LlmStatus, LlmTarget,
+  LlmToolChoice,
 };
+use base64::{engine::general_purpose::STANDARD, Engine};
 use serde_json::{json, Value};
 use std::{
   collections::VecDeque,
@@ -1335,6 +1338,168 @@ async fn opencode_native_dispatch_uses_protocol_specific_auth_and_honors_tool_ch
       assert!(headers.contains("anthropic-version: 2023-06-01"));
     }
   }
+}
+
+#[tokio::test]
+async fn private_attachments_keep_order_and_encode_for_the_selected_endpoint() {
+  let directory = tempfile::tempdir().unwrap();
+  let files = Arc::new(FileStore::new(directory.path().join("files")));
+  files
+    .dispatch("fixture", "fs.mkdir", json!({"path":"assets"}))
+    .unwrap();
+  let assets = directory.path().join("files/fixture/assets");
+  // The mock checks the transport, including a wire payload above the
+  // separate 512 KiB JSON context limit. It does not decode the image.
+  let mut image = vec![0xff, 0xd8, 0xff];
+  image.resize(400 * 1024, 0);
+  let pdf = b"%PDF-1.4\nfixture";
+  let wav = b"RIFF\x04\x00\x00\x00WAVE";
+  let mp3 = b"\xff\xfb\x90\x64fixture";
+  for (name, bytes) in [
+    ("private-photo.jpeg", image.as_slice()),
+    ("private-document.pdf", pdf.as_slice()),
+    ("private-recording.wav", wav.as_slice()),
+    ("private-recording.mp3", mp3.as_slice()),
+  ] {
+    std::fs::write(assets.join(name), bytes).unwrap();
+  }
+  let image_data = STANDARD.encode(&image);
+  let pdf_data = STANDARD.encode(pdf);
+  for (model, path, reply) in [
+    (
+      "gpt-fixture",
+      "responses",
+      responses(json!([response_text("Answer")]), "completed"),
+    ),
+    (
+      "qwen-fixture",
+      "messages",
+      json!({"id":"message_fixture","role":"assistant","content":[{"type":"text","text":"Answer"}],"stop_reason":"end_turn"}),
+    ),
+    (
+      "other-fixture",
+      "chat/completions",
+      completion(json!({"role":"assistant","content":"Answer"}), "stop"),
+    ),
+  ] {
+    let mut server = Server::start(vec![Reply::Json(reply)]).await;
+    server.config.provider_id = "opencode-go".into();
+    server.config.model_id = model.into();
+    let service = LlmService::new().unwrap();
+    service.register_session("session").unwrap();
+    let mut parts = vec![
+      json!({"type":"text","text":"First"}),
+      json!({"type":"image","path":"assets/private-photo.jpeg"}),
+      json!({"type":"text","text":"Then"}),
+      json!({"type":"document","path":"assets/private-document.pdf"}),
+    ];
+    if path == "chat/completions" {
+      parts.extend([
+        json!({"type":"audio","path":"assets/private-recording.wav"}),
+        json!({"type":"audio","path":"assets/private-recording.mp3"}),
+      ]);
+    }
+    let result = tokio::time::timeout(
+      DEADLINE,
+      service.generate_with_files(
+        "session",
+        LlmRequest {
+          request_id: "attachments".into(),
+          messages: vec![json!({"role":"user","content":parts})],
+          stream: false,
+          ..LlmRequest::default()
+        },
+        server.config.clone(),
+        Some(account(&server.config, "fixture-api-key")),
+        Some(LlmFiles {
+          store: files.clone(),
+          applet_id: "fixture".into(),
+        }),
+        |_| {},
+      ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result.status, LlmStatus::Completed, "{:?}", result.error);
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1);
+    let sent = &requests[0];
+    assert!(sent.headers.starts_with(&format!("POST /v1/{path} ")));
+    assert!(!sent.body.to_string().contains("assets/private-"));
+    let image_url = format!("data:image/jpeg;base64,{image_data}");
+    let pdf_url = format!("data:application/pdf;base64,{pdf_data}");
+    match path {
+      "responses" => assert_eq!(
+        sent.body["input"][0]["content"],
+        json!([
+          {"type":"input_text","text":"First"},
+          {"type":"input_image","image_url":image_url},
+          {"type":"input_text","text":"Then"},
+          {"type":"input_file","file_data":pdf_url,"filename":"attachment.pdf"},
+        ])
+      ),
+      "messages" => assert_eq!(
+        sent.body["messages"][0]["content"],
+        json!([
+          {"type":"text","text":"First"},
+          {"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":image_data}},
+          {"type":"text","text":"Then"},
+          {"type":"document","source":{"type":"base64","media_type":"application/pdf","data":pdf_data},"title":"attachment.pdf"},
+        ])
+      ),
+      _ => assert_eq!(
+        sent.body["messages"][0]["content"],
+        json!([
+          {"type":"text","text":"First"},
+          {"type":"image_url","image_url":{"url":image_url}},
+          {"type":"text","text":"Then"},
+          {"type":"file","file":{"file_data":pdf_url,"filename":"attachment.pdf"}},
+          {"type":"input_audio","input_audio":{"format":"wav","data":STANDARD.encode(wav)}},
+          {"type":"input_audio","input_audio":{"format":"mp3","data":STANDARD.encode(mp3)}},
+        ])
+      ),
+    }
+  }
+}
+
+#[tokio::test]
+async fn attachment_permission_and_content_validation_fail_before_provider_dispatch() {
+  let mut server = Server::start(Vec::new()).await;
+  let service = LlmService::new().unwrap();
+  service.register_session("session").unwrap();
+  for (message, code) in [
+    (
+      json!({"role":"user","content":[{"type":"image","path":"private.jpg"}]}),
+      "attachment_permission",
+    ),
+    (
+      json!({"role":"assistant","content":[{"type":"image","path":"private.jpg"}]}),
+      "invalid_request",
+    ),
+    (
+      json!({"role":"user","content":[{"type":"image","url":"https://example.invalid/image.png"}]}),
+      "invalid_request",
+    ),
+    (
+      json!({"role":"user","content":[{"type":"image","path":"private.jpg","mime_type":"image/jpeg"}]}),
+      "invalid_request",
+    ),
+  ] {
+    let mut request = native_input("rejected_attachment");
+    request.messages = vec![message];
+    let (result, _) = generate(&service, "session", request, &server.config).await;
+    assert_eq!(result.error.unwrap().code, code);
+  }
+  server.config.provider_id = "openai".into();
+  let mut request = native_input("unsupported_audio");
+  request.messages = vec![json!({"role":"user","content":[{"type":"audio","path":"missing.wav"}]})];
+  let (result, _) = generate(&service, "session", request, &server.config).await;
+  assert_eq!(result.status, LlmStatus::Unsupported);
+  assert_eq!(
+    result.error.unwrap().capability.as_deref(),
+    Some("audio_input")
+  );
+  assert!(server.requests().is_empty());
 }
 
 #[tokio::test]

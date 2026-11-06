@@ -1,5 +1,6 @@
 use super::{
   event,
+  media::{self, Attachments},
   platform::{ApellBody, ApellPlatform, PlatformError},
   sse::SseParser,
   tokn_config, validation, wire, Failure, LlmConfig, LlmEvent, LlmProvenance, LlmRequest,
@@ -515,8 +516,20 @@ pub(super) async fn demo(
     .iter()
     .rev()
     .find(|message| message["role"] == "user")
-    .and_then(|message| message.get("content").and_then(Value::as_str))
-    .map(|content| content.chars().take(200).collect::<String>())
+    .map(|message| match media::parts(message) {
+      Some(parts) => parts
+        .iter()
+        .filter_map(|part| part["text"].as_str())
+        .flat_map(str::chars)
+        .take(200)
+        .collect::<String>(),
+      None => message["content"]
+        .as_str()
+        .unwrap_or_default()
+        .chars()
+        .take(200)
+        .collect(),
+    })
     .unwrap_or_default();
   let answer = format!("This is the local demo provider. Your message was: “{prompt}”\n\nThe applet is running Rust WebAssembly, and this conversation is stored by the shell’s native SQLite service. Configure a provider in the shell settings for real model responses.");
   for text in answer.split_inclusive(' ') {
@@ -540,11 +553,20 @@ pub(super) async fn remote(
   request: &LlmRequest,
   config: &LlmConfig,
   account: Option<tokn_sdk::account::AccountConfig>,
+  attachments: Attachments,
   output: &mut Output,
   emit: &impl Fn(LlmEvent),
 ) -> Result<LlmStatus, Failure> {
   let protocol = wire::protocol(config)?;
-  let body = wire::request(request, config, protocol)?;
+  let max_wire_bytes = if attachments.is_empty() {
+    MAX_INPUT_BYTES
+  } else {
+    // The 8 MiB raw file budget expands under base64. Bound the entire body
+    // independently to account for context and any provider wire transforms.
+    12 * 1024 * 1024
+  };
+  let body = wire::request(request, config, protocol, &attachments)?;
+  drop(attachments);
   let progress = |event| {
     if request.stream {
       emit(event);
@@ -553,7 +575,7 @@ pub(super) async fn remote(
   if serde_json::to_vec(&body)
     .map_err(|_| Failure::new("invalid_request", "The LLM request is not valid JSON."))?
     .len()
-    > MAX_INPUT_BYTES
+    > max_wire_bytes
   {
     return Err(Failure::new(
       "context_limit",

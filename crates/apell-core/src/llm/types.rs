@@ -46,6 +46,15 @@ impl LlmConfig {
       tools: state,
       required_tool_choice: state,
       exposed_reasoning: state,
+      image_input: state,
+      pdf_input: state,
+      audio_input: if super::wire::protocol(self)
+        .is_ok_and(|protocol| protocol.supports_audio_input())
+      {
+        state
+      } else {
+        CapabilityState::Unsupported
+      },
     }
   }
 
@@ -71,6 +80,9 @@ pub struct LlmCapabilities {
   pub tools: CapabilityState,
   pub required_tool_choice: CapabilityState,
   pub exposed_reasoning: CapabilityState,
+  pub image_input: CapabilityState,
+  pub pdf_input: CapabilityState,
+  pub audio_input: CapabilityState,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -132,7 +144,7 @@ pub struct LlmRequest {
     skip_serializing_if = "Option::is_none"
   )]
   pub target: Option<LlmTarget>,
-  /// Complete provider-compatible messages, including applet-owned metadata.
+  /// Complete messages, including applet-owned metadata and private file references.
   pub messages: Vec<Value>,
   #[serde(default = "default_stream")]
   pub stream: bool,
