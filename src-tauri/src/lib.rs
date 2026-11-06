@@ -8,11 +8,15 @@ mod install;
 mod ios;
 mod media;
 mod navigation;
+mod permissions;
 mod provider_commands;
 mod settings;
 mod speech;
 
-use tauri::Manager;
+use tauri::{
+  webview::{PermissionKind, PermissionResponse},
+  Manager,
+};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -38,6 +42,13 @@ pub fn run() {
           .title("Apell")
           .background_color(tauri::window::Color(247, 248, 243, 255))
           .initialization_script(boot)
+          // Sensor access belongs to the native applet services.
+          .on_permission_request(|_, kind| match kind {
+            PermissionKind::Microphone | PermissionKind::Camera | PermissionKind::Geolocation => {
+              PermissionResponse::Deny
+            }
+            _ => PermissionResponse::Default,
+          })
           .on_navigation(move |url| navigation::allowed(url, &origins));
       // On iOS an explicit inner size becomes the actual native view frame.
       // Mobile must inherit the device bounds for responsive CSS and safe areas.

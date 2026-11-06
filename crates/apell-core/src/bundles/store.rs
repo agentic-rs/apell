@@ -254,6 +254,13 @@ impl BundleStore {
     self.read_active(&active)
   }
 
+  pub fn load_with_metadata(&self, applet_id: &str) -> Result<(Bundle, InstalledApplet), String> {
+    let active = self.active(applet_id)?.ok_or("Applet is not installed.")?;
+    let bundle = self.read_active(&active)?;
+    let installed = active.installed(bundle.manifest.clone());
+    Ok((bundle, installed))
+  }
+
   pub fn list(&self) -> Result<Vec<InstalledApplet>, String> {
     let mut installed = Vec::new();
     for id in self.ids()? {

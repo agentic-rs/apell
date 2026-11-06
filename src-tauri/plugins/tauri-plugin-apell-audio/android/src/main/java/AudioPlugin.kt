@@ -29,6 +29,7 @@ import java.util.concurrent.Executors
 @InvokeArg class StartArgs {
   lateinit var path: String
   lateinit var applet_name: String
+  var remembered: Boolean = false
 }
 @InvokeArg class ImportArgs { lateinit var directory: String }
 @InvokeArg class ShareArgs {
@@ -40,7 +41,7 @@ import java.util.concurrent.Executors
 
 @TauriPlugin(permissions = [Permission(strings = [Manifest.permission.RECORD_AUDIO], alias = "microphone")])
 class AudioPlugin(private val activity: Activity): Plugin(activity) {
-  private data class PendingStart(val invoke: Invoke, val path: String)
+  private data class PendingStart(val invoke: Invoke, val path: String, val remember: Boolean = false)
 
   private val closed_sessions = mutableSetOf<String>()
   private var recorder: MediaRecorder? = null
@@ -71,12 +72,17 @@ class AudioPlugin(private val activity: Activity): Plugin(activity) {
       if (!isVisible()) { invoke.reject("Open Apell to start recording."); return@runOnUiThread }
       if (recorder != null || pending_start != null) { invoke.reject("A recording is already active."); return@runOnUiThread }
       pending_start = PendingStart(invoke, args.path)
+      if (args.remembered) {
+        requestMicrophone(invoke, remember = false)
+        return@runOnUiThread
+      }
       try {
         val dialog = AlertDialog.Builder(activity)
           .setTitle("Use microphone?")
-          .setMessage("${args.applet_name} wants to start a recording.")
+          .setMessage("${args.applet_name} wants to start a recording. Choose Remember to allow future recordings by this applet.")
           .setNegativeButton("Cancel") { _, _ -> cancelStart(invoke, "Microphone recording was cancelled.") }
-          .setPositiveButton("Start recording") { _, _ -> requestMicrophone(invoke) }
+          .setNeutralButton("Remember") { _, _ -> requestMicrophone(invoke, remember = true) }
+          .setPositiveButton("Allow once") { _, _ -> requestMicrophone(invoke, remember = false) }
           .setOnCancelListener { cancelStart(invoke, "Microphone recording was cancelled.") }
           .create()
         start_confirmation = dialog
@@ -96,10 +102,11 @@ class AudioPlugin(private val activity: Activity): Plugin(activity) {
     invoke.reject(reason)
   }
 
-  private fun requestMicrophone(invoke: Invoke) {
-    if (pending_start?.invoke !== invoke) return
+  private fun requestMicrophone(invoke: Invoke, remember: Boolean) {
+    val request = pending_start?.takeIf { it.invoke === invoke } ?: return
     start_confirmation = null
     if (!isVisible()) { cancelStart(invoke, "Open Apell to start recording."); return }
+    pending_start = request.copy(remember = remember)
     try {
       if (getPermissionState("microphone") != PermissionState.GRANTED) {
         requestPermissionForAlias("microphone", invoke, "microphoneResult")
@@ -143,7 +150,7 @@ class AudioPlugin(private val activity: Activity): Plugin(activity) {
       accumulated_ms = 0
       started_at = SystemClock.elapsedRealtime()
       recording_state = "recording"
-      invoke.resolve()
+      invoke.resolve(JSObject().put("remember", request.remember))
     } catch (_: Exception) {
       runCatching { next?.release() }
       File(request.path).delete()

@@ -21,6 +21,7 @@ fn fixture() -> (tempfile::TempDir, Arc<Host>, Session) {
       name: "Vault fixture".into(),
       version: "1.0.0".into(),
       permissions: vec!["secrets".into()],
+      network: true,
       lib: None,
     },
     alive: Arc::new(true.into()),

@@ -83,6 +83,24 @@ fn deterministic_packer_preserves_html_assets_and_declared_guest_module() {
 }
 
 #[test]
+fn network_defaults_on_and_preserves_an_explicit_opt_out_on_install() {
+  let default = package("sample", "1.0.0");
+  assert!(parse(&default).unwrap().manifest.network);
+  let mut offline: serde_json::Value =
+    serde_json::from_slice(&manifest("sample", "1.0.0")).unwrap();
+  offline["network"] = false.into();
+  let offline = archive(&[
+    ("manifest.json", &serde_json::to_vec(&offline).unwrap()),
+    ("index.html", b"html"),
+  ]);
+  let dir = tempfile::tempdir().unwrap();
+  let store = BundleStore::new(dir.path().into());
+  let installed = store.install(&offline, &digest(&offline)).unwrap();
+  assert!(!installed.manifest.network);
+  assert!(!store.load("sample").unwrap().manifest.network);
+}
+
+#[test]
 fn rejects_unknown_versions_permissions_and_unsafe_or_missing_backend() {
   for (field, value) in [
     ("api_version", serde_json::json!(1)),
@@ -90,6 +108,7 @@ fn rejects_unknown_versions_permissions_and_unsafe_or_missing_backend() {
     ("applet_id", serde_json::json!("../escape")),
     ("permissions", serde_json::json!(["shell"])),
     ("permissions", serde_json::json!(["llm", "llm"])),
+    ("network", serde_json::json!("false")),
     ("lib", serde_json::json!("assets/guest.wasm")),
     ("lib", serde_json::json!("lib/missing.wasm")),
     ("lib", serde_json::json!("lib/../index.html")),
