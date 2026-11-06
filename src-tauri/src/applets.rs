@@ -1,4 +1,5 @@
 use crate::host::{Host, Session};
+use crate::permissions::GrantSource;
 use apell_core::bundles::{Bundle, Manifest};
 use apell_runtime::{HostError, HostEvents, HostServices, RuntimeHandle, ServiceFuture};
 use serde::Serialize;
@@ -12,6 +13,7 @@ use tauri::{AppHandle, Emitter, Manager};
 struct RunningApplet {
   bundle: Arc<Bundle>,
   backend: Option<RuntimeHandle>,
+  grant_source: GrantSource,
 }
 
 const BACKEND_STOPPED: &str = "apell:stopped";
@@ -205,6 +207,41 @@ impl Host {
     )
   }
 
+  pub fn view_grant_source(&self, view_id: &str) -> Result<GrantSource, String> {
+    let running = self
+      .running
+      .lock()
+      .map_err(|_| "Applet state is unavailable.")?;
+    let run = running
+      .view
+      .as_ref()
+      .filter(|(_, view)| view == view_id)
+      .and_then(|(run, _)| running.runs.get(run))
+      .ok_or("Applet view is unavailable.")?;
+    Ok(run.grant_source.clone())
+  }
+
+  pub fn forget_microphone(&self, applet_id: &str) -> Result<(), String> {
+    let _gate = self
+      .view_gate
+      .lock()
+      .map_err(|_| "Applet views are unavailable.")?;
+    let running = self
+      .running
+      .lock()
+      .map_err(|_| "Applet state is unavailable.")?;
+    if running
+      .view
+      .as_ref()
+      .and_then(|(run, _)| running.runs.get(run))
+      .is_some_and(|run| run.bundle.manifest.applet_id == applet_id)
+    {
+      return Err("Close the applet before resetting its microphone permission.".into());
+    }
+    drop(running);
+    self.microphone.forget(applet_id)
+  }
+
   pub async fn invoke_backend(
     &self,
     session_id: &str,
@@ -293,11 +330,12 @@ pub async fn launch(app: AppHandle, applet_id: &str) -> Result<Attachment, Strin
   }
   let store = host.bundles.clone();
   let id = applet_id.to_owned();
-  let bundle = Arc::new(
-    tauri::async_runtime::spawn_blocking(move || store.load(&id))
+  let (bundle, installed) =
+    tauri::async_runtime::spawn_blocking(move || store.load_with_metadata(&id))
       .await
-      .map_err(|_| "Could not load the applet package.")??,
-  );
+      .map_err(|_| "Could not load the applet package.")??;
+  let bundle = Arc::new(bundle);
+  let grant_source = GrantSource::from(&installed);
   let session_id = uuid::Uuid::new_v4().to_string();
   host.sqlite.register_session(&session_id, applet_id)?;
   if let Err(error) = host.llm.register_session(&session_id) {
@@ -387,9 +425,14 @@ pub async fn launch(app: AppHandle, applet_id: &str) -> Result<Attachment, Strin
     .running
     .lock()
     .map_err(|_| "Applet state is unavailable.")?;
-  running
-    .runs
-    .insert(session_id.clone(), RunningApplet { bundle, backend });
+  running.runs.insert(
+    session_id.clone(),
+    RunningApplet {
+      bundle,
+      backend,
+      grant_source,
+    },
+  );
   drop(running);
   host.attach_run(&session_id)
 }
@@ -424,7 +467,8 @@ mod tests {
   }
 
   fn seed_run(host: &Host, session_id: &str, applet_id: &str) {
-    let bundle = Arc::new(host.bundles.load(applet_id).unwrap());
+    let (bundle, installed) = host.bundles.load_with_metadata(applet_id).unwrap();
+    let bundle = Arc::new(bundle);
     // Seed a running H5 applet exactly as launch does before attaching a view.
     host.sqlite.register_session(session_id, applet_id).unwrap();
     host.llm.register_session(session_id).unwrap();
@@ -442,6 +486,7 @@ mod tests {
       RunningApplet {
         bundle,
         backend: None,
+        grant_source: GrantSource::from(&installed),
       },
     );
   }
@@ -452,6 +497,24 @@ mod tests {
     install(&host, APPLET, "1.0.0");
     seed_run(&host, RUN, APPLET);
     (directory, host)
+  }
+
+  #[test]
+  fn closing_view_and_forgetting_permission_prevents_late_grant() {
+    let (_directory, host) = fixture();
+    let attachment = host.attach_run(RUN).unwrap();
+    let source = host.view_grant_source(&attachment.view_id).unwrap();
+    let session = host.sessions.lock().unwrap()[&attachment.view_id].clone();
+    host.microphone.remember(APPLET, &source).unwrap();
+
+    assert!(host.forget_microphone(APPLET).is_err());
+    host.detach_view(RUN, &attachment.view_id).unwrap();
+    host.forget_microphone(APPLET).unwrap();
+    assert!(session
+      .run_local(|| host.microphone.remember(APPLET, &source))
+      .is_err());
+    assert!(!host.microphone.remembered(APPLET, &source).unwrap());
+    assert!(host.running.lock().unwrap().runs.contains_key(RUN));
   }
 
   fn database(host: &Host, session: &str) -> Value {

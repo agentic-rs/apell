@@ -1,8 +1,9 @@
-use crate::host::{public_config, string, Host};
+use crate::host::{public_config, string, Host, NETWORK_DISABLED};
 use crate::provider_commands::{snapshot, ModelRoute, ModelSnapshot};
+use crate::settings::Settings;
 use apell_core::llm::{
-  deserialize_target, LlmEvent, LlmFailure, LlmProvenance, LlmRequest, LlmResult, LlmStatus,
-  LlmTarget,
+  deserialize_target, LlmConfig, LlmEvent, LlmFailure, LlmProvenance, LlmRequest, LlmResult,
+  LlmStatus, LlmTarget,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -32,6 +33,24 @@ fn failed_generation(
     error: Some(error),
   })
   .map_err(|_| "Could not encode LLM result.".into())
+}
+
+enum OfflineModel {
+  Demo(LlmConfig),
+  Remote(LlmProvenance),
+}
+
+fn resolve_offline_model(
+  route: ModelRoute<'_>,
+  settings: &Settings,
+) -> Result<OfflineModel, String> {
+  let config = route.resolve(settings)?.config();
+  // Match the condition that selects the local implementation in LlmService.
+  if config.base_url == "demo" {
+    Ok(OfflineModel::Demo(config))
+  } else {
+    Ok(OfflineModel::Remote(config.provenance()))
+  }
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -70,6 +89,15 @@ pub async fn shell_command(
     "applets.close" => {
       host.detach_view(string(&params, "session_id")?, string(&params, "view_id")?)?;
       Ok(Value::Null)
+    }
+    "permissions.list" => crate::permissions::list(&host).await,
+    "permissions.forget_microphone" => {
+      let applet_id = string(&params, "applet_id")?.to_owned();
+      blocking(move || {
+        app.state::<Host>().forget_microphone(&applet_id)?;
+        Ok(Value::Null)
+      })
+      .await
     }
     method if method.starts_with("llm.") => {
       crate::provider_commands::dispatch(app, &host, method, params).await
@@ -190,7 +218,32 @@ pub async fn service_call(
     "llm.generate" => {
       let request: LlmRequest =
         serde_json::from_value(params).map_err(|_| "Invalid LLM request.")?;
-      let selected = snapshot(&app, &host, ModelRoute::applet(request.target.as_ref())).await;
+      let route = ModelRoute::applet(request.target.as_ref());
+      let selected = if session.manifest.network {
+        snapshot(&app, &host, route).await
+      } else {
+        // Offline calls must never enter snapshot, which can refresh credentials
+        // over the network. Resolve once against the saved settings.
+        match resolve_offline_model(route, &*host.settings.lock().await) {
+          Ok(OfflineModel::Demo(config)) => Ok(ModelSnapshot {
+            config,
+            account: Ok(None),
+          }),
+          Ok(OfflineModel::Remote(provenance)) => {
+            return failed_generation(
+              request.request_id,
+              provenance,
+              LlmFailure {
+                code: "network_disabled".into(),
+                message: NETWORK_DISABLED.into(),
+                capability: None,
+                retryable: false,
+              },
+            );
+          }
+          Err(message) => Err(message),
+        }
+      };
       if !session.alive.load(Ordering::SeqCst) {
         return Err("Applet session is closed.".into());
       }
@@ -294,12 +347,51 @@ pub async fn service_call(
   }
 }
 
-pub(crate) async fn blocking(
-  task: impl FnOnce() -> Result<Value, String> + Send + 'static,
-) -> Result<Value, String> {
+pub(crate) async fn blocking<T: Send + 'static>(
+  task: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
   tauri::async_runtime::spawn_blocking(task)
     .await
     .map_err(|_| "Host operation was interrupted.".to_string())?
+}
+
+#[cfg(test)]
+mod network_tests {
+  use super::*;
+  use crate::settings::{credential_ref, Connection};
+
+  #[test]
+  fn offline_generation_resolves_local_demo_and_denies_both_remote_routes() {
+    let mut settings = Settings::default();
+    let saved = Connection {
+      connection_id: "remote".into(),
+      name: "Remote fixture".into(),
+      provider_id: "custom".into(),
+      base_url: "https://example.invalid/v1".into(),
+      model_id: "default-model".into(),
+      credential: credential_ref("remote"),
+    };
+    settings.replace(None, saved);
+    assert!(matches!(
+      resolve_offline_model(ModelRoute::applet(None), &settings).unwrap(),
+      OfflineModel::Demo(config) if config.base_url == "demo"
+    ));
+    let target = LlmTarget {
+      connection_id: "remote".into(),
+      model_id: "selected-model".into(),
+    };
+    assert!(matches!(
+      resolve_offline_model(ModelRoute::applet(Some(&target)), &settings).unwrap(),
+      OfflineModel::Remote(provenance)
+        if provenance.connection_id == "remote" && provenance.requested_model_id == "selected-model"
+    ));
+    settings.active_connection_id = "remote".into();
+    assert!(matches!(
+      resolve_offline_model(ModelRoute::applet(None), &settings).unwrap(),
+      OfflineModel::Remote(provenance)
+        if provenance.connection_id == "remote" && provenance.requested_model_id == "default-model"
+    ));
+  }
 }
 
 #[cfg(test)]

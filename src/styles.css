@@ -389,6 +389,13 @@ svg {
 .settings .primary {
   justify-self: stretch;
 }
+.applet-permissions {
+  margin-top: 16px;
+}
+.applet-permissions .connection-detail {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 .settings-heading {
   display: flex;
   align-items: center;

@@ -4,6 +4,7 @@ import type { LlmConnection, LlmSettings } from '../lib/types';
 import { ConnectionEditor } from '../components/providers/ConnectionEditor';
 import { OperationScope } from '../components/providers/state';
 import { Icon } from '../components/Icon';
+import { AppletPermissions } from '../components/AppletPermissions';
 
 export function Settings() {
   const [settings, setSettings] = useState<LlmSettings>();
@@ -93,7 +94,7 @@ export function Settings() {
       />
     );
 
-  return (
+  const connections = (
     <section className="settings panel" aria-busy={loading || busy}>
       <div className="settings-heading">
         <h2>Connections</h2>
@@ -206,5 +207,12 @@ export function Settings() {
         </button>
       )}
     </section>
+  );
+
+  return (
+    <>
+      {connections}
+      <AppletPermissions />
+    </>
   );
 }

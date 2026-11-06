@@ -5,6 +5,7 @@ export interface Manifest {
   name: string;
   version: string;
   permissions: string[];
+  network: boolean;
   lib?: string;
 }
 export interface InstalledApplet extends Manifest {
@@ -24,6 +25,11 @@ export interface UnavailableApplet {
 export interface AppletListReport {
   applets: InstalledApplet[];
   unavailable: UnavailableApplet[];
+}
+export interface AppletPermission {
+  applet_id: string;
+  name: string;
+  microphone_access: 'ask' | 'remembered' | 'previous_package';
 }
 export interface AppletSession {
   session_id: string;
