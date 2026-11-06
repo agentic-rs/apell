@@ -218,7 +218,7 @@ final class AudioPlugin: Plugin, AVAudioRecorderDelegate, AVAudioPlayerDelegate 
         self?.picker = nil
         switch result {
         case .success(let asset): invoke.resolve(asset)
-        case .failure: invoke.reject("Could not import audio. Choose a supported audio file smaller than 128 MiB.")
+        case .failure: invoke.reject("Could not import audio. Choose a supported audio file no larger than 2 GiB and no longer than 3 hours.")
         }
       }
       self.picker = picker
@@ -245,6 +245,8 @@ final class AudioPlugin: Plugin, AVAudioRecorderDelegate, AVAudioPlayerDelegate 
           let name = URL(fileURLWithPath: args.file_name).lastPathComponent
           guard !name.isEmpty, name != ".", name != ".." else { throw AudioFailure.operation }
           let file = folder.appendingPathComponent(name)
+          let size = try URL(fileURLWithPath: args.path).resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+          guard size > 0, size <= 2 * 1024 * 1024 * 1024 else { throw AudioFailure.operation }
           try FileManager.default.copyItem(at: URL(fileURLWithPath: args.path), to: file)
           DispatchQueue.main.async {
             guard self.generation == generation, self.pending_share === invoke else {

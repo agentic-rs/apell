@@ -252,7 +252,7 @@ class AudioPlugin(private val activity: Activity): Plugin(activity) {
           if (pending_import === invoke) {
             pending_import = null
             import_directory = null
-            invoke.reject("Could not import audio. Choose a supported audio file smaller than 128 MiB.")
+            invoke.reject("Could not import audio. Choose a supported audio file no larger than 2 GiB and no longer than 3 hours.")
           }
         }
       }
@@ -269,7 +269,7 @@ class AudioPlugin(private val activity: Activity): Plugin(activity) {
       val current_generation = generation
       worker.execute {
         try {
-          val shared = AudioFiles.prepareShare(activity, File(args.path), args.file_name)
+          val shared = AudioFiles.prepareShare(activity, File(args.path), args.file_name) { generation != current_generation }
           activity.runOnUiThread {
             if (generation != current_generation || pending_share !== invoke) {
               shared.delete()

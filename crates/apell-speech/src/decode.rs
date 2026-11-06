@@ -1,4 +1,4 @@
-use crate::check_cancelled;
+use crate::{check_cancelled, MAX_AUDIO_BYTES, MAX_AUDIO_SECONDS};
 use rubato::{FftFixedInOut, Resampler};
 use std::{fs::File, io::ErrorKind, path::Path, sync::atomic::AtomicBool};
 use symphonia::core::{
@@ -10,17 +10,22 @@ use symphonia::core::{
 };
 
 pub(crate) const SAMPLE_RATE: usize = 16_000;
-const MAX_SECONDS: usize = 30 * 60;
-const MAX_FILE_BYTES: u64 = 256 * 1024 * 1024;
 
-pub(crate) fn decode(path: &Path, cancel: &AtomicBool) -> Result<Vec<f32>, String> {
+/// Decode one packet at a time. Neither decoded PCM nor resampler output grows
+/// with the recording duration. The consumer can perform inference before the
+/// next packet is read, providing backpressure without another audio queue.
+pub(crate) fn stream(
+  path: &Path,
+  cancel: &AtomicBool,
+  mut consume: impl FnMut(&[f32], Option<u64>) -> Result<(), String>,
+) -> Result<u64, String> {
   check_cancelled(cancel)?;
   let file = File::open(path).map_err(|_| "Could not open the audio recording.")?;
   let metadata = file
     .metadata()
     .map_err(|_| "Could not inspect the audio recording.")?;
-  if !metadata.is_file() || metadata.len() == 0 || metadata.len() > MAX_FILE_BYTES {
-    return Err("Choose a nonempty audio file smaller than 256 MiB.".into());
+  if !metadata.is_file() || metadata.len() == 0 || metadata.len() > MAX_AUDIO_BYTES {
+    return Err("Choose a nonempty audio file no larger than 2 GiB.".into());
   }
   let source = MediaSourceStream::new(Box::new(file), Default::default());
   let mut hint = Hint::new();
@@ -43,8 +48,16 @@ pub(crate) fn decode(path: &Path, cancel: &AtomicBool) -> Result<Vec<f32>, Strin
     .as_ref()
     .and_then(|params| params.audio())
     .ok_or("The file does not contain a supported audio track.")?;
+  let estimated_samples = track
+    .time_base
+    .zip(track.duration)
+    .and_then(|(base, duration)| base.calc_duration(duration))
+    .map(|time| (time.as_secs_f64() * SAMPLE_RATE as f64).round() as u64)
+    .filter(|samples| *samples > 0);
+  if estimated_samples.is_some_and(|samples| samples > MAX_AUDIO_SECONDS * SAMPLE_RATE as u64) {
+    return Err("Recordings longer than 3 hours are not supported.".into());
+  }
   let is_wave = format.format_info().format == FORMAT_ID_WAVE;
-  // The WAV demuxer expresses its declared data length in sample frames.
   let wave_frames = if is_wave {
     track.duration.map(|duration| duration.get())
   } else {
@@ -57,22 +70,23 @@ pub(crate) fn decode(path: &Path, cancel: &AtomicBool) -> Result<Vec<f32>, Strin
     .map_err(|_| "This audio codec is not supported. Use WAV, MP3, AAC, ALAC, FLAC, or Vorbis.")?;
   let mut resampler: Option<MonoResampler> = None;
   let mut samples = Vec::<f32>::new();
+  let mut emit = |block: &[f32]| {
+    check_cancelled(cancel)?;
+    consume(block, estimated_samples)
+  };
   loop {
     check_cancelled(cancel)?;
     let packet = match format.next_packet() {
       Ok(Some(packet)) => packet,
       Ok(None) => break,
-      // A WAV written to a pipe can explicitly omit its length. The WAV
-      // reader signals EOF with an I/O error in that case.
       Err(Error::IoError(error)) if streaming_wave && error.kind() == ErrorKind::UnexpectedEof => {
-        break;
+        break
       }
       Err(_) => return Err("The audio file is damaged or changes format midway.".into()),
     };
     if packet.track_id != track_id {
       continue;
     }
-    // Do not silently omit damaged frames and return a misleading partial transcript.
     let decoded = decoder
       .decode(&packet)
       .map_err(|_| "The audio contains damaged or unsupported frames.")?;
@@ -97,26 +111,27 @@ pub(crate) fn decode(path: &Path, cancel: &AtomicBool) -> Result<Vec<f32>, Strin
       if !mono.is_finite() {
         return Err("The audio contains invalid samples.".into());
       }
-      resampler.push(mono.clamp(-1.0, 1.0))?;
+      resampler.push(mono.clamp(-1.0, 1.0), &mut emit)?;
     }
   }
   check_cancelled(cancel)?;
   let resampler = resampler.ok_or("The audio file contains no samples.")?;
-  if wave_frames.is_some_and(|frames| (resampler.input_count as u64) < frames) {
+  if wave_frames.is_some_and(|frames| resampler.input_count < frames) {
     return Err("The WAV file ends before its declared audio length.".into());
   }
-  let samples = resampler.finish()?;
-  if samples.len() < SAMPLE_RATE / 10 {
+  let count = resampler.finish(&mut emit)?;
+  if count < SAMPLE_RATE as u64 / 10 {
     return Err("Record at least a tenth of a second before transcribing.".into());
   }
-  Ok(samples)
+  Ok(count)
 }
 
 struct MonoResampler {
   input_rate: usize,
-  input_count: usize,
+  input_count: u64,
+  emitted_count: u64,
+  delay_remaining: usize,
   pending: Vec<f32>,
-  output: Vec<f32>,
   filter: Option<FftFixedInOut<f32>>,
 }
 
@@ -130,57 +145,102 @@ impl MonoResampler {
           .map_err(|_| "Could not initialize audio resampling.")?,
       )
     };
+    let delay_remaining = filter.as_ref().map(Resampler::output_delay).unwrap_or(0);
     Ok(Self {
       input_rate,
       input_count: 0,
+      emitted_count: 0,
+      delay_remaining,
       pending: Vec::new(),
-      output: Vec::new(),
       filter,
     })
   }
 
-  fn push(&mut self, sample: f32) -> Result<(), String> {
+  fn push(
+    &mut self,
+    sample: f32,
+    consume: &mut impl FnMut(&[f32]) -> Result<(), String>,
+  ) -> Result<(), String> {
     self.input_count += 1;
-    if self.input_count > self.input_rate * MAX_SECONDS {
-      return Err("Split recordings longer than 30 minutes before transcribing.".into());
+    if self.input_count > self.input_rate as u64 * MAX_AUDIO_SECONDS {
+      return Err("Recordings longer than 3 hours are not supported.".into());
     }
-    let Some(filter) = self.filter.as_mut() else {
-      self.output.push(sample);
-      return Ok(());
-    };
     self.pending.push(sample);
-    if self.pending.len() == filter.input_frames_next() {
-      let block = filter
-        .process(&[self.pending.as_slice()], None)
-        .map_err(|_| "Could not resample audio.")?;
-      self.output.extend_from_slice(&block[0]);
+    let block_size = self
+      .filter
+      .as_ref()
+      .map(Resampler::input_frames_next)
+      .unwrap_or(1024);
+    if self.pending.len() == block_size {
+      if let Some(filter) = self.filter.as_mut() {
+        let block = filter
+          .process(&[self.pending.as_slice()], None)
+          .map_err(|_| "Could not resample audio.")?;
+        self.emit(&block[0], consume)?;
+      } else {
+        let mut block = std::mem::take(&mut self.pending);
+        self.emit(&block, consume)?;
+        block.clear();
+        self.pending = block;
+      }
       self.pending.clear();
     }
     Ok(())
   }
 
-  fn finish(mut self) -> Result<Vec<f32>, String> {
+  fn emit(
+    &mut self,
+    block: &[f32],
+    consume: &mut impl FnMut(&[f32]) -> Result<(), String>,
+  ) -> Result<(), String> {
+    let skip = self.delay_remaining.min(block.len());
+    self.delay_remaining -= skip;
+    let wanted = self.input_count * SAMPLE_RATE as u64 / self.input_rate as u64;
+    let count = (wanted - self.emitted_count).min((block.len() - skip) as u64) as usize;
+    if count > 0 {
+      consume(&block[skip..skip + count])?;
+      self.emitted_count += count as u64;
+    }
+    Ok(())
+  }
+
+  fn finish(
+    mut self,
+    consume: &mut impl FnMut(&[f32]) -> Result<(), String>,
+  ) -> Result<u64, String> {
+    let wanted = self.input_count * SAMPLE_RATE as u64 / self.input_rate as u64;
     if let Some(filter) = self.filter.as_mut() {
-      let wanted = (self.input_count as u64 * SAMPLE_RATE as u64 / self.input_rate as u64) as usize;
-      let delay = filter.output_delay();
       if !self.pending.is_empty() {
         let block = filter
           .process_partial(Some(&[self.pending.as_slice()]), None)
           .map_err(|_| "Could not finish audio resampling.")?;
-        self.output.extend_from_slice(&block[0]);
+        self.emit(&block[0], consume)?;
       }
-      while self.output.len() < wanted + delay {
-        let block = filter
+      while self.emitted_count < wanted {
+        let block = self
+          .filter
+          .as_mut()
+          .unwrap()
           .process_partial::<&[f32]>(None, None)
           .map_err(|_| "Could not finish audio resampling.")?;
-        self.output.extend_from_slice(&block[0]);
+        self.emit(&block[0], consume)?;
       }
-      // Remove the filter's delay and padding, preserving the original duration.
-      self.output.drain(..delay);
-      self.output.truncate(wanted);
+    } else {
+      let block = std::mem::take(&mut self.pending);
+      self.emit(&block, consume)?;
     }
-    Ok(self.output)
+    Ok(self.emitted_count)
   }
+}
+
+#[cfg(test)]
+fn decode(path: &Path, cancel: &AtomicBool) -> Result<Vec<f32>, String> {
+  let mut samples = Vec::new();
+  stream(path, cancel, |block, _| {
+    samples.extend_from_slice(block);
+    Ok(())
+  })?;
+  Ok(samples)
 }
 
 #[cfg(test)]
@@ -205,6 +265,77 @@ mod tests {
     }
     writer.finalize().unwrap();
     file
+  }
+
+  fn sparse_wave(frames: u64) -> tempfile::NamedTempFile {
+    let file = wav(16_000, 1, 0.0, 0.0);
+    let mut header = std::fs::read(file.path()).unwrap();
+    let data_bytes = u32::try_from(frames * 2).unwrap();
+    header[4..8].copy_from_slice(&(36 + data_bytes).to_le_bytes());
+    header[40..44].copy_from_slice(&data_bytes.to_le_bytes());
+    std::fs::write(file.path(), header).unwrap();
+    file.as_file().set_len(44 + data_bytes as u64).unwrap();
+    file
+  }
+
+  #[test]
+  fn streams_past_old_thirty_minute_limit_without_accumulating_pcm() {
+    let frames = 31 * 60 * SAMPLE_RATE as u64;
+    let file = sparse_wave(frames);
+    let mut received = 0;
+    let mut largest_block = 0;
+    let count = stream(file.path(), &AtomicBool::new(false), |block, estimate| {
+      received += block.len() as u64;
+      largest_block = largest_block.max(block.len());
+      assert_eq!(estimate, Some(frames));
+      Ok(())
+    })
+    .unwrap();
+    assert_eq!(count, frames);
+    assert_eq!(received, frames);
+    assert!(largest_block <= 1024);
+  }
+
+  #[test]
+  fn accepts_three_hour_header_and_rejects_one_sample_over_it() {
+    let maximum = MAX_AUDIO_SECONDS * SAMPLE_RATE as u64;
+    let file = sparse_wave(maximum);
+    let cancelled = AtomicBool::new(false);
+    let mut emitted = false;
+    let result = stream(file.path(), &cancelled, |_, _| {
+      emitted = true;
+      cancelled.store(true, std::sync::atomic::Ordering::Release);
+      Ok(())
+    });
+    assert!(emitted, "the three-hour boundary must be admitted");
+    assert!(result.unwrap_err().contains("cancelled"));
+    let file = sparse_wave(maximum + 1);
+    assert!(stream(file.path(), &AtomicBool::new(false), |_, _| panic!(
+      "oversized header must fail before PCM"
+    ))
+    .unwrap_err()
+    .contains("3 hours"));
+    let mut resampler = MonoResampler::new(SAMPLE_RATE).unwrap();
+    resampler.input_count = maximum - 1;
+    resampler.emitted_count = maximum - 1;
+    resampler.push(0.0, &mut |_| Ok(())).unwrap();
+    assert!(resampler
+      .push(0.0, &mut |_| Ok(()))
+      .unwrap_err()
+      .contains("3 hours"));
+  }
+
+  #[test]
+  fn bounds_source_files_and_short_input_before_returning_a_transcript() {
+    let file = tempfile::NamedTempFile::new().unwrap();
+    file.as_file().set_len(MAX_AUDIO_BYTES + 1).unwrap();
+    assert!(stream(file.path(), &AtomicBool::new(false), |_, _| Ok(()))
+      .unwrap_err()
+      .contains("2 GiB"));
+    let file = sparse_wave((SAMPLE_RATE / 10 - 1) as u64);
+    assert!(stream(file.path(), &AtomicBool::new(false), |_, _| Ok(()))
+      .unwrap_err()
+      .contains("tenth"));
   }
 
   #[test]

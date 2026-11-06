@@ -18,7 +18,7 @@ data class ImportedAudio(
 )
 
 internal object AudioFiles {
-  private const val MAX_BYTES = 128L * 1024 * 1024
+  private const val MAX_BYTES = 2L * 1024 * 1024 * 1024
 
   fun importAudio(activity: Activity, uri: Uri, directory: File, cancelled: () -> Boolean): ImportedAudio {
     val resolver = activity.contentResolver
@@ -53,7 +53,7 @@ internal object AudioFiles {
         require(metadata.extractMetadata(MediaMetadataRetriever.METADATA_KEY_HAS_AUDIO) == "yes")
         metadata.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0
       } finally { metadata.release() }
-      require(duration > 0)
+      require(duration in 1..(3 * 60 * 60 * 1000L))
       return ImportedAudio(target.absolutePath, File(display_name).name, mime, duration, size)
     } catch (error: Exception) {
       target.delete()
@@ -61,7 +61,7 @@ internal object AudioFiles {
     }
   }
 
-  fun prepareShare(activity: Activity, source: File, file_name: String): File {
+  fun prepareShare(activity: Activity, source: File, file_name: String, cancelled: () -> Boolean): File {
     require(source.isFile && source.length() <= MAX_BYTES)
     val name = File(file_name).name
     require(name.isNotBlank() && name != "." && name != "..")
@@ -70,7 +70,21 @@ internal object AudioFiles {
     root.listFiles()?.filter { it.lastModified() < cutoff }?.forEach { it.deleteRecursively() }
     val folder = File(root, UUID.randomUUID().toString()).apply { mkdir() }
     val target = File(folder, name)
-    try { source.copyTo(target); return target }
+    try {
+      source.inputStream().use { input -> target.outputStream().use { output ->
+        val buffer = ByteArray(64 * 1024)
+        var total = 0L
+        while (true) {
+          check(!cancelled())
+          val count = input.read(buffer)
+          if (count < 0) break
+          total += count
+          require(total <= MAX_BYTES)
+          output.write(buffer, 0, count)
+        }
+      } }
+      return target
+    }
     catch (error: Exception) { folder.deleteRecursively(); throw error }
   }
 }
