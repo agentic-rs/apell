@@ -310,6 +310,76 @@ describe('applet bridge', () => {
     }
   });
 
+  it('combines directory pages and stops at the final cursor', async () => {
+    const sdk = await import('./index');
+    connect();
+    const response = sdk.fs.list('recordings');
+    const first_entries = Array.from({ length: 1000 }, (_, index) => ({
+      name: `file-${String(index).padStart(4, '0')}`,
+      kind: 'file',
+      size_bytes: index,
+    }));
+    await vi.waitFor(() => expect(channel.postMessage).toHaveBeenCalledTimes(1));
+    const first = channel.postMessage.mock.calls[0][0];
+    expect(first.params).toEqual({ path: 'recordings', page_size: 1000 });
+    receive({
+      type: 'response',
+      request_id: first.request_id,
+      result: {
+        entries: first_entries,
+        next_cursor: 'file-0999',
+      },
+    });
+    await vi.waitFor(() => expect(channel.postMessage).toHaveBeenCalledTimes(2));
+    const second = channel.postMessage.mock.calls[1][0];
+    expect(second.params).toEqual({ path: 'recordings', page_size: 1000, cursor: 'file-0999' });
+    const final_entry = { name: 'file-1000', kind: 'file', size_bytes: 1000 };
+    receive({
+      type: 'response',
+      request_id: second.request_id,
+      result: {
+        entries: [final_entry],
+        next_cursor: null,
+      },
+    });
+    await expect(response).resolves.toEqual({ entries: [...first_entries, final_entry] });
+    expect(channel.postMessage).toHaveBeenCalledTimes(2);
+  });
+
+  it('falls back to legacy listing only when pagination fields are unsupported', async () => {
+    const sdk = await import('./index');
+    connect();
+    const response = sdk.fs.list();
+    await vi.waitFor(() => expect(channel.postMessage).toHaveBeenCalledTimes(1));
+    receive({
+      type: 'response',
+      request_id: channel.postMessage.mock.calls[0][0].request_id,
+      error: 'Invalid filesystem request parameters.',
+    });
+    await vi.waitFor(() => expect(channel.postMessage).toHaveBeenCalledTimes(2));
+    const fallback = channel.postMessage.mock.calls[1][0];
+    expect(fallback.params).toEqual({ path: '' });
+    receive({ type: 'response', request_id: fallback.request_id, result: { entries: [] } });
+    await expect(response).resolves.toEqual({ entries: [] });
+  });
+
+  it('rejects a repeated cursor instead of looping', async () => {
+    const sdk = await import('./index');
+    connect();
+    const response = sdk.fs.list();
+    const rejected = expect(response).rejects.toThrow('invalid directory cursor');
+    for (let index = 0; index < 2; index++) {
+      await vi.waitFor(() => expect(channel.postMessage).toHaveBeenCalledTimes(index + 1));
+      receive({
+        type: 'response',
+        request_id: channel.postMessage.mock.calls[index][0].request_id,
+        result: { entries: [{ name: 'same', kind: 'file', size_bytes: 0 }], next_cursor: 'same' },
+      });
+    }
+    await rejected;
+    expect(channel.postMessage).toHaveBeenCalledTimes(2);
+  });
+
   it('round-trips raw assistant metadata only when the applet submits a follow-up', async () => {
     const sdk = await import('./index');
     connect();

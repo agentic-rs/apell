@@ -3,6 +3,7 @@ use crate::{bundles::atomic_write, valid_name};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
+  collections::BTreeMap,
   fs::{self, File, Metadata},
   io::{Read, Seek, SeekFrom},
   path::{Path, PathBuf},
@@ -50,6 +51,8 @@ struct PathRequest {
 struct ListRequest {
   #[serde(default)]
   path: String,
+  page_size: Option<usize>,
+  cursor: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -213,32 +216,23 @@ impl FileStore {
       "fs.list" => {
         let request: ListRequest = decode(params)?;
         let components = validate_path(&request.path, true)?;
+        if request
+          .page_size
+          .is_some_and(|size| size == 0 || size > MAX_LIST_ENTRIES)
+        {
+          return Err("Directory page sizes must be between 1 and 1000.".into());
+        }
+        if let Some(cursor) = &request.cursor {
+          if request.page_size.is_none() || validate_path(cursor, false)?.len() != 1 {
+            return Err("A directory cursor must be one filename and requires a page size.".into());
+          }
+        }
         let root = self.applet_root(applet_id)?;
         let (path, metadata) = resolve(&root, &components)?;
         if !metadata.is_dir() {
           return Err("Only directories can be listed.".into());
         }
-        let directory = fs::read_dir(path).map_err(|_| "Could not list the applet directory.")?;
-        let mut entries = Vec::new();
-        for entry in directory {
-          if entries.len() >= MAX_LIST_ENTRIES {
-            return Err("Directory listings are limited to 1000 entries.".into());
-          }
-          let entry = entry.map_err(|_| "Could not inspect a directory entry.")?;
-          let name = entry
-            .file_name()
-            .into_string()
-            .map_err(|_| "The directory contains an unsupported filename.")?;
-          validate_path(&name, false)?;
-          let metadata = fs::symlink_metadata(entry.path())
-            .map_err(|_| "Could not inspect a directory entry.")?;
-          entries.push(Entry {
-            name,
-            info: file_info(&metadata)?,
-          });
-        }
-        entries.sort_by(|left, right| left.name.cmp(&right.name));
-        Ok(json!({ "entries": entries }))
+        list_directory(&path, request.page_size, request.cursor.as_deref())
       }
       "fs.stat" => {
         let request: PathRequest = decode(params)?;
@@ -302,6 +296,52 @@ impl FileStore {
     let root = self.root.join(applet_id);
     ensure_directory(&root)?;
     Ok(root)
+  }
+}
+
+/// A cursor is an exclusive filename boundary, not a directory snapshot. Each
+/// page scans the directory while retaining at most page_size + 1 candidates.
+/// Concurrent additions before the cursor become visible on a fresh listing.
+fn list_directory(path: &Path, page_size: Option<usize>, cursor: Option<&str>) -> Result<Value> {
+  let directory = fs::read_dir(path).map_err(|_| "Could not list the applet directory.")?;
+  let capacity = page_size.map_or(MAX_LIST_ENTRIES, |size| size + 1);
+  let mut selected = BTreeMap::new();
+  for entry in directory {
+    if page_size.is_none() && selected.len() >= MAX_LIST_ENTRIES {
+      return Err("Directory listings are limited to 1000 entries.".into());
+    }
+    let entry = entry.map_err(|_| "Could not inspect a directory entry.")?;
+    let name = entry
+      .file_name()
+      .into_string()
+      .map_err(|_| "The directory contains an unsupported filename.")?;
+    validate_path(&name, false)?;
+    let metadata =
+      fs::symlink_metadata(entry.path()).map_err(|_| "Could not inspect a directory entry.")?;
+    let info = file_info(&metadata)?;
+    if cursor.is_some_and(|cursor| name.as_str() <= cursor) {
+      continue;
+    }
+    selected.insert(name, info);
+    if selected.len() > capacity {
+      selected.pop_last();
+    }
+  }
+  let has_more = page_size.is_some_and(|size| selected.len() > size);
+  if has_more {
+    selected.pop_last();
+  }
+  let next_cursor = has_more
+    .then(|| selected.last_key_value().map(|(name, _)| name.clone()))
+    .flatten();
+  let entries = selected
+    .into_iter()
+    .map(|(name, info)| Entry { name, info })
+    .collect::<Vec<_>>();
+  if page_size.is_some() {
+    Ok(json!({ "entries": entries, "next_cursor": next_cursor }))
+  } else {
+    Ok(json!({ "entries": entries }))
   }
 }
 
@@ -718,6 +758,140 @@ mod tests {
     assert!(store
       .dispatch("chat", "fs.list", json!({ "path": "many" }))
       .is_err());
+  }
+
+  #[test]
+  fn paged_lists_are_sorted_complete_and_applet_scoped() {
+    let (directory, store) = fixture();
+    store
+      .dispatch("chat", "fs.mkdir", json!({ "path": "many" }))
+      .unwrap();
+    let path = directory.path().join("files/chat/many");
+    let count = MAX_LIST_ENTRIES * 2;
+    for index in (0..count).rev() {
+      fs::write(path.join(format!("file-{index:04}")), []).unwrap();
+    }
+    let first = store
+      .dispatch(
+        "chat",
+        "fs.list",
+        json!({
+          "path": "many", "page_size": MAX_LIST_ENTRIES,
+        }),
+      )
+      .unwrap();
+    let repeat = store
+      .dispatch(
+        "chat",
+        "fs.list",
+        json!({
+          "path": "many", "page_size": MAX_LIST_ENTRIES,
+        }),
+      )
+      .unwrap();
+    assert_eq!(first, repeat);
+    assert_eq!(first["next_cursor"], "file-0999");
+    let second = store
+      .dispatch(
+        "chat",
+        "fs.list",
+        json!({
+          "path": "many", "page_size": MAX_LIST_ENTRIES, "cursor": first["next_cursor"],
+        }),
+      )
+      .unwrap();
+    assert!(second["next_cursor"].is_null());
+    let names = [first, second]
+      .into_iter()
+      .flat_map(|page| {
+        page["entries"]
+          .as_array()
+          .unwrap()
+          .iter()
+          .map(|entry| entry["name"].as_str().unwrap().to_owned())
+          .collect::<Vec<_>>()
+      })
+      .collect::<Vec<_>>();
+    assert_eq!(
+      names,
+      (0..count)
+        .map(|index| format!("file-{index:04}"))
+        .collect::<Vec<_>>()
+    );
+    let exhausted = store
+      .dispatch(
+        "chat",
+        "fs.list",
+        json!({
+          "path": "many", "page_size": 1, "cursor": "file-1999",
+        }),
+      )
+      .unwrap();
+    assert_eq!(exhausted, json!({"entries": [], "next_cursor": null}));
+    assert!(store
+      .dispatch(
+        "other",
+        "fs.list",
+        json!({
+          "path": "many", "page_size": 1000,
+        })
+      )
+      .is_err());
+    assert!(store
+      .dispatch("chat", "fs.list", json!({"path": "many"}))
+      .is_err());
+  }
+
+  #[test]
+  fn paged_lists_validate_limits_and_filename_cursors() {
+    let (_directory, store) = fixture();
+    for params in [
+      json!({"page_size": 0}),
+      json!({"page_size": 1001}),
+      json!({"page_size": -1}),
+      json!({"page_size": 1.5}),
+      json!({"cursor": "file"}),
+    ] {
+      assert!(store.dispatch("chat", "fs.list", params).is_err());
+    }
+    for cursor in [
+      "",
+      ".",
+      "..",
+      "a/b",
+      "/root",
+      "a\\b",
+      "a:b",
+      "a\n",
+      &"x".repeat(256),
+    ] {
+      assert!(
+        store
+          .dispatch(
+            "chat",
+            "fs.list",
+            json!({
+              "page_size": 2, "cursor": cursor,
+            })
+          )
+          .is_err(),
+        "accepted an invalid cursor"
+      );
+    }
+    write(&store, "chat", "alpha", b"a").unwrap();
+    write(&store, "chat", "charlie", b"c").unwrap();
+    // The cursor is a boundary: deletion of the preceding entry cannot stall it.
+    let page = store
+      .dispatch(
+        "chat",
+        "fs.list",
+        json!({
+          "page_size": 2, "cursor": "bravo",
+        }),
+      )
+      .unwrap();
+    assert_eq!(page["entries"][0]["name"], "charlie");
+    assert!(page["next_cursor"].is_null());
   }
 
   #[test]

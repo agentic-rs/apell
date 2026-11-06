@@ -1,5 +1,6 @@
 //! Host-owned, offline speech recognition. No audio is sent over the network.
 //! The caller resolves applet-private paths and runs transcription on a blocking worker.
+mod chunks;
 mod decode;
 mod inference;
 mod model;
@@ -13,6 +14,10 @@ use std::{
     Arc,
   },
 };
+
+/// Shared file and decoded-duration limits for native audio and recognition.
+pub const MAX_AUDIO_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+pub const MAX_AUDIO_SECONDS: u64 = 3 * 60 * 60;
 
 /// One shared multilingual model cache. The host gates CPU jobs across applets.
 pub struct SpeechService {
@@ -68,8 +73,7 @@ impl SpeechService {
     check_cancelled(&cancel)?;
     let language = inference::normalize_language(language)?;
     let model_path = self.model.verified_path(&cancel)?;
-    let samples = decode::decode(path, &cancel)?;
-    inference::transcribe(&model_path, samples, language.as_deref(), cancel, progress)
+    inference::transcribe(&model_path, path, language.as_deref(), cancel, progress)
   }
 }
 

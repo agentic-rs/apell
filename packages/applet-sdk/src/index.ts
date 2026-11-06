@@ -399,8 +399,41 @@ export const fs = {
   write(path: string, bytes: number[] | Uint8Array): Promise<{ size_bytes: number }> {
     return hostCall('fs.write', { path, bytes: Array.from(bytes) });
   },
-  list(path = ''): Promise<{ entries: DirectoryEntry[] }> {
-    return hostCall('fs.list', { path });
+  async list(path = ''): Promise<{ entries: DirectoryEntry[] }> {
+    const entries: DirectoryEntry[] = [];
+    const seen = new Set<string>();
+    let cursor: string | undefined;
+    for (;;) {
+      let page: { entries: DirectoryEntry[]; next_cursor?: string | null };
+      try {
+        page = await hostCall('fs.list', {
+          path,
+          page_size: 1000,
+          ...(cursor === undefined ? {} : { cursor }),
+        });
+      } catch (error) {
+        // Older hosts reject the new optional request fields. Preserve their
+        // existing small-directory behavior without masking other failures.
+        if (
+          cursor === undefined &&
+          error instanceof Error &&
+          error.message === 'Invalid filesystem request parameters.'
+        )
+          return hostCall('fs.list', { path });
+        throw error;
+      }
+      entries.push(...page.entries);
+      if (page.next_cursor == null) return { entries };
+      if (
+        typeof page.next_cursor !== 'string' ||
+        !page.next_cursor ||
+        page.entries.at(-1)?.name !== page.next_cursor ||
+        seen.has(page.next_cursor)
+      )
+        throw new HostError('The host returned an invalid directory cursor.');
+      seen.add(page.next_cursor);
+      cursor = page.next_cursor;
+    }
   },
   stat(path: string): Promise<FileStat> {
     return hostCall('fs.stat', { path });
