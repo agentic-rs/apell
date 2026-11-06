@@ -160,7 +160,7 @@ dependencies = [
  "symphonia",
  "tempfile",
  "tokio",
- "webpki-roots",
+ "webpki-roots 1.0.9",
  "whisper-rs",
 ]
 
