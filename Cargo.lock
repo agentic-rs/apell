@@ -5165,7 +5165,7 @@ dependencies = [
 [[package]]
 name = "tokn-accounts"
 version = "0.2.4"
-source = "git+https://github.com/tokn-ai/tokn?branch=main#552dfd60ee9bc333118f11fdc1bc3ad951c32b7e"
+source = "git+https://github.com/tokn-ai/tokn?branch=main#d8a05eeed45e0d49b7e614bf1042d0475c22b423"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -5193,7 +5193,7 @@ dependencies = [
 [[package]]
 name = "tokn-auth"
 version = "0.2.4"
-source = "git+https://github.com/tokn-ai/tokn?branch=main#552dfd60ee9bc333118f11fdc1bc3ad951c32b7e"
+source = "git+https://github.com/tokn-ai/tokn?branch=main#d8a05eeed45e0d49b7e614bf1042d0475c22b423"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5213,7 +5213,7 @@ dependencies = [
 [[package]]
 name = "tokn-catalogue"
 version = "0.2.4"
-source = "git+https://github.com/tokn-ai/tokn?branch=main#552dfd60ee9bc333118f11fdc1bc3ad951c32b7e"
+source = "git+https://github.com/tokn-ai/tokn?branch=main#d8a05eeed45e0d49b7e614bf1042d0475c22b423"
 dependencies = [
  "directories",
  "reqwest",
@@ -5228,7 +5228,7 @@ dependencies = [
 [[package]]
 name = "tokn-convert"
 version = "0.2.4"
-source = "git+https://github.com/tokn-ai/tokn?branch=main#552dfd60ee9bc333118f11fdc1bc3ad951c32b7e"
+source = "git+https://github.com/tokn-ai/tokn?branch=main#d8a05eeed45e0d49b7e614bf1042d0475c22b423"
 dependencies = [
  "bytes",
  "eventsource-stream",
@@ -5249,10 +5249,11 @@ dependencies = [
 [[package]]
 name = "tokn-core"
 version = "0.2.4"
-source = "git+https://github.com/tokn-ai/tokn?branch=main#552dfd60ee9bc333118f11fdc1bc3ad951c32b7e"
+source = "git+https://github.com/tokn-ai/tokn?branch=main#d8a05eeed45e0d49b7e614bf1042d0475c22b423"
 dependencies = [
  "anyhow",
  "async-trait",
+ "base64 0.22.1",
  "bytes",
  "directories",
  "http",
@@ -5273,7 +5274,7 @@ dependencies = [
 [[package]]
 name = "tokn-endpoint-chat-completions"
 version = "0.2.4"
-source = "git+https://github.com/tokn-ai/tokn?branch=main#552dfd60ee9bc333118f11fdc1bc3ad951c32b7e"
+source = "git+https://github.com/tokn-ai/tokn?branch=main#d8a05eeed45e0d49b7e614bf1042d0475c22b423"
 dependencies = [
  "serde",
  "serde_json",
@@ -5284,7 +5285,7 @@ dependencies = [
 [[package]]
 name = "tokn-endpoint-core"
 version = "0.2.4"
-source = "git+https://github.com/tokn-ai/tokn?branch=main#552dfd60ee9bc333118f11fdc1bc3ad951c32b7e"
+source = "git+https://github.com/tokn-ai/tokn?branch=main#d8a05eeed45e0d49b7e614bf1042d0475c22b423"
 dependencies = [
  "serde",
  "serde_json",
@@ -5294,7 +5295,7 @@ dependencies = [
 [[package]]
 name = "tokn-endpoint-macros"
 version = "0.2.4"
-source = "git+https://github.com/tokn-ai/tokn?branch=main#552dfd60ee9bc333118f11fdc1bc3ad951c32b7e"
+source = "git+https://github.com/tokn-ai/tokn?branch=main#d8a05eeed45e0d49b7e614bf1042d0475c22b423"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -5304,7 +5305,7 @@ dependencies = [
 [[package]]
 name = "tokn-endpoint-messages"
 version = "0.2.4"
-source = "git+https://github.com/tokn-ai/tokn?branch=main#552dfd60ee9bc333118f11fdc1bc3ad951c32b7e"
+source = "git+https://github.com/tokn-ai/tokn?branch=main#d8a05eeed45e0d49b7e614bf1042d0475c22b423"
 dependencies = [
  "serde",
  "serde_json",
@@ -5315,7 +5316,7 @@ dependencies = [
 [[package]]
 name = "tokn-endpoint-responses"
 version = "0.2.4"
-source = "git+https://github.com/tokn-ai/tokn?branch=main#552dfd60ee9bc333118f11fdc1bc3ad951c32b7e"
+source = "git+https://github.com/tokn-ai/tokn?branch=main#d8a05eeed45e0d49b7e614bf1042d0475c22b423"
 dependencies = [
  "serde",
  "serde_json",
@@ -5326,7 +5327,7 @@ dependencies = [
 [[package]]
 name = "tokn-headers"
 version = "0.2.4"
-source = "git+https://github.com/tokn-ai/tokn?branch=main#552dfd60ee9bc333118f11fdc1bc3ad951c32b7e"
+source = "git+https://github.com/tokn-ai/tokn?branch=main#d8a05eeed45e0d49b7e614bf1042d0475c22b423"
 dependencies = [
  "serde",
  "serde_json",
@@ -5337,7 +5338,7 @@ dependencies = [
 [[package]]
 name = "tokn-policy"
 version = "0.2.4"
-source = "git+https://github.com/tokn-ai/tokn?branch=main#552dfd60ee9bc333118f11fdc1bc3ad951c32b7e"
+source = "git+https://github.com/tokn-ai/tokn?branch=main#d8a05eeed45e0d49b7e614bf1042d0475c22b423"
 dependencies = [
  "tokn-core",
 ]
@@ -5345,7 +5346,7 @@ dependencies = [
 [[package]]
 name = "tokn-provider-copilot"
 version = "0.2.4"
-source = "git+https://github.com/tokn-ai/tokn?branch=main#552dfd60ee9bc333118f11fdc1bc3ad951c32b7e"
+source = "git+https://github.com/tokn-ai/tokn?branch=main#d8a05eeed45e0d49b7e614bf1042d0475c22b423"
 dependencies = [
  "async-trait",
  "bytes",
@@ -5368,7 +5369,7 @@ dependencies = [
 [[package]]
 name = "tokn-provider-deepseek"
 version = "0.2.4"
-source = "git+https://github.com/tokn-ai/tokn?branch=main#552dfd60ee9bc333118f11fdc1bc3ad951c32b7e"
+source = "git+https://github.com/tokn-ai/tokn?branch=main#d8a05eeed45e0d49b7e614bf1042d0475c22b423"
 dependencies = [
  "async-trait",
  "bytes",
@@ -5386,7 +5387,7 @@ dependencies = [
 [[package]]
 name = "tokn-provider-llama-cpp"
 version = "0.2.4"
-source = "git+https://github.com/tokn-ai/tokn?branch=main#552dfd60ee9bc333118f11fdc1bc3ad951c32b7e"
+source = "git+https://github.com/tokn-ai/tokn?branch=main#d8a05eeed45e0d49b7e614bf1042d0475c22b423"
 dependencies = [
  "async-trait",
  "reqwest",
@@ -5403,7 +5404,7 @@ dependencies = [
 [[package]]
 name = "tokn-provider-openai"
 version = "0.2.4"
-source = "git+https://github.com/tokn-ai/tokn?branch=main#552dfd60ee9bc333118f11fdc1bc3ad951c32b7e"
+source = "git+https://github.com/tokn-ai/tokn?branch=main#d8a05eeed45e0d49b7e614bf1042d0475c22b423"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -5425,7 +5426,7 @@ dependencies = [
 [[package]]
 name = "tokn-provider-opencode"
 version = "0.2.4"
-source = "git+https://github.com/tokn-ai/tokn?branch=main#552dfd60ee9bc333118f11fdc1bc3ad951c32b7e"
+source = "git+https://github.com/tokn-ai/tokn?branch=main#d8a05eeed45e0d49b7e614bf1042d0475c22b423"
 dependencies = [
  "async-trait",
  "reqwest",
@@ -5443,7 +5444,7 @@ dependencies = [
 [[package]]
 name = "tokn-provider-zai"
 version = "0.2.4"
-source = "git+https://github.com/tokn-ai/tokn?branch=main#552dfd60ee9bc333118f11fdc1bc3ad951c32b7e"
+source = "git+https://github.com/tokn-ai/tokn?branch=main#d8a05eeed45e0d49b7e614bf1042d0475c22b423"
 dependencies = [
  "async-trait",
  "axum",
@@ -5464,7 +5465,7 @@ dependencies = [
 [[package]]
 name = "tokn-requests"
 version = "0.2.4"
-source = "git+https://github.com/tokn-ai/tokn?branch=main#552dfd60ee9bc333118f11fdc1bc3ad951c32b7e"
+source = "git+https://github.com/tokn-ai/tokn?branch=main#d8a05eeed45e0d49b7e614bf1042d0475c22b423"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -5495,7 +5496,7 @@ dependencies = [
 [[package]]
 name = "tokn-router-config"
 version = "0.2.4"
-source = "git+https://github.com/tokn-ai/tokn?branch=main#552dfd60ee9bc333118f11fdc1bc3ad951c32b7e"
+source = "git+https://github.com/tokn-ai/tokn?branch=main#d8a05eeed45e0d49b7e614bf1042d0475c22b423"
 dependencies = [
  "anyhow",
  "reqwest",
@@ -5515,7 +5516,7 @@ dependencies = [
 [[package]]
 name = "tokn-router-legacy-config"
 version = "0.2.4"
-source = "git+https://github.com/tokn-ai/tokn?branch=main#552dfd60ee9bc333118f11fdc1bc3ad951c32b7e"
+source = "git+https://github.com/tokn-ai/tokn?branch=main#d8a05eeed45e0d49b7e614bf1042d0475c22b423"
 dependencies = [
  "anyhow",
  "directories",
@@ -5532,7 +5533,7 @@ dependencies = [
 [[package]]
 name = "tokn-sdk"
 version = "0.2.4"
-source = "git+https://github.com/tokn-ai/tokn?branch=main#552dfd60ee9bc333118f11fdc1bc3ad951c32b7e"
+source = "git+https://github.com/tokn-ai/tokn?branch=main#d8a05eeed45e0d49b7e614bf1042d0475c22b423"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -5561,7 +5562,7 @@ dependencies = [
 [[package]]
 name = "tokn-service"
 version = "0.2.4"
-source = "git+https://github.com/tokn-ai/tokn?branch=main#552dfd60ee9bc333118f11fdc1bc3ad951c32b7e"
+source = "git+https://github.com/tokn-ai/tokn?branch=main#d8a05eeed45e0d49b7e614bf1042d0475c22b423"
 dependencies = [
  "bytes",
  "futures-util",

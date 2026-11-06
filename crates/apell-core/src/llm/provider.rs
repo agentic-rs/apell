@@ -577,6 +577,7 @@ pub(super) async fn remote(
       max_response_bytes: MAX_RESPONSE_BYTES,
       max_event_bytes: MAX_OUTPUT_BYTES,
       max_error_body_bytes: MAX_ERROR_BYTES,
+      ..tokn_sdk::Limits::default()
     });
   let options = tokn_config::options(
     config,
