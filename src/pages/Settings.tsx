@@ -5,6 +5,7 @@ import { ConnectionEditor } from '../components/providers/ConnectionEditor';
 import { OperationScope } from '../components/providers/state';
 import { Icon } from '../components/Icon';
 import { AppletPermissions } from '../components/AppletPermissions';
+import { SettingsTransfer } from '../components/SettingsTransfer';
 
 export function Settings() {
   const [settings, setSettings] = useState<LlmSettings>();
@@ -121,6 +122,17 @@ export function Settings() {
             const provider = settings.providers.find(
               (item) => item.provider_id === connection.provider_id,
             );
+            const needs_credential =
+              connection.credential_status === 'absent' &&
+              provider &&
+              !provider.auth_methods.includes('none');
+            const credential_action = provider?.auth_methods.includes('device_code')
+              ? 'Sign in'
+              : 'Add API key';
+            const editConnection = () => {
+              setEditor({ connection });
+              setStatus('');
+            };
             return (
               <div
                 className={`connection-row${active ? ' active' : ''}`}
@@ -131,10 +143,7 @@ export function Settings() {
                   className="connection-detail"
                   disabled={busy || loading}
                   aria-label={`Edit ${connection.name}`}
-                  onClick={() => {
-                    setEditor({ connection });
-                    setStatus('');
-                  }}
+                  onClick={editConnection}
                 >
                   <strong>{connection.name}</strong>
                   <span>{connection.model_id || 'Choose a model'}</span>
@@ -147,6 +156,16 @@ export function Settings() {
                 </button>
                 {active ? (
                   <span className="connection-badge">Active</span>
+                ) : needs_credential ? (
+                  <button
+                    type="button"
+                    className="connection-use"
+                    disabled={busy || loading}
+                    aria-label={`${credential_action} for ${connection.name}`}
+                    onClick={editConnection}
+                  >
+                    {credential_action}
+                  </button>
                 ) : (
                   <button
                     type="button"
@@ -212,6 +231,14 @@ export function Settings() {
   return (
     <>
       {connections}
+      {settings && (
+        <SettingsTransfer
+          connections={settings.connections}
+          providers={settings.providers}
+          disabled={busy || loading}
+          onImported={() => void load()}
+        />
+      )}
       <AppletPermissions />
     </>
   );

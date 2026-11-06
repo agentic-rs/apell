@@ -12,7 +12,9 @@ mod permissions;
 mod provider_commands;
 mod sensors;
 mod settings;
+mod settings_transfer;
 mod speech;
+mod transfer_ui;
 
 use tauri::{
   webview::{PermissionKind, PermissionResponse},

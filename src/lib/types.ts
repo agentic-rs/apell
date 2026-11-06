@@ -78,6 +78,33 @@ export interface LlmSettings {
   connections: LlmConnection[];
   providers: LlmProvider[];
 }
+export interface SettingsTransferCapabilities {
+  qr: boolean;
+  capture_protection: 'block' | 'hide' | 'unavailable';
+}
+export interface SettingsTransferExport {
+  payload: string;
+  qr_available: boolean;
+}
+export interface SettingsTransferInput {
+  payload: string;
+  passphrase: string;
+}
+export interface SettingsTransferConnection {
+  name: string;
+  provider_id: string;
+  base_url: string;
+  model_id: string;
+  credential: 'api_key' | 'sign_in' | 'none';
+  duplicate: boolean;
+}
+export interface SettingsTransferPreview {
+  connections: SettingsTransferConnection[];
+}
+export interface SettingsTransferResult {
+  added: number;
+  skipped: number;
+}
 export interface CreateConnectionDraft {
   connection_id?: string;
   provider_id: string;

@@ -33,6 +33,9 @@ pub fn available() -> bool {
 pub enum Command {
   Run,
   Cancel,
+  ShowTransferQr,
+  ScanTransferQr,
+  SaveTransferFile,
 }
 
 /// Call from a blocking worker so native UI can wait for the user.
@@ -46,6 +49,9 @@ pub fn call<R: Runtime>(
     let method = match _command {
       Command::Run => "run",
       Command::Cancel => "cancel",
+      Command::ShowTransferQr => "showTransferQr",
+      Command::ScanTransferQr => "scanTransferQr",
+      Command::SaveTransferFile => "saveTransferFile",
     };
     _app
       .state::<Sensors<R>>()

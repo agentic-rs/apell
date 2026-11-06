@@ -19,4 +19,5 @@ dependencies {
   implementation("androidx.core:core:1.7.0")
   implementation("androidx.activity:activity:1.6.0")
   implementation("androidx.appcompat:appcompat:1.6.0")
+  implementation("com.google.zxing:core:3.5.4")
 }

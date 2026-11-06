@@ -20,6 +20,11 @@ import type {
   NativeConnectionDraft,
   PermissionMode,
   SaveConnection,
+  SettingsTransferCapabilities,
+  SettingsTransferExport,
+  SettingsTransferInput,
+  SettingsTransferPreview,
+  SettingsTransferResult,
 } from './types';
 
 declare global {
@@ -80,6 +85,19 @@ export const setPermissionMode = (
   mode: PermissionMode,
 ) => shellCall<PermissionMode>('permissions.set_mode', { session_id, view_id, permission, mode });
 export const getSettings = () => shellCall<LlmSettings>('llm.settings');
+export const getSettingsTransferCapabilities = () =>
+  shellCall<SettingsTransferCapabilities>('settings_transfer.capabilities');
+export const exportSettingsTransfer = (connection_ids: string[], passphrase: string) =>
+  shellCall<SettingsTransferExport>('settings_transfer.export', { connection_ids, passphrase });
+export const previewSettingsTransfer = (input: SettingsTransferInput) =>
+  shellCall<SettingsTransferPreview>('settings_transfer.preview', input);
+export const applySettingsTransfer = (input: SettingsTransferInput) =>
+  shellCall<SettingsTransferResult>('settings_transfer.apply', input);
+export const saveSettingsTransferFile = (payload: string) =>
+  shellCall<boolean>('settings_transfer.save_file', { payload });
+export const showSettingsTransferQr = (payload: string) =>
+  shellCall<void>('settings_transfer.show_qr', { payload });
+export const scanSettingsTransferQr = () => shellCall<string | null>('settings_transfer.scan_qr');
 export const createConnectionDraft = (params: CreateConnectionDraft) =>
   shellCall<NativeConnectionDraft>('llm.create_draft', params);
 export const discardConnectionDraft = (draft_id: string) =>

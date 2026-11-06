@@ -389,6 +389,65 @@ svg {
 .settings .primary {
   justify-self: stretch;
 }
+.settings-transfer > .button-row {
+  margin-top: 12px;
+}
+.transfer-form,
+.transfer-form fieldset {
+  display: grid;
+  gap: 14px;
+}
+.transfer-form fieldset {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.transfer-form p,
+.transfer-form h3 {
+  margin: 0;
+}
+.transfer-form > button {
+  justify-self: start;
+}
+.transfer-selection,
+.transfer-preview {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fafbf7;
+}
+.transfer-selection > label,
+.transfer-preview > li {
+  padding: 10px 12px;
+}
+.transfer-selection > label + label,
+.transfer-preview > li + li {
+  border-top: 1px solid var(--line);
+}
+.transfer-selection label > span,
+.transfer-preview > li {
+  display: grid;
+  gap: 4px;
+}
+.transfer-selection small,
+.transfer-preview span,
+.transfer-preview small {
+  color: var(--muted);
+  font-size: 13px;
+}
+.transfer-preview {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.transfer-file {
+  display: inline-grid;
+  align-items: center;
+  min-height: 44px;
+  padding: 11px 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  font-size: 1rem;
+}
 .applet-permissions {
   margin-top: 16px;
 }

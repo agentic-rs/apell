@@ -182,7 +182,10 @@ impl ProviderJobs {
   }
 }
 
-fn read_account(app: &AppHandle, connection: &Connection) -> Result<Option<AccountConfig>, String> {
+pub(crate) fn read_account(
+  app: &AppHandle,
+  connection: &Connection,
+) -> Result<Option<AccountConfig>, String> {
   if connection.is_demo() {
     return Ok(None);
   }
@@ -213,7 +216,7 @@ fn read_account(app: &AppHandle, connection: &Connection) -> Result<Option<Accou
   Ok(Some(account))
 }
 
-fn encode_account(account: &AccountConfig) -> Result<String, String> {
+pub(crate) fn encode_account(account: &AccountConfig) -> Result<String, String> {
   let value =
     serde_json::to_string(account).map_err(|_| "Could not encode provider credentials.")?;
   if value.len() > MAX_VAULT_BYTES {
@@ -270,7 +273,7 @@ pub struct ModelSnapshot {
 
 // Dropping the waiter's JoinHandle detaches the task. The same task owns the
 // mutation gate across the provider exchange and the final blocking vault write.
-async fn finish_snapshot<T: Send + 'static>(
+pub(crate) async fn finish_snapshot<T: Send + 'static>(
   work: impl Future<Output = Result<T, String>> + Send + 'static,
 ) -> Result<T, String> {
   tauri::async_runtime::spawn(work)
@@ -340,7 +343,7 @@ async fn current_account(
   Ok(account)
 }
 
-fn commit_settings(
+pub(crate) fn commit_settings(
   app: &AppHandle,
   root: &std::path::Path,
   settings: &Settings,

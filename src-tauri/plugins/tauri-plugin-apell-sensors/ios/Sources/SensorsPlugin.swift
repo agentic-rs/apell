@@ -32,6 +32,10 @@ private struct SensorArgs: Decodable {
   var id: SensorID { SensorID(session_id: session_id, operation_id: operation_id) }
 }
 
+private struct TransferQrArgs: Decodable {
+  let payload: String
+}
+
 private final class SensorOperation {
   let args: SensorArgs
   let invoke: Invoke
@@ -51,6 +55,8 @@ final class SensorsPlugin: Plugin {
   private var active: SensorOperation?
   private var cancelledBeforeRun: SensorID?
   private var background: NSObjectProtocol?
+  private var transferQr: UIViewController?
+  private let transferFile = TransferFilePicker()
 
   override init() {
     super.init()
@@ -114,6 +120,63 @@ final class SensorsPlugin: Plugin {
       }
       invoke.resolve()
     }
+  }
+
+  @objc func showTransferQr(_ invoke: Invoke) {
+    guard let args = try? invoke.parseArgs(TransferQrArgs.self),
+      TransferQrPayload.isValid(args.payload) else {
+      invoke.reject("The settings QR code is invalid.")
+      return
+    }
+    DispatchQueue.main.async {
+      guard let presenter = self.transferPresenter else {
+        invoke.reject("Open Apell in the foreground to show the settings QR code.")
+        return
+      }
+      guard let image = TransferQrPayload.image(args.payload) else {
+        invoke.reject("Could not display the settings QR code.")
+        return
+      }
+      let display = TransferQrDisplay(image: image) { [weak self] in
+        self?.transferQr = nil
+        invoke.resolve()
+      }
+      self.transferQr = display
+      presenter.present(display, animated: true)
+    }
+  }
+
+  @objc func scanTransferQr(_ invoke: Invoke) {
+    DispatchQueue.main.async {
+      guard let presenter = self.transferPresenter else {
+        invoke.reject("Open Apell in the foreground to scan a settings QR code.")
+        return
+      }
+      let scanner = TransferQrScanner { [weak self] result in
+        self?.transferQr = nil
+        switch result {
+        case .success(let payload):
+          invoke.resolve(["payload": payload.map { $0 as Any } ?? NSNull()])
+        case .failure(let error):
+          invoke.reject(error.message)
+        }
+      }
+      self.transferQr = scanner
+      presenter.present(scanner, animated: true)
+    }
+  }
+
+  @objc func saveTransferFile(_ invoke: Invoke) {
+    DispatchQueue.main.async {
+      self.transferFile.save(invoke, from: self.presenter)
+    }
+  }
+
+  private var transferPresenter: UIViewController? {
+    guard active == nil, transferQr == nil, UIApplication.shared.applicationState == .active else {
+      return nil
+    }
+    return presenter
   }
 
   private var presenter: UIViewController? {

@@ -6,14 +6,17 @@ interface SheetProps {
   open: boolean;
   title: string;
   onClose: () => void;
+  dismissible?: boolean;
   children: ReactNode;
 }
 
-export function Sheet({ open, title, onClose, children }: SheetProps) {
+export function Sheet({ open, title, onClose, dismissible = true, children }: SheetProps) {
   const title_id = useId();
   const panel = useRef<HTMLDivElement>(null);
   const close = useRef(onClose);
-  close.current = onClose;
+  close.current = () => {
+    if (dismissible) onClose();
+  };
   useEffect(() => {
     if (!open || !panel.current) return;
     const element = panel.current;
@@ -126,7 +129,7 @@ export function Sheet({ open, title, onClose, children }: SheetProps) {
     <div
       className="sheet-layer"
       onClick={(event) => {
-        if (event.target === event.currentTarget) onClose();
+        if (event.target === event.currentTarget) close.current();
       }}
     >
       <div
@@ -140,7 +143,12 @@ export function Sheet({ open, title, onClose, children }: SheetProps) {
         <div className="sheet-content">
           <header className="sheet-header">
             <h2 id={title_id}>{title}</h2>
-            <button className="icon-button" aria-label="Close" onClick={onClose}>
+            <button
+              className="icon-button"
+              aria-label="Close"
+              disabled={!dismissible}
+              onClick={() => close.current()}
+            >
               <Icon name="close" />
             </button>
           </header>

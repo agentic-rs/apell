@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
   <key>NSCameraUsageDescription</key>
-  <string>Take a photo when you open the camera in an Apell applet.</string>
+  <string>Take photos in Apell applets and scan QR codes to import settings.</string>
   <key>NSLocationWhenInUseUsageDescription</key>
   <string>Get your current location when an open Apell applet requests it.</string>
   <key>NSMicrophoneUsageDescription</key>

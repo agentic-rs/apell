@@ -27,6 +27,7 @@ import app.tauri.plugin.Invoke
 import app.tauri.plugin.JSObject
 import app.tauri.plugin.Plugin
 import java.io.File
+import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.SynchronousQueue
@@ -48,13 +49,22 @@ import java.util.concurrent.TimeUnit
   var operation_id: String = ""
 }
 
+@InvokeArg class TransferQrArgs {
+  var payload: String = ""
+}
+
 @TauriPlugin
 class SensorsPlugin(private val activity: Activity) : Plugin(activity) {
   private data class OperationId(val session_id: String, val operation_id: String) {
     fun isValid() = session_id.isNotBlank() && operation_id.isNotBlank()
   }
 
-  private class Operation(val id: OperationId, val args: SensorRunArgs, val invoke: Invoke) {
+  private class Operation(
+    val id: OperationId,
+    val args: SensorRunArgs,
+    val invoke: Invoke,
+    val transfer_qr: Boolean = false,
+  ) {
     val target = args.staging_path?.let(::File)
     var remember = false
     var dialog: AlertDialog? = null
@@ -76,6 +86,8 @@ class SensorsPlugin(private val activity: Activity) : Plugin(activity) {
   private val launchers = mutableSetOf<ActivityResultLauncher<*>>()
   private var pending: Operation? = null
   private var cancelled_before_run: OperationId? = null
+  private var transferQrDisplay: AlertDialog? = null
+  private val transferFile = TransferFilePicker(activity)
 
   @Command fun run(invoke: Invoke) {
     val args = invoke.parseArgs(SensorRunArgs::class.java)
@@ -121,6 +133,48 @@ class SensorsPlugin(private val activity: Activity) : Plugin(activity) {
       invoke.resolve()
     }
   }
+
+  @Command fun showTransferQr(invoke: Invoke) {
+    val args = invoke.parseArgs(TransferQrArgs::class.java)
+    activity.runOnUiThread {
+      if (!TransferQr.isValid(args.payload)) {
+        invoke.reject("The settings QR code is invalid.")
+        return@runOnUiThread
+      }
+      if (!isVisible() || pending != null || transferQrDisplay != null) {
+        invoke.reject("Open Apell in the foreground to show the settings QR code.")
+        return@runOnUiThread
+      }
+      try {
+        val dialog = TransferQr.dialog(activity, args.payload) {
+          transferQrDisplay = null
+          invoke.resolve()
+        }
+        dialog.show()
+        transferQrDisplay = dialog
+      } catch (_: Exception) {
+        invoke.reject("Could not display the settings QR code.")
+      }
+    }
+  }
+
+  @Command fun scanTransferQr(invoke: Invoke) {
+    activity.runOnUiThread {
+      if (!isVisible() || pending != null || transferQrDisplay != null) {
+        invoke.reject("Open Apell in the foreground to scan a settings QR code.")
+        return@runOnUiThread
+      }
+      // Reuse the permissionless system camera. Declaring CAMERA for a
+      // separate scanner would make delegated capture require it too.
+      val operation = Operation(
+        OperationId("transfer", UUID.randomUUID().toString()), SensorRunArgs(), invoke, transfer_qr = true
+      )
+      pending = operation
+      openCamera(operation)
+    }
+  }
+
+  @Command fun saveTransferFile(invoke: Invoke) = transferFile.save(invoke)
 
   private fun confirm(operation: Operation) {
     val camera = operation.args.kind == "camera"
@@ -175,7 +229,9 @@ class SensorsPlugin(private val activity: Activity) : Plugin(activity) {
       launch(operation, ActivityResultContracts.StartActivityForResult(), intent) { result ->
         revokeCameraUri(operation)
         if (result.resultCode != Activity.RESULT_OK) {
-          finish(operation, cancelled())
+          finish(operation, if (operation.transfer_qr) qrCancelled() else cancelled())
+        } else if (operation.transfer_qr) {
+          decodeTransferQr(operation, source)
         } else {
           writeImage(operation, "Could not prepare the captured photo.") { target, limit ->
             SensorImages.encodeCapture(source, target, limit) { operation.active }
@@ -184,6 +240,24 @@ class SensorsPlugin(private val activity: Activity) : Plugin(activity) {
       }
     } catch (_: Exception) {
       fail(operation, "The camera is unavailable.")
+    }
+  }
+
+  private fun decodeTransferQr(operation: Operation, source: File) {
+    try {
+      worker.execute {
+        val payload = runCatching { TransferQr.read(source) }.getOrNull()
+        activity.runOnUiThread {
+          if (!operation.active) return@runOnUiThread
+          if (payload == null) {
+            fail(operation, "Could not read an Apell settings QR code. Try taking a closer photo.")
+          } else {
+            finish(operation, JSObject().put("payload", payload))
+          }
+        }
+      }
+    } catch (_: RejectedExecutionException) {
+      fail(operation, "Previous image transfers are still stopping. Try again shortly.")
     }
   }
 
@@ -358,6 +432,7 @@ class SensorsPlugin(private val activity: Activity) : Plugin(activity) {
 
   override fun onStop(activity: AppCompatActivity) {
     if (activity !== this.activity) return
+    transferQrDisplay?.dismiss()
     // System camera and photo picker are activities. Going behind them is normal.
     pending?.let { operation ->
       if (operation.dialog != null || (operation.args.kind == "location" && operation.launcher == null)) {
@@ -368,7 +443,9 @@ class SensorsPlugin(private val activity: Activity) : Plugin(activity) {
 
   override fun onDestroy(activity: AppCompatActivity) {
     if (activity !== this.activity) return
-    pending?.let { finish(it, cancelled()) }
+    transferQrDisplay?.dismiss()
+    pending?.let { finish(it, if (it.transfer_qr) qrCancelled() else cancelled()) }
+    transferFile.destroy()
     launchers.toList().forEach(::unregister)
     worker.shutdown()
     photo_cancellations.shutdown()
@@ -377,5 +454,6 @@ class SensorsPlugin(private val activity: Activity) : Plugin(activity) {
   private companion object {
     const val CAMERA_URI_FLAGS = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
     fun cancelled(): JSObject = JSObject().put("status", "cancelled")
+    fun qrCancelled(): JSObject = JSObject().put("payload", org.json.JSONObject.NULL)
   }
 }

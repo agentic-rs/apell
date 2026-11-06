@@ -23,6 +23,7 @@ apell-runtime = { path = "../crates/apell-runtime" }
 base64 = "0.22"
 getrandom = "0.3"
 percent-encoding = "2"
+ring = "0.17"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri = { version = "2", features = [] }
@@ -32,7 +33,13 @@ sha2 = "0.10"
 tauri-plugin-apell-credentials = { path = "plugins/tauri-plugin-apell-credentials" }
 tauri-plugin-opener = "2"
 tempfile = "3"
+zeroize = "1"
 
 [target.'cfg(target_os = "ios")'.dependencies]
 objc2 = { version = "0.6", default-features = false, features = ["std"] }
 objc2-ui-kit = { version = "0.3", default-features = false, features = ["std", "UIResponder", "UIScrollView", "UIView"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6", default-features = false, features = ["std"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSPanel", "NSResponder", "NSSavePanel", "NSWindow"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSURL"] }

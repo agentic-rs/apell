@@ -92,6 +92,15 @@ pub async fn shell_command(
       Ok(Value::Null)
     }
     "permissions.list" => crate::permissions::list(&host).await,
+    "settings_transfer.export" | "settings_transfer.preview" | "settings_transfer.apply" => {
+      crate::settings_transfer::dispatch(app, &host, &method, params).await
+    }
+    "settings_transfer.capabilities"
+    | "settings_transfer.show_qr"
+    | "settings_transfer.scan_qr"
+    | "settings_transfer.save_file" => {
+      crate::transfer_ui::dispatch(app, &host, &method, params).await
+    }
     "permissions.mode" | "permissions.set_mode" => {
       let session_id = string(&params, "session_id")?.to_owned();
       let view_id = string(&params, "view_id")?.to_owned();

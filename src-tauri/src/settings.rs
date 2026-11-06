@@ -8,7 +8,7 @@ use std::{collections::HashSet, path::Path};
 use uuid::Uuid;
 
 pub const DEMO_ID: &str = "local-demo";
-const MAX_CONNECTIONS: usize = 32;
+pub(crate) const MAX_CONNECTIONS: usize = 32;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
