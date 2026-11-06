@@ -43,6 +43,9 @@ const methods = new Set([
   'speech.download_model',
   'speech.transcribe',
   'speech.cancel',
+  'camera.capture',
+  'photos.pick',
+  'location.current',
 ]);
 export function isBridgeRequest(value: unknown): value is BridgeRequest {
   if (!value || typeof value !== 'object') return false;

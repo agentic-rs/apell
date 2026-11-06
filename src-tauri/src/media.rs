@@ -1,5 +1,6 @@
 //! Host-owned audio operations. Applets only see paths in their private file store.
 use crate::host::{string, Host, Session};
+use crate::permissions::ManagedPermission::Microphone;
 use serde_json::{json, Value};
 use std::sync::{atomic::Ordering, Arc};
 use tauri::AppHandle;
@@ -121,6 +122,16 @@ pub async fn dispatch(
   if !mobile {
     return Err("Native audio is available on iOS and Android. Use the browser preview for desktop recording.".into());
   }
+  let _modal = if matches!(method, "audio.start" | "audio.import" | "audio.share") {
+    Some(
+      host
+        .native_prompt
+        .try_lock()
+        .map_err(|_| "Another native prompt is already open.")?,
+    )
+  } else {
+    None
+  };
   let mut state = host.audio.state.lock().await;
   if !session.alive.load(Ordering::SeqCst) {
     return Err("Applet session is closed.".into());
@@ -193,11 +204,11 @@ pub async fn dispatch(
           "mime_type":imported["mime_type"],"duration_ms":imported["duration_ms"],"size_bytes":size_bytes}))
       } else {
         let source = host.view_grant_source(owner)?;
-        let microphone = host.microphone.clone();
+        let grants = host.grants.clone();
         let remembered = crate::commands::blocking({
           let applet_id = applet_id.clone();
           let source = source.clone();
-          move || microphone.remembered(&applet_id, &source)
+          move || grants.remembered(Microphone, &applet_id, &source)
         })
         .await?;
         let started = checked_native(
@@ -210,9 +221,9 @@ pub async fn dispatch(
         .await?;
         state.recording_path = Some(relative.clone());
         if started.get("remember").and_then(Value::as_bool) == Some(true) {
-          let microphone = host.microphone.clone();
+          let grants = host.grants.clone();
           let saved = crate::commands::blocking(move || {
-            session.run_local(|| microphone.remember(&applet_id, &source))
+            session.run_local(|| grants.remember(Microphone, &applet_id, &source))
           })
           .await;
           if saved.is_err() {

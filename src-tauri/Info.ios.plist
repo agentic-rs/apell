@@ -2,6 +2,10 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+  <key>NSCameraUsageDescription</key>
+  <string>Take a photo when you open the camera in an Apell applet.</string>
+  <key>NSLocationWhenInUseUsageDescription</key>
+  <string>Get your current location when an open Apell applet requests it.</string>
   <key>NSMicrophoneUsageDescription</key>
   <string>Record audio when you start a recording in an Apell applet.</string>
   <key>UIApplicationSceneManifest</key>

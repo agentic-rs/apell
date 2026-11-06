@@ -1,5 +1,5 @@
 use crate::host::{Host, Session};
-use crate::permissions::{GrantSource, MicrophoneMode};
+use crate::permissions::{GrantSource, ManagedPermission, PermissionMode};
 use apell_core::bundles::{Bundle, Manifest};
 use apell_runtime::{HostError, HostEvents, HostServices, RuntimeHandle, ServiceFuture};
 use serde::Serialize;
@@ -221,12 +221,13 @@ impl Host {
     Ok(run.grant_source.clone())
   }
 
-  pub fn view_microphone(
+  pub fn view_permission(
     &self,
     session_id: &str,
     view_id: &str,
-    update: Option<MicrophoneMode>,
-  ) -> Result<MicrophoneMode, String> {
+    permission: ManagedPermission,
+    update: Option<PermissionMode>,
+  ) -> Result<PermissionMode, String> {
     // Keep the verified attachment current through the grant read or write.
     let _gate = self
       .view_gate
@@ -244,24 +245,29 @@ impl Host {
         .and_then(|(run, _)| running.runs.get(run))
         .ok_or("This applet view was detached. Reopen the applet.")?;
       let manifest = &run.bundle.manifest;
-      if !manifest
-        .permissions
-        .iter()
-        .any(|permission| permission == "audio")
-      {
-        return Err("This applet did not declare audio access.".into());
+      let group = permission.manifest_group();
+      if !manifest.permissions.iter().any(|item| item == group) {
+        return Err(format!("This applet did not declare {group} access."));
       }
       (manifest.applet_id.clone(), run.grant_source.clone())
     };
     match update {
-      Some(mode) => self.audio.edit_microphone_grant(view_id, || {
-        self.microphone.set_mode(&applet_id, &source, mode)
-      }),
-      None => self.microphone.mode(&applet_id, &source),
+      Some(mode) => {
+        let edit = || self.grants.set_mode(permission, &applet_id, &source, mode);
+        match permission {
+          ManagedPermission::Microphone => self.audio.edit_microphone_grant(view_id, edit),
+          ManagedPermission::Camera | ManagedPermission::Location => self.sensors.edit_grant(edit),
+        }
+      }
+      None => self.grants.mode(permission, &applet_id, &source),
     }
   }
 
-  pub fn forget_microphone(&self, applet_id: &str) -> Result<(), String> {
+  pub fn forget_permission(
+    &self,
+    applet_id: &str,
+    permission: ManagedPermission,
+  ) -> Result<(), String> {
     let _gate = self
       .view_gate
       .lock()
@@ -276,10 +282,13 @@ impl Host {
       .and_then(|(run, _)| running.runs.get(run))
       .is_some_and(|run| run.bundle.manifest.applet_id == applet_id)
     {
-      return Err("Close the applet before resetting its microphone permission.".into());
+      return Err(format!(
+        "Close the applet before resetting its {} permission.",
+        permission.label()
+      ));
     }
     drop(running);
-    self.microphone.forget(applet_id)
+    self.grants.forget(permission, applet_id)
   }
 
   pub async fn invoke_backend(
@@ -486,6 +495,7 @@ mod tests {
   };
   use std::{fs, time::Duration};
   use tokio::{sync::oneshot, task::JoinHandle};
+  use ManagedPermission::{Camera, Location, Microphone};
 
   const APPLET: &str = "view-fixture";
   const RUN: &str = "native-run";
@@ -549,91 +559,125 @@ mod tests {
     let attachment = host.attach_run(RUN).unwrap();
     let source = host.view_grant_source(&attachment.view_id).unwrap();
     let session = host.sessions.lock().unwrap()[&attachment.view_id].clone();
-    host.microphone.remember(APPLET, &source).unwrap();
+    host.grants.remember(Microphone, APPLET, &source).unwrap();
 
-    assert!(host.forget_microphone(APPLET).is_err());
+    assert!(host.forget_permission(APPLET, Microphone).is_err());
     host.detach_view(RUN, &attachment.view_id).unwrap();
-    host.forget_microphone(APPLET).unwrap();
+    host.forget_permission(APPLET, Microphone).unwrap();
     assert!(session
-      .run_local(|| host.microphone.remember(APPLET, &source))
+      .run_local(|| host.grants.remember(Microphone, APPLET, &source))
       .is_err());
-    assert!(!host.microphone.remembered(APPLET, &source).unwrap());
+    assert!(!host.grants.remembered(Microphone, APPLET, &source).unwrap());
     assert!(host.running.lock().unwrap().runs.contains_key(RUN));
   }
 
   #[test]
-  fn about_microphone_uses_the_attached_package_and_rejects_stale_views() {
+  fn about_permission_uses_the_attached_package_and_rejects_stale_views() {
     let dir = tempfile::tempdir().unwrap();
     let host = Host::new(dir.path().into()).unwrap();
-    install_with_permissions(&host, APPLET, "1.0.0", &["audio"]);
+    install_with_permissions(&host, APPLET, "1.0.0", &["camera"]);
     seed_run(&host, RUN, APPLET);
     let first = host.attach_run(RUN).unwrap();
     let first_source = host.view_grant_source(&first.view_id).unwrap();
     assert_eq!(
-      host.view_microphone(RUN, &first.view_id, None).unwrap(),
-      MicrophoneMode::Ask
+      host
+        .view_permission(RUN, &first.view_id, Camera, None)
+        .unwrap(),
+      PermissionMode::Ask
     );
     assert!(host
-      .view_microphone("different", &first.view_id, None)
+      .view_permission("different", &first.view_id, Camera, None)
       .is_err());
     host
-      .view_microphone(RUN, &first.view_id, Some(MicrophoneMode::Remembered))
+      .view_permission(
+        RUN,
+        &first.view_id,
+        Camera,
+        Some(PermissionMode::Remembered),
+      )
       .unwrap();
 
     let reloaded = host.attach_view(RUN, &first.view_id).unwrap();
     assert!(host
-      .view_microphone(RUN, &first.view_id, Some(MicrophoneMode::Ask))
+      .view_permission(RUN, &first.view_id, Camera, Some(PermissionMode::Ask))
       .is_err());
     assert_eq!(
-      host.view_microphone(RUN, &reloaded.view_id, None).unwrap(),
-      MicrophoneMode::Remembered
+      host
+        .view_permission(RUN, &reloaded.view_id, Camera, None)
+        .unwrap(),
+      PermissionMode::Remembered
     );
 
-    install_with_permissions(&host, APPLET, "2.0.0", &["audio"]);
+    install_with_permissions(&host, APPLET, "2.0.0", &["camera"]);
     assert_eq!(
-      host.view_microphone(RUN, &reloaded.view_id, None).unwrap(),
-      MicrophoneMode::Remembered
+      host
+        .view_permission(RUN, &reloaded.view_id, Camera, None)
+        .unwrap(),
+      PermissionMode::Remembered
     );
     host.retire_run(RUN).unwrap();
     seed_run(&host, "reopened", APPLET);
     let replaced = host.attach_run("reopened").unwrap();
     assert_eq!(
       host
-        .view_microphone("reopened", &replaced.view_id, Some(MicrophoneMode::Ask))
+        .view_permission(
+          "reopened",
+          &replaced.view_id,
+          Camera,
+          Some(PermissionMode::Ask)
+        )
         .unwrap(),
-      MicrophoneMode::Ask
+      PermissionMode::Ask
     );
-    assert!(host.microphone.remembered(APPLET, &first_source).unwrap());
+    assert!(host
+      .grants
+      .remembered(Camera, APPLET, &first_source)
+      .unwrap());
     host
-      .view_microphone(
+      .view_permission(
         "reopened",
         &replaced.view_id,
-        Some(MicrophoneMode::Remembered),
+        Camera,
+        Some(PermissionMode::Remembered),
       )
       .unwrap();
-    assert!(!host.microphone.remembered(APPLET, &first_source).unwrap());
+    assert!(!host
+      .grants
+      .remembered(Camera, APPLET, &first_source)
+      .unwrap());
     host
-      .view_microphone("reopened", &replaced.view_id, Some(MicrophoneMode::Ask))
+      .view_permission(
+        "reopened",
+        &replaced.view_id,
+        Camera,
+        Some(PermissionMode::Ask),
+      )
       .unwrap();
     assert_eq!(
       host
-        .view_microphone("reopened", &replaced.view_id, None)
+        .view_permission("reopened", &replaced.view_id, Camera, None)
         .unwrap(),
-      MicrophoneMode::Ask
+      PermissionMode::Ask
     );
   }
 
   #[test]
-  fn about_microphone_requires_declared_audio() {
+  fn about_permission_requires_its_declared_manifest_group() {
     let (_directory, host) = fixture();
     let attachment = host.attach_run(RUN).unwrap();
-    for update in [None, Some(MicrophoneMode::Remembered)] {
-      assert_eq!(
-        host
-          .view_microphone(RUN, &attachment.view_id, update)
-          .unwrap_err(),
-        "This applet did not declare audio access."
-      );
+    for (permission, group) in [
+      (Microphone, "audio"),
+      (Camera, "camera"),
+      (Location, "location"),
+    ] {
+      for update in [None, Some(PermissionMode::Remembered)] {
+        assert_eq!(
+          host
+            .view_permission(RUN, &attachment.view_id, permission, update)
+            .unwrap_err(),
+          format!("This applet did not declare {group} access.")
+        );
+      }
     }
   }
 

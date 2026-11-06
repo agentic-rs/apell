@@ -112,6 +112,41 @@ impl FileStore {
     }
   }
 
+  /// Publish a host-owned staging file from the same filesystem. Applets
+  /// cannot see it until validation is complete and the move succeeds.
+  pub fn import_file(&self, applet_id: &str, path: &str, staged: &Path) -> Result<()> {
+    if !valid_name(applet_id) {
+      return Err("Invalid applet identity.".into());
+    }
+    let _operation = self
+      .operations
+      .lock()
+      .map_err(|_| "Applet filesystem unavailable.")?;
+    let components = validate_path(path, false)?;
+    let (name, parents) = components.split_last().ok_or("A file path is required.")?;
+    let mut directory = self.applet_root(applet_id)?;
+    for parent in parents {
+      directory.push(parent);
+      ensure_directory(&directory)?;
+    }
+    let destination = directory.join(name);
+    if metadata_if_present(&destination)?.is_some() {
+      return Err("The destination already exists.".into());
+    }
+    if !metadata_if_present(staged)?.is_some_and(|metadata| metadata.is_file()) {
+      return Err("The staged file is unavailable.".into());
+    }
+    File::open(staged)
+      .and_then(|file| file.sync_all())
+      .map_err(|_| "Could not persist the staged file.")?;
+    fs::rename(staged, &destination).map_err(|_| "Could not import the applet file.")?;
+    if let Err(error) = sync_parent(&destination) {
+      let _ = fs::remove_file(&destination);
+      return Err(error);
+    }
+    Ok(())
+  }
+
   /// Call on a blocking worker. One lock serializes path validation and mutations
   /// so another applet API call cannot replace a checked directory mid-operation.
   pub fn dispatch(&self, applet_id: &str, method: &str, params: Value) -> Result<Value> {

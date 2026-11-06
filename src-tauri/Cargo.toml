@@ -17,6 +17,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 apell-speech = { path = "../crates/apell-speech" }
 tauri-plugin-apell-audio = { path = "plugins/tauri-plugin-apell-audio" }
+tauri-plugin-apell-sensors = { path = "plugins/tauri-plugin-apell-sensors" }
 apell-core = { path = "../crates/apell-core" }
 apell-runtime = { path = "../crates/apell-runtime" }
 base64 = "0.22"
@@ -30,10 +31,8 @@ uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
 tauri-plugin-apell-credentials = { path = "plugins/tauri-plugin-apell-credentials" }
 tauri-plugin-opener = "2"
+tempfile = "3"
 
 [target.'cfg(target_os = "ios")'.dependencies]
 objc2 = { version = "0.6", default-features = false, features = ["std"] }
 objc2-ui-kit = { version = "0.3", default-features = false, features = ["std", "UIResponder", "UIScrollView", "UIView"] }
-
-[dev-dependencies]
-tempfile = "3"

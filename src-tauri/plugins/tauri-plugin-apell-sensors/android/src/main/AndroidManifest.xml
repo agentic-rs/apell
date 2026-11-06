@@ -1,0 +1,13 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+  <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+  <application>
+    <provider
+      android:name="dev.apell.sensors.CameraFileProvider"
+      android:authorities="${applicationId}.apell.sensors.camera"
+      android:exported="false"
+      android:grantUriPermissions="true">
+      <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/apell_camera_paths" />
+    </provider>
+  </application>
+</manifest>

@@ -10,6 +10,7 @@ mod media;
 mod navigation;
 mod permissions;
 mod provider_commands;
+mod sensors;
 mod settings;
 mod speech;
 
@@ -26,6 +27,7 @@ pub fn run() {
     })
     .plugin(tauri_plugin_apell_credentials::init())
     .plugin(tauri_plugin_apell_audio::init())
+    .plugin(tauri_plugin_apell_sensors::init())
     .plugin(
       tauri_plugin_opener::Builder::new()
         .open_js_links_on_click(false)

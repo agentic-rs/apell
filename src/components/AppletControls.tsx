@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
-import { getMicrophoneMode, message, setMicrophoneMode } from '../lib/tauri';
-import type { AppletSession, MicrophoneMode } from '../lib/types';
+import { managed_permission_labels } from '../lib/permissions';
+import { getPermissionMode, message, setPermissionMode } from '../lib/tauri';
+import type { AppletSession, ManagedPermission, PermissionMode } from '../lib/types';
 import { Icon } from './Icon';
 import { Sheet } from './Sheet';
 import { OperationScope } from './providers/state';
@@ -29,21 +30,29 @@ const offline_status: Record<string, string> = {
   speech: 'Installed model only',
 };
 
-const microphone_labels: Record<MicrophoneMode, string> = {
+const mode_labels: Record<PermissionMode, string> = {
   ask: 'Ask every time',
   remembered: 'Always allow',
 };
 
-function MicrophoneAccess({ session, read_only }: { session: AppletSession; read_only: boolean }) {
+function PermissionAccess({
+  session,
+  permission,
+  read_only,
+}: {
+  session: AppletSession;
+  permission: ManagedPermission;
+  read_only: boolean;
+}) {
   const { session_id, view_id } = session;
   const label_id = useId();
-  const [mode, setMode] = useState<MicrophoneMode | 'unavailable'>();
+  const [mode, setMode] = useState<PermissionMode | 'unavailable'>();
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState('');
   const scope = useRef(new OperationScope());
 
   const update = useCallback(
-    async (next?: MicrophoneMode) => {
+    async (next?: PermissionMode) => {
       if (read_only) return;
       const operation = scope.current.start();
       if (!operation) return;
@@ -52,8 +61,8 @@ function MicrophoneAccess({ session, read_only }: { session: AppletSession; read
       try {
         const saved =
           next === undefined
-            ? await getMicrophoneMode(session_id, view_id)
-            : await setMicrophoneMode(session_id, view_id, next);
+            ? await getPermissionMode(session_id, view_id, permission)
+            : await setPermissionMode(session_id, view_id, permission, next);
         if (operation.isCurrent()) setMode(saved);
       } catch (error) {
         if (operation.isCurrent()) setError(message(error));
@@ -64,7 +73,7 @@ function MicrophoneAccess({ session, read_only }: { session: AppletSession; read
         }
       }
     },
-    [read_only, session_id, view_id],
+    [read_only, session_id, view_id, permission],
   );
 
   useEffect(() => {
@@ -75,11 +84,11 @@ function MicrophoneAccess({ session, read_only }: { session: AppletSession; read
 
   return (
     <div>
-      <dt id={label_id}>Microphone</dt>
+      <dt id={label_id}>{managed_permission_labels[permission]}</dt>
       <dd>
         {read_only || mode === 'unavailable' ? (
           mode && mode !== 'unavailable' ? (
-            microphone_labels[mode]
+            mode_labels[mode]
           ) : (
             'Unavailable'
           )
@@ -93,8 +102,8 @@ function MicrophoneAccess({ session, read_only }: { session: AppletSession; read
               if (value === 'ask' || value === 'remembered') void update(value);
             }}
           >
-            <option value="ask">{microphone_labels.ask}</option>
-            <option value="remembered">{microphone_labels.remembered}</option>
+            <option value="ask">{mode_labels.ask}</option>
+            <option value="remembered">{mode_labels.remembered}</option>
           </select>
         ) : busy ? (
           <span role="status">Loading…</span>
@@ -130,6 +139,7 @@ export function AppletControls({
 }: AppletControlsProps) {
   const { manifest } = session;
   const [panel, setPanel] = useState<'menu' | 'about' | null>(null);
+  const read_only = disabled || Boolean(stopped);
   return (
     <>
       <div className="applet-controls" role="group" aria-label="Applet controls">
@@ -194,19 +204,40 @@ export function AppletControls({
                   <dt>Network</dt>
                   <dd>{manifest.network === false ? 'Off' : 'On'}</dd>
                 </div>
-                {manifest.permissions.map((permission) => (
-                  <div key={permission}>
-                    <dt>{permission_labels[permission] ?? permission}</dt>
-                    <dd>
-                      {manifest.network === false ? (offline_status[permission] ?? 'On') : 'On'}
-                    </dd>
-                  </div>
-                ))}
+                {manifest.permissions.map((permission) => {
+                  if (permission === 'camera' || permission === 'location') {
+                    return (
+                      <PermissionAccess
+                        key={`${session.view_id}-${permission}`}
+                        session={session}
+                        permission={permission}
+                        read_only={read_only}
+                      />
+                    );
+                  }
+                  if (permission === 'photos') {
+                    return (
+                      <div key={permission}>
+                        <dt>Photo Library</dt>
+                        <dd>Pick each time</dd>
+                      </div>
+                    );
+                  }
+                  return (
+                    <div key={permission}>
+                      <dt>{permission_labels[permission] ?? permission}</dt>
+                      <dd>
+                        {manifest.network === false ? (offline_status[permission] ?? 'On') : 'On'}
+                      </dd>
+                    </div>
+                  );
+                })}
                 {manifest.permissions.includes('audio') && (
-                  <MicrophoneAccess
+                  <PermissionAccess
                     key={session.view_id}
                     session={session}
-                    read_only={disabled || Boolean(stopped)}
+                    permission="microphone"
+                    read_only={read_only}
                   />
                 )}
               </dl>

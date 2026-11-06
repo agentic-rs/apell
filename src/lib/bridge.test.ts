@@ -37,6 +37,9 @@ describe('applet bridge boundary', () => {
       'speech.download_model',
       'speech.transcribe',
       'speech.cancel',
+      'camera.capture',
+      'photos.pick',
+      'location.current',
     ]) {
       expect(isBridgeRequest({ ...request, method })).toBe(true);
     }
@@ -68,13 +71,16 @@ describe('applet bridge boundary', () => {
       'llm.open_login',
       'applets.install',
       'permissions.list',
-      'permissions.forget_microphone',
-      'permissions.microphone',
-      'permissions.set_microphone',
+      'permissions.forget',
+      'permissions.mode',
+      'permissions.set_mode',
       'shell_command',
       '__proto__',
       'audio.reset',
       'speech.upload',
+      'camera.run',
+      'photos.save',
+      'location.watch',
     ]) {
       expect(isBridgeRequest({ ...request, method })).toBe(false);
     }

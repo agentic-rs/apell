@@ -87,6 +87,9 @@ fn validate_manifest(manifest: &Manifest, legacy: bool) -> Result<(), String> {
     "runtime",
     "audio",
     "speech",
+    "camera",
+    "location",
+    "photos",
   ];
   let mut seen = HashSet::new();
   if manifest

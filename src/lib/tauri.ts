@@ -16,8 +16,9 @@ import type {
   LlmModels,
   LlmSettings,
   LoginChallenge,
-  MicrophoneMode,
+  ManagedPermission,
   NativeConnectionDraft,
+  PermissionMode,
   SaveConnection,
 } from './types';
 
@@ -60,12 +61,24 @@ export const reloadApplet = (session_id: string, view_id: string) =>
   shellCall<AppletSession>('applets.reload', { session_id, view_id });
 export const currentApplet = () => shellCall<AppletSession | null>('applets.current');
 export const listAppletPermissions = () => shellCall<AppletPermission[]>('permissions.list');
-export const forgetMicrophone = (applet_id: string) =>
-  shellCall<void>('permissions.forget_microphone', { applet_id });
-export const getMicrophoneMode = (session_id: string, view_id: string) =>
-  shellCall<MicrophoneMode | 'unavailable'>('permissions.microphone', { session_id, view_id });
-export const setMicrophoneMode = (session_id: string, view_id: string, mode: MicrophoneMode) =>
-  shellCall<MicrophoneMode>('permissions.set_microphone', { session_id, view_id, mode });
+export const forgetPermission = (applet_id: string, permission: ManagedPermission) =>
+  shellCall<void>('permissions.forget', { applet_id, permission });
+export const getPermissionMode = (
+  session_id: string,
+  view_id: string,
+  permission: ManagedPermission,
+) =>
+  shellCall<PermissionMode | 'unavailable'>('permissions.mode', {
+    session_id,
+    view_id,
+    permission,
+  });
+export const setPermissionMode = (
+  session_id: string,
+  view_id: string,
+  permission: ManagedPermission,
+  mode: PermissionMode,
+) => shellCall<PermissionMode>('permissions.set_mode', { session_id, view_id, permission, mode });
 export const getSettings = () => shellCall<LlmSettings>('llm.settings');
 export const createConnectionDraft = (params: CreateConnectionDraft) =>
   shellCall<NativeConnectionDraft>('llm.create_draft', params);

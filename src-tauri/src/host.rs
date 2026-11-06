@@ -62,7 +62,9 @@ pub struct Host {
   pub run_gate: tokio::sync::Mutex<()>,
   pub view_gate: Mutex<()>,
   pub audio: Arc<crate::media::AudioService>,
-  pub microphone: Arc<crate::permissions::MicrophoneGrants>,
+  pub grants: Arc<crate::permissions::PermissionGrants>,
+  pub sensors: crate::sensors::SensorService,
+  pub native_prompt: tokio::sync::Mutex<()>,
   pub speech: Arc<apell_speech::SpeechService>,
   pub speech_jobs: Arc<crate::speech::SpeechJobs>,
   pub root: PathBuf,
@@ -94,9 +96,11 @@ impl Host {
       run_gate: tokio::sync::Mutex::new(()),
       view_gate: Mutex::new(()),
       audio: Arc::new(crate::media::AudioService::default()),
-      microphone: Arc::new(crate::permissions::MicrophoneGrants::new(
+      grants: Arc::new(crate::permissions::PermissionGrants::new(
         root.join("permissions"),
       )),
+      sensors: crate::sensors::SensorService::new(root.join("sensor-staging"))?,
+      native_prompt: tokio::sync::Mutex::new(()),
       speech: Arc::new(apell_speech::SpeechService::new(root.join("speech"))?),
       speech_jobs: Arc::new(crate::speech::SpeechJobs::default()),
       root,
@@ -279,6 +283,9 @@ mod tests {
         ],
       ),
       ("config", &["config.get", "config.set", "config.delete"]),
+      ("camera", &["camera.capture"]),
+      ("photos", &["photos.pick"]),
+      ("location", &["location.current"]),
     ];
     for (group, methods) in groups {
       register(&host, group, &[*group], true);

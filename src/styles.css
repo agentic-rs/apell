@@ -392,9 +392,23 @@ svg {
 .applet-permissions {
   margin-top: 16px;
 }
+.applet-permissions .connection-row {
+  display: grid;
+  padding: 14px;
+  overflow-wrap: anywhere;
+}
+.applet-grant {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
 .applet-permissions .connection-detail {
   min-width: 0;
-  overflow-wrap: anywhere;
+  padding: 0;
+}
+.applet-permissions .connection-detail span {
+  color: inherit;
+  font-size: 14px;
 }
 .settings-heading {
   display: flex;

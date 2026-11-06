@@ -52,7 +52,7 @@ An `.apel` is a ZIP32 archive. `manifest.json` and a non-empty UTF-8 `index.html
 }
 ```
 
-Applet IDs use up to 80 lowercase ASCII letters, digits, hyphens, or underscores. Package versions use semantic versioning. The host rejects unknown or duplicate permission groups. The available groups are `sqlite`, `llm`, `resources`, `device`, `http`, `fs`, `config`, `websocket`, `secrets`, `crypto`, `runtime`, `audio`, and `speech`. Each service checks the verified manifest and the host-assigned scope. The `websocket`, `secrets`, `crypto`, and `runtime` groups are available to the backend. Declaring `secrets` gives the backend its own secure credential slots without a prompt.
+Applet IDs use up to 80 lowercase ASCII letters, digits, hyphens, or underscores. Package versions use semantic versioning. The host rejects unknown or duplicate permission groups. The available groups are `sqlite`, `llm`, `resources`, `device`, `http`, `fs`, `config`, `websocket`, `secrets`, `crypto`, `runtime`, `audio`, `speech`, `camera`, `photos`, and `location`. Each service checks the verified manifest and the host-assigned scope. The `websocket`, `secrets`, `crypto`, and `runtime` groups are available to the backend. Declaring `secrets` gives the backend its own secure credential slots without a prompt.
 
 Network services are available by default when declared. An applet can add `"network": false` to block its host HTTP, WebSockets, resource downloads, speech model downloads, and remote LLM requests. The remote model picker is also unavailable. Local demo LLM, previously downloaded resources, and on-device transcription with an installed model remain available. Both the view and its backend use the verified package's setting. A new applet run reads an updated package's setting.
 
@@ -327,7 +327,23 @@ The SDK exports `config.get(key)`, `set(key, value)`, and `delete(key)`. Values 
 
 Resource IDs are SHA-256 digests, and files are stored separately for each applet. Downloads require HTTPS or loopback HTTP, reject URL credentials, and do not follow redirects. Each download is limited to 32 MiB and 120 seconds. Reads return at most 1 MiB; the default length is 65,536 bytes and the default offset is zero. Reading beyond the end returns fewer bytes, including an empty array.
 
-`onDownloadProgress` subscribes to `download_progress` events with `request_id`, `received_bytes`, and nullable `total_bytes`. The SDK allows 135 seconds for the download request, longer than the native transfer timeout. Resource data and bundles stay local. Resource deletion, eviction, overall disk quotas, and cloud synchronization are not implemented. Device information currently reports the platform and host API version; orientation and camera need separate host services. Native audio and file sharing use the permission-gated services below.
+`onDownloadProgress` subscribes to `download_progress` events with `request_id`, `received_bytes`, and nullable `total_bytes`. The SDK allows 135 seconds for the download request, longer than the native transfer timeout. Resource data and bundles stay local. Resource deletion, eviction, overall disk quotas, and cloud synchronization are not implemented. Device information currently reports the platform and host API version. Native sensors, audio, and file sharing use the permission-gated services below.
+
+## Camera, photo library, and location
+
+These iOS and Android calls run from the attached applet frontend and take no parameters. The host cancels pending requests on close or reload, even when the applet backend keeps running.
+
+| Bridge method and SDK call                | Manifest permissions | Result                                                                      |
+| ----------------------------------------- | -------------------- | --------------------------------------------------------------------------- |
+| `camera.capture` / `camera.capture()`     | `camera`, `fs`       | One JPEG from the native camera                                             |
+| `photos.pick` / `photos.pick()`           | `photos`, `fs`       | One image selected in the system picker                                     |
+| `location.current` / `location.current()` | `location`           | One fix with `latitude`, `longitude`, `accuracy_m`, and Unix `timestamp_ms` |
+
+Image results are `{ path, mime_type, size_bytes }`. Read the relative private path with `fs.read` in chunks. Camera output preserves orientation and strips capture metadata. The photo picker shares only the selected file and may include its embedded metadata. Imports accept JPEG, PNG, GIF, WebP, HEIC, HEIF, and AVIF up to 32 MiB. The operating system can retrieve cloud-backed images you select.
+
+Camera and Location default to **Ask every time**. The Apell prompt names the applet and offers **Allow once**, **Always allow**, and **Cancel**. Saved grants apply separately to each applet and verified package source. Change them in **About this applet** or reset them in Settings. OS permission and location accuracy still apply. Photo Library shows **Pick each time** because choosing an image authorizes only that selection.
+
+Cancelling the Apell prompt, camera, or photo picker returns `null`. Device denial, an unavailable service, or a failed location fix rejects the request. Calls wait for native UI to finish and the location fix has a deadline after permission is granted. Only one sensor request can run at a time.
 
 ## Audio and offline speech
 

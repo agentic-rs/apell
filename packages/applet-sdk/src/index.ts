@@ -8,7 +8,9 @@ import type {
   FileStat,
   HttpRequest,
   HttpResponse,
+  ImageAsset,
   JsonValue,
+  LocationFix,
   LlmChooseModelOptions,
   LlmConfiguration,
   LlmEvent,
@@ -268,7 +270,10 @@ async function callHost<T>(
         method === 'speech.download_model' ||
         method === 'audio.start' ||
         method === 'audio.import' ||
-        method === 'audio.share'
+        method === 'audio.share' ||
+        method === 'camera.capture' ||
+        method === 'photos.pick' ||
+        method === 'location.current'
           ? undefined
           : setTimeout(
               () => {
@@ -362,6 +367,27 @@ function omitUndefined(
 export const http = {
   request(request: HttpRequest): Promise<HttpResponse> {
     return hostCall('http.request', { ...request });
+  },
+};
+
+/** Take a photo in the system camera. Requires the camera and fs permissions. */
+export const camera = {
+  capture(): Promise<ImageAsset | null> {
+    return hostCall('camera.capture');
+  },
+};
+
+/** Import one image through the system picker. Requires the photos and fs permissions. */
+export const photos = {
+  pick(): Promise<ImageAsset | null> {
+    return hostCall('photos.pick');
+  },
+};
+
+/** Get a single foreground location fix. Requires the location permission. */
+export const location = {
+  current(): Promise<LocationFix | null> {
+    return hostCall('location.current');
   },
 };
 

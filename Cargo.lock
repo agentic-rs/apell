@@ -78,6 +78,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-apell-audio",
  "tauri-plugin-apell-credentials",
+ "tauri-plugin-apell-sensors",
  "tauri-plugin-opener",
  "tempfile",
  "tokio",
@@ -4850,6 +4851,15 @@ dependencies = [
  "apple-native-keyring-store",
  "keyring-core",
  "serde",
+ "tauri",
+ "tauri-plugin",
+]
+
+[[package]]
+name = "tauri-plugin-apell-sensors"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
  "tauri",
  "tauri-plugin",
 ]

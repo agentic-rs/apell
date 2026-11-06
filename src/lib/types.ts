@@ -29,9 +29,14 @@ export interface AppletListReport {
 export interface AppletPermission {
   applet_id: string;
   name: string;
-  microphone_access: 'ask' | 'remembered' | 'previous_package';
+  grants: PermissionGrant[];
 }
-export type MicrophoneMode = 'ask' | 'remembered';
+export type ManagedPermission = 'microphone' | 'camera' | 'location';
+export type PermissionMode = 'ask' | 'remembered';
+export interface PermissionGrant {
+  permission: ManagedPermission;
+  access: PermissionMode | 'previous_package';
+}
 export interface AppletSession {
   session_id: string;
   manifest: Manifest;

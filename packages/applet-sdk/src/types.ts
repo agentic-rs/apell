@@ -145,6 +145,21 @@ export interface FileReadOptions {
   offset?: number;
   length?: number;
 }
+
+export interface ImageAsset {
+  /** Path relative to this applet's private files. */
+  path: string;
+  mime_type: string;
+  size_bytes: number;
+}
+
+export interface LocationFix {
+  latitude: number;
+  longitude: number;
+  accuracy_m: number;
+  /** Unix timestamp in milliseconds. */
+  timestamp_ms: number;
+}
 export interface FileReadResult {
   bytes: number[];
   eof: boolean;

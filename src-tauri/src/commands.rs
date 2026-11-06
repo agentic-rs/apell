@@ -1,4 +1,5 @@
 use crate::host::{public_config, string, Host, NETWORK_DISABLED};
+use crate::permissions::ManagedPermission;
 use crate::provider_commands::{snapshot, ModelRoute, ModelSnapshot};
 use crate::settings::Settings;
 use apell_core::llm::{
@@ -91,36 +92,47 @@ pub async fn shell_command(
       Ok(Value::Null)
     }
     "permissions.list" => crate::permissions::list(&host).await,
-    "permissions.microphone" | "permissions.set_microphone" => {
+    "permissions.mode" | "permissions.set_mode" => {
       let session_id = string(&params, "session_id")?.to_owned();
       let view_id = string(&params, "view_id")?.to_owned();
-      let update = if method == "permissions.set_microphone" {
+      let permission: ManagedPermission = serde_json::from_value(params["permission"].clone())
+        .map_err(|_| "Choose an applet permission.")?;
+      let update = if method == "permissions.set_mode" {
         Some(
           serde_json::from_value(params["mode"].clone())
-            .map_err(|_| "Choose a microphone permission mode.")?,
+            .map_err(|_| "Choose an applet permission mode.")?,
         )
       } else {
         None
       };
       blocking(move || {
         let host = app.state::<Host>();
-        if !tauri_plugin_apell_audio::available() {
-          if update.is_some() {
-            return Err("Native microphone access is available on iOS and Android.".into());
+        let available = match permission {
+          ManagedPermission::Microphone => tauri_plugin_apell_audio::available(),
+          ManagedPermission::Camera | ManagedPermission::Location => {
+            tauri_plugin_apell_sensors::available()
           }
-          host.require_view(&session_id, &view_id)?;
-          host.session(&view_id, "audio.capabilities")?;
+        };
+        if !available {
+          host.view_permission(&session_id, &view_id, permission, None)?;
+          if update.is_some() {
+            return Err("This permission is available on iOS and Android.".into());
+          }
           return Ok(json!("unavailable"));
         }
-        let mode = host.view_microphone(&session_id, &view_id, update)?;
+        let mode = host.view_permission(&session_id, &view_id, permission, update)?;
         Ok(json!(mode))
       })
       .await
     }
-    "permissions.forget_microphone" => {
+    "permissions.forget" => {
       let applet_id = string(&params, "applet_id")?.to_owned();
+      let permission = serde_json::from_value(params["permission"].clone())
+        .map_err(|_| "Choose an applet permission.")?;
       blocking(move || {
-        app.state::<Host>().forget_microphone(&applet_id)?;
+        app
+          .state::<Host>()
+          .forget_permission(&applet_id, permission)?;
         Ok(Value::Null)
       })
       .await
@@ -162,9 +174,14 @@ pub async fn applet_call(
 
 // Native UI and speech work belong to an attached view, whose cancellation
 // signal fires on close/reload. Persistent backend runs outlive that signal.
-fn require_view_for_media(method: &str, from_backend: bool) -> Result<(), String> {
-  if from_backend && matches!(method.split('.').next(), Some("audio" | "speech")) {
-    Err("Audio and speech services are available only to an attached applet view.".into())
+fn require_view_for_native_ui(method: &str, from_backend: bool) -> Result<(), String> {
+  if from_backend
+    && matches!(
+      method.split('.').next(),
+      Some("audio" | "speech" | "camera" | "photos" | "location")
+    )
+  {
+    Err("This service is available only to an attached applet view.".into())
   } else {
     Ok(())
   }
@@ -179,7 +196,7 @@ pub async fn service_call(
 ) -> Result<Value, String> {
   let host = app.state::<Host>();
   let session = host.session(&session_id, &method)?;
-  require_view_for_media(&method, backend_events.is_some())?;
+  require_view_for_native_ui(&method, backend_events.is_some())?;
   if matches!(
     method.split('.').next(),
     Some("websocket" | "secrets" | "crypto" | "runtime")
@@ -195,6 +212,13 @@ pub async fn service_call(
   }
   if method.starts_with("speech.") {
     return crate::speech::dispatch(&host, &session_id, session, &method, params).await;
+  }
+  if matches!(
+    method.split('.').next(),
+    Some("camera" | "photos" | "location")
+  ) {
+    return crate::sensors::dispatch(app.clone(), &host, &session_id, session, &method, params)
+      .await;
   }
   if method.starts_with("sqlite.") {
     let sqlite = host.sqlite.clone();
@@ -422,10 +446,10 @@ mod network_tests {
 
 #[cfg(test)]
 mod media_origin_tests {
-  use super::require_view_for_media;
+  use super::require_view_for_native_ui;
 
   #[test]
-  fn persistent_backends_cannot_start_media_or_keep_it_alive_after_view_close() {
+  fn persistent_backends_cannot_call_view_only_services() {
     for method in [
       "audio.start",
       "audio.pause",
@@ -440,10 +464,13 @@ mod media_origin_tests {
       "speech.download_model",
       "speech.status",
       "speech.cancel",
+      "camera.capture",
+      "photos.pick",
+      "location.current",
     ] {
-      let error = require_view_for_media(method, true).unwrap_err();
+      let error = require_view_for_native_ui(method, true).unwrap_err();
       assert!(error.contains("attached applet view"));
-      assert!(require_view_for_media(method, false).is_ok());
+      assert!(require_view_for_native_ui(method, false).is_ok());
     }
   }
 
@@ -456,7 +483,7 @@ mod media_origin_tests {
       "websocket.connect",
       "runtime.info",
     ] {
-      assert!(require_view_for_media(method, true).is_ok());
+      assert!(require_view_for_native_ui(method, true).is_ok());
     }
   }
 }
