@@ -19,6 +19,8 @@ use std::{
 };
 use uuid::Uuid;
 
+pub(crate) const NETWORK_DISABLED: &str = "This applet has disabled network access.";
+
 #[derive(Clone)]
 pub struct Session {
   pub manifest: Manifest,
@@ -60,6 +62,7 @@ pub struct Host {
   pub run_gate: tokio::sync::Mutex<()>,
   pub view_gate: Mutex<()>,
   pub audio: Arc<crate::media::AudioService>,
+  pub microphone: Arc<crate::permissions::MicrophoneGrants>,
   pub speech: Arc<apell_speech::SpeechService>,
   pub speech_jobs: Arc<crate::speech::SpeechJobs>,
   pub root: PathBuf,
@@ -91,6 +94,9 @@ impl Host {
       run_gate: tokio::sync::Mutex::new(()),
       view_gate: Mutex::new(()),
       audio: Arc::new(crate::media::AudioService::default()),
+      microphone: Arc::new(crate::permissions::MicrophoneGrants::new(
+        root.join("permissions"),
+      )),
       speech: Arc::new(apell_speech::SpeechService::new(root.join("speech"))?),
       speech_jobs: Arc::new(crate::speech::SpeechJobs::default()),
       root,
@@ -115,6 +121,12 @@ impl Host {
     let capability = method.split('.').next().unwrap_or("");
     if !session.manifest.permissions.iter().any(|p| p == capability) {
       return Err("Applet did not declare this permission.".into());
+    }
+    if !session.manifest.network
+      && (matches!(capability, "http" | "websocket")
+        || matches!(method, "resources.download" | "speech.download_model"))
+    {
+      return Err(NETWORK_DISABLED.into());
     }
     Ok(session.clone())
   }
@@ -199,7 +211,7 @@ mod tests {
     }
   }
 
-  fn register(host: &Host, session_id: &str, permissions: &[&str]) -> Session {
+  fn register(host: &Host, session_id: &str, permissions: &[&str], network: bool) -> Session {
     let session = Session {
       manifest: Manifest {
         schema_version: 1,
@@ -208,6 +220,7 @@ mod tests {
         name: "Fixture".into(),
         version: "1".into(),
         lib: None,
+        network,
         permissions: permissions
           .iter()
           .map(|value| (*value).to_owned())
@@ -230,7 +243,7 @@ mod tests {
   #[test]
   fn service_permissions_are_explicit_and_do_not_cross_groups() {
     let (_directory, host) = fixture();
-    register(&host, "unprivileged", &[]);
+    register(&host, "unprivileged", &[], true);
     let groups: &[(&str, &[&str])] = &[
       ("llm", &["llm.config", "llm.generate", "llm.cancel"]),
       ("http", &["http.request"]),
@@ -268,7 +281,7 @@ mod tests {
       ("config", &["config.get", "config.set", "config.delete"]),
     ];
     for (group, methods) in groups {
-      register(&host, group, &[*group]);
+      register(&host, group, &[*group], true);
       for method in *methods {
         assert_eq!(
           host.session("unprivileged", method).err().unwrap(),
@@ -303,9 +316,48 @@ mod tests {
   }
 
   #[test]
+  fn offline_session_denies_network_services_but_keeps_local_access() {
+    let (_directory, host) = fixture();
+    let permissions = ["http", "websocket", "resources", "speech", "llm", "secrets"];
+    register(&host, "online", &permissions, true);
+    register(&host, "offline", &permissions, false);
+
+    for method in [
+      "http.request",
+      "websocket.open",
+      "websocket.send",
+      "websocket.receive",
+      "websocket.close",
+      "resources.download",
+      "speech.download_model",
+    ] {
+      assert!(host.session("online", method).is_ok());
+      assert_eq!(
+        host.session("offline", method).err().unwrap(),
+        NETWORK_DISABLED
+      );
+    }
+    for method in [
+      "resources.read",
+      "speech.status",
+      "speech.transcribe",
+      "llm.config",
+      "llm.generate",
+      "secrets.get",
+    ] {
+      assert!(host.session("offline", method).is_ok());
+    }
+  }
+
+  #[test]
   fn closing_revokes_lookup_cancels_async_work_and_rejects_stale_local_work() {
     let (_directory, host) = fixture();
-    let session = register(&host, "session", &["http", "fs", "config", "sqlite", "llm"]);
+    let session = register(
+      &host,
+      "session",
+      &["http", "fs", "config", "sqlite", "llm"],
+      true,
+    );
     let cancellation = session.cancellation.subscribe();
     assert!(!*cancellation.borrow());
     session
@@ -369,7 +421,7 @@ mod tests {
   fn close_acknowledges_only_after_a_started_local_mutation_finishes() {
     let (directory, host) = fixture();
     let host = Arc::new(host);
-    let session = register(&host, "session", &["fs"]);
+    let session = register(&host, "session", &["fs"], true);
     let completed = Arc::new(AtomicBool::new(false));
     let (entered_tx, entered_rx) = mpsc::sync_channel(0);
     let (release_tx, release_rx) = mpsc::sync_channel(0);

@@ -169,15 +169,38 @@ pub async fn dispatch(
         Ok(json!({"path":relative,"file_name":imported["file_name"],
           "mime_type":imported["mime_type"],"duration_ms":imported["duration_ms"],"size_bytes":size_bytes}))
       } else {
-        checked_native(
-          app,
+        let source = host.view_grant_source(owner)?;
+        let microphone = host.microphone.clone();
+        let remembered = crate::commands::blocking({
+          let applet_id = applet_id.clone();
+          let source = source.clone();
+          move || microphone.remembered(&applet_id, &source)
+        })
+        .await?;
+        let started = checked_native(
+          app.clone(),
           owner,
           &session,
           "start",
-          json!({"path":path,"applet_name":session.manifest.name}),
+          json!({"path":path,"applet_name":session.manifest.name,"remembered":remembered}),
         )
         .await?;
         state.recording_path = Some(relative.clone());
+        if started.get("remember").and_then(Value::as_bool) == Some(true) {
+          let microphone = host.microphone.clone();
+          let saved = crate::commands::blocking(move || {
+            session.run_local(|| microphone.remember(&applet_id, &source))
+          })
+          .await;
+          if saved.is_err() {
+            if native(app, owner, "reset", json!({})).await.is_ok() {
+              state.recording_path = None;
+            }
+            return Err(
+              "Could not save microphone permission. Reload the applet and try again.".into(),
+            );
+          }
+        }
         Ok(json!({"path":relative,"mime_type":"audio/mp4"}))
       }
     }

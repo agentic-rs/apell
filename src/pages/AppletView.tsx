@@ -83,7 +83,11 @@ export function AppletView({
         await callApplet(session.session_id, session.view_id, 'view.check', {});
         if (cancelled) return;
         dispose = attachBridge(channel.port1, (method, params) => {
-          if (method === 'llm.choose_model') return chooser.open(params);
+          if (method === 'llm.choose_model') {
+            if (!session.manifest.network)
+              return Promise.reject(new Error('This applet has disabled network access.'));
+            return chooser.open(params);
+          }
           return callApplet(session.session_id, session.view_id, method, params);
         });
         element?.contentWindow?.postMessage({ type: 'apell:init' }, '*', [channel.port2]);
@@ -190,6 +194,7 @@ export function AppletView({
             src={session.entry_url}
             title={session.manifest.name}
             sandbox="allow-scripts"
+            allow="microphone 'none'; camera 'none'; geolocation 'none'"
             referrerPolicy="no-referrer"
           />
         </>

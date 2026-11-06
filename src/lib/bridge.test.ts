@@ -67,6 +67,8 @@ describe('applet bridge boundary', () => {
       'llm.cancel_login',
       'llm.open_login',
       'applets.install',
+      'permissions.list',
+      'permissions.forget_microphone',
       'shell_command',
       '__proto__',
       'audio.reset',
