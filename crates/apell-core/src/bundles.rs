@@ -26,8 +26,14 @@ pub struct Manifest {
   pub name: String,
   pub version: String,
   pub permissions: Vec<String>,
+  #[serde(default = "network_enabled_by_default")]
+  pub network: bool,
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub lib: Option<String>,
+}
+
+fn network_enabled_by_default() -> bool {
+  true
 }
 
 #[derive(Clone, Debug)]

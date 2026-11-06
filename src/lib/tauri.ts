@@ -4,6 +4,7 @@ import type { LlmResult } from '../../packages/applet-sdk/src/types';
 import type {
   AppletEvent,
   AppletListReport,
+  AppletPermission,
   AppletSession,
   BackendEvent,
   GitHubRelease,
@@ -57,6 +58,9 @@ export const closeApplet = (session_id: string, view_id: string) =>
 export const reloadApplet = (session_id: string, view_id: string) =>
   shellCall<AppletSession>('applets.reload', { session_id, view_id });
 export const currentApplet = () => shellCall<AppletSession | null>('applets.current');
+export const listAppletPermissions = () => shellCall<AppletPermission[]>('permissions.list');
+export const forgetMicrophone = (applet_id: string) =>
+  shellCall<void>('permissions.forget_microphone', { applet_id });
 export const getSettings = () => shellCall<LlmSettings>('llm.settings');
 export const createConnectionDraft = (params: CreateConnectionDraft) =>
   shellCall<NativeConnectionDraft>('llm.create_draft', params);
