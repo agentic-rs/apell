@@ -3,6 +3,7 @@ import { listen } from '@tauri-apps/api/event';
 import type { LlmResult } from '../../packages/applet-sdk/src/types';
 import type {
   AppletEvent,
+  AppletListReport,
   AppletSession,
   BackendEvent,
   GitHubRelease,
@@ -33,7 +34,7 @@ function hostKey(): string {
 export function shellCall<T>(method: string, params: unknown = {}): Promise<T> {
   return invoke<T>('shell_command', { host_key: hostKey(), method, params });
 }
-export const listApplets = () => shellCall<InstalledApplet[]>('applets.list');
+export const listApplets = () => shellCall<AppletListReport>('applets.list');
 export const installBundle = (
   params:
     | { bundle_base64: string }

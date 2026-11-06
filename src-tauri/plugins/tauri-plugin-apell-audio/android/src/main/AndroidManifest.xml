@@ -1,0 +1,12 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <uses-permission android:name="android.permission.RECORD_AUDIO" />
+  <application>
+    <provider
+      android:name="dev.apell.audio.AudioShareProvider"
+      android:authorities="${applicationId}.apell.audio.share"
+      android:exported="false"
+      android:grantUriPermissions="true">
+      <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/apell_audio_paths" />
+    </provider>
+  </application>
+</manifest>

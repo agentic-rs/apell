@@ -3,5 +3,10 @@
   "build": {
     "beforeDevCommand": "pnpm ios:prepare && pnpm dev",
     "beforeBuildCommand": "pnpm ios:prepare && pnpm build"
+  },
+  "bundle": {
+    "iOS": {
+      "frameworks": ["Accelerate"]
+    }
   }
 }

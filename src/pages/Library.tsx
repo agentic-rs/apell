@@ -7,7 +7,7 @@ import {
   message,
   onInstallProgress,
 } from '../lib/tauri';
-import type { AppletSession, InstalledApplet } from '../lib/types';
+import type { AppletSession, InstalledApplet, UnavailableApplet } from '../lib/types';
 import { Icon } from '../components/Icon';
 import { InstallSheet } from '../components/InstallSheet';
 
@@ -27,6 +27,7 @@ export function Library({
   onInstallClose,
 }: LibraryProps) {
   const [applets, setApplets] = useState<InstalledApplet[]>([]);
+  const [unavailable, setUnavailable] = useState<UnavailableApplet[]>([]);
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState('');
   const [failed, setFailed] = useState(false);
@@ -37,8 +38,11 @@ export function Library({
   useEffect(() => {
     let disposed = false;
     listApplets()
-      .then((items) => {
-        if (!disposed) setApplets(items);
+      .then((report) => {
+        if (!disposed) {
+          setApplets(report.applets);
+          setUnavailable(report.unavailable);
+        }
       })
       .catch((error) => {
         if (!disposed) {
@@ -93,7 +97,9 @@ export function Library({
     }
   };
   const installed = async () => {
-    setApplets(await listApplets());
+    const report = await listApplets();
+    setApplets(report.applets);
+    setUnavailable(report.unavailable);
     setStatus('Package installed. Running applets use updates after Apell restarts.');
     onInstallClose();
   };
@@ -135,9 +141,23 @@ export function Library({
           </button>
         ))}
       </div>
+      {unavailable.length > 0 && (
+        <aside aria-label="Unavailable applets">
+          <h2>Unavailable applets</h2>
+          {unavailable.map((applet) => (
+            <p className="status error" key={applet.applet_id}>
+              <strong>{applet.applet_id}</strong>: {applet.error}
+            </p>
+          ))}
+          <p className="status">
+            These applets cannot run in this version of Apell. Their packages and saved data are
+            kept.
+          </p>
+        </aside>
+      )}
       {!loading && !applets.length && (
         <div className="empty-library">
-          <p>Add your first applet.</p>
+          <p>{unavailable.length ? 'Add another applet.' : 'Add your first applet.'}</p>
           <button className="primary" onClick={onInstallOpen}>
             Add applet
           </button>

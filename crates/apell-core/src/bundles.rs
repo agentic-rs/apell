@@ -10,7 +10,7 @@ use std::{
   io::Read,
   path::Path,
 };
-pub use store::{BundleStore, GitHubSource, InstalledApplet};
+pub use store::{AppletListReport, BundleStore, GitHubSource, InstalledApplet, UnavailableApplet};
 
 pub const API_VERSION: u32 = 2;
 pub const MAX_BUNDLE_BYTES: usize = 24 * 1024 * 1024;
@@ -79,6 +79,8 @@ fn validate_manifest(manifest: &Manifest, legacy: bool) -> Result<(), String> {
     "secrets",
     "crypto",
     "runtime",
+    "audio",
+    "speech",
   ];
   let mut seen = HashSet::new();
   if manifest

@@ -22,6 +22,21 @@ describe('applet bridge boundary', () => {
       'config.get',
       'config.set',
       'config.delete',
+      'audio.capabilities',
+      'audio.start',
+      'audio.pause',
+      'audio.resume',
+      'audio.stop',
+      'audio.import',
+      'audio.share',
+      'audio.play',
+      'audio.playback_pause',
+      'audio.seek',
+      'audio.status',
+      'speech.status',
+      'speech.download_model',
+      'speech.transcribe',
+      'speech.cancel',
     ]) {
       expect(isBridgeRequest({ ...request, method })).toBe(true);
     }
@@ -54,6 +69,8 @@ describe('applet bridge boundary', () => {
       'applets.install',
       'shell_command',
       '__proto__',
+      'audio.reset',
+      'speech.upload',
     ]) {
       expect(isBridgeRequest({ ...request, method })).toBe(false);
     }

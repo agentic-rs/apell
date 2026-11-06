@@ -59,6 +59,9 @@ pub struct Host {
   pub running: Mutex<crate::applets::RunningApplets>,
   pub run_gate: tokio::sync::Mutex<()>,
   pub view_gate: Mutex<()>,
+  pub audio: Arc<crate::media::AudioService>,
+  pub speech: Arc<apell_speech::SpeechService>,
+  pub speech_jobs: Arc<crate::speech::SpeechJobs>,
   pub root: PathBuf,
 }
 
@@ -87,6 +90,9 @@ impl Host {
       running: Mutex::new(crate::applets::RunningApplets::default()),
       run_gate: tokio::sync::Mutex::new(()),
       view_gate: Mutex::new(()),
+      audio: Arc::new(crate::media::AudioService::default()),
+      speech: Arc::new(apell_speech::SpeechService::new(root.join("speech"))?),
+      speech_jobs: Arc::new(crate::speech::SpeechJobs::default()),
       root,
     })
   }
@@ -228,6 +234,25 @@ mod tests {
     let groups: &[(&str, &[&str])] = &[
       ("llm", &["llm.config", "llm.generate", "llm.cancel"]),
       ("http", &["http.request"]),
+      (
+        "audio",
+        &[
+          "audio.start",
+          "audio.stop",
+          "audio.import",
+          "audio.share",
+          "audio.play",
+        ],
+      ),
+      (
+        "speech",
+        &[
+          "speech.status",
+          "speech.download_model",
+          "speech.transcribe",
+          "speech.cancel",
+        ],
+      ),
       (
         "fs",
         &[
