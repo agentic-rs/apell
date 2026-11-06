@@ -336,8 +336,11 @@ export const llm = {
       'stream',
       'max_output_tokens',
       'target',
+      'output',
     ]);
     if (request.target !== undefined) params.target = routingTarget(request.target);
+    if (request.output !== undefined)
+      params.output = omitUndefined({ ...request.output }, ['format']);
     if (request.tools !== undefined) {
       params.tools = request.tools.map((tool) => omitUndefined({ ...tool }, ['description']));
     }

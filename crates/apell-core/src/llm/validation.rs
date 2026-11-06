@@ -1,6 +1,6 @@
 use super::{
-  media, Failure, LlmConfig, LlmRequest, LlmTarget, LlmToolCall, LlmToolChoice, MAX_INPUT_BYTES,
-  MAX_TOOLS,
+  media, Failure, LlmConfig, LlmMediaOutput, LlmRequest, LlmTarget, LlmToolCall, LlmToolChoice,
+  MAX_INPUT_BYTES, MAX_TOOLS,
 };
 use reqwest::Url;
 use std::collections::HashSet;
@@ -170,6 +170,22 @@ pub(super) fn request(request: &LlmRequest) -> Result<(), Failure> {
     }
     Some(LlmToolChoice::Named { name }) if !names.contains(name.as_str()) => {
       return Err(invalid("The selected tool is not defined."))
+    }
+    _ => {}
+  }
+  match &request.output {
+    Some(LlmMediaOutput::Audio { voice, .. }) if !valid_id(voice) => {
+      return Err(invalid("A generated audio request needs a valid voice ID."));
+    }
+    Some(LlmMediaOutput::Image { .. })
+      if request
+        .tool_choice
+        .as_ref()
+        .is_some_and(|choice| !matches!(choice, LlmToolChoice::Mode(mode) if mode == "auto")) =>
+    {
+      return Err(invalid(
+        "Image generation accepts only automatic tool choice.",
+      ));
     }
     _ => {}
   }

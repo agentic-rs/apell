@@ -140,7 +140,7 @@ impl FileKind {
   }
 }
 
-fn image_type(bytes: &[u8]) -> Option<&'static str> {
+pub(super) fn image_type(bytes: &[u8]) -> Option<&'static str> {
   if bytes.starts_with(b"\xff\xd8\xff") {
     Some("image/jpeg")
   } else if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
@@ -154,7 +154,7 @@ fn image_type(bytes: &[u8]) -> Option<&'static str> {
   }
 }
 
-fn audio_type(bytes: &[u8]) -> Option<&'static str> {
+pub(super) fn audio_type(bytes: &[u8]) -> Option<&'static str> {
   if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WAVE") {
     return Some("audio/wav");
   }

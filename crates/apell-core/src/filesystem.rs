@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
   collections::BTreeMap,
-  fs::{self, File, Metadata},
-  io::{Read, Seek, SeekFrom},
+  fs::{self, File, Metadata, OpenOptions},
+  io::{Read, Seek, SeekFrom, Write},
   path::{Path, PathBuf},
   sync::Mutex,
 };
@@ -28,6 +28,8 @@ pub(crate) enum BoundedReadError {
   Unavailable,
   TooLarge,
 }
+
+pub(crate) struct GeneratedBatch(tempfile::TempDir);
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -193,6 +195,71 @@ impl FileStore {
       return Err(error);
     }
     Ok(())
+  }
+
+  /// Stage already bounded outputs on the same filesystem as the applet
+  /// files. A dropped batch removes all of its files without publishing them.
+  pub(crate) fn stage_generated<'a>(
+    &self,
+    files: impl IntoIterator<Item = (&'a str, &'a [u8])>,
+  ) -> Result<GeneratedBatch> {
+    ensure_directory(&self.root)?;
+    // The prefix cannot be an applet ID, so no applet can address staging.
+    let staged = tempfile::Builder::new()
+      .prefix(".llm-")
+      .tempdir_in(&self.root)
+      .map_err(|_| "Could not stage generated files.")?;
+    let mut populated = false;
+    for (name, bytes) in files {
+      if validate_path(name, false)?.len() != 1 {
+        return Err("A generated file requires a single filename.".into());
+      }
+      let path = staged.path().join(name);
+      let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|_| "Could not stage the generated file.")?;
+      file
+        .write_all(bytes)
+        .and_then(|_| file.sync_all())
+        .map_err(|_| "Could not persist the generated file.")?;
+      populated = true;
+    }
+    if !populated {
+      return Err("A generated batch must contain a file.".into());
+    }
+    sync_directory(staged.path())?;
+    Ok(GeneratedBatch(staged))
+  }
+
+  /// Publish the complete batch as a fresh directory under this applet.
+  pub(crate) fn publish_generated(&self, applet_id: &str, batch: GeneratedBatch) -> Result<String> {
+    if !valid_name(applet_id) {
+      return Err("Invalid applet identity.".into());
+    }
+    let _operation = self
+      .operations
+      .lock()
+      .map_err(|_| "Applet filesystem unavailable.")?;
+    let directory = self.applet_root(applet_id)?.join("llm");
+    ensure_directory(&directory)?;
+    let name = uuid::Uuid::new_v4().to_string();
+    let destination = directory.join(&name);
+    if metadata_if_present(&destination)?.is_some() {
+      return Err("The destination already exists.".into());
+    }
+    let staged = batch.0.path();
+    fs::rename(staged, &destination).map_err(|_| "Could not publish the generated files.")?;
+    if let Err(error) = sync_directory(&directory).and_then(|_| sync_parent(staged)) {
+      if fs::rename(&destination, staged).is_err() {
+        let _ = fs::remove_dir_all(&destination);
+      }
+      let _ = sync_directory(&directory);
+      return Err(error);
+    }
+    let _ = batch.0.keep();
+    Ok(format!("llm/{name}"))
   }
 
   /// Call on a blocking worker. One lock serializes path validation and mutations
@@ -492,10 +559,13 @@ fn destination(root: &Path, components: &[&str]) -> Result<PathBuf> {
 }
 
 fn sync_parent(path: &Path) -> Result<()> {
+  sync_directory(path.parent().ok_or("Invalid applet storage location.")?)
+}
+
+fn sync_directory(path: &Path) -> Result<()> {
   #[cfg(unix)]
   {
-    let parent = path.parent().ok_or("Invalid applet storage location.")?;
-    File::open(parent)
+    File::open(path)
       .and_then(|directory| directory.sync_all())
       .map_err(|_| "Could not persist the applet directory.".to_string())?;
   }
@@ -512,6 +582,63 @@ mod tests {
     let directory = tempfile::tempdir().unwrap();
     let store = FileStore::new(directory.path().join("files"));
     (directory, store)
+  }
+
+  #[test]
+  fn generated_files_become_visible_together_in_the_owners_store() {
+    let (_directory, store) = fixture();
+    let batch = store
+      .stage_generated([
+        ("answer.png", b"image".as_slice()),
+        ("answer.wav", b"audio"),
+      ])
+      .unwrap();
+    assert_eq!(
+      store.dispatch("first", "fs.list", json!({})).unwrap(),
+      json!({"entries":[]})
+    );
+    let staging_path = batch.0.path().to_owned();
+    let relative = store.publish_generated("first", batch).unwrap();
+    assert!(!staging_path.exists());
+    assert!(relative.starts_with("llm/"));
+    assert_eq!(
+      store
+        .dispatch("first", "fs.list", json!({"path":relative}))
+        .unwrap(),
+      json!({"entries":[
+        {"name":"answer.png","kind":"file","size_bytes":5},
+        {"name":"answer.wav","kind":"file","size_bytes":5}
+      ]})
+    );
+    assert!(store
+      .dispatch("second", "fs.list", json!({"path":relative}))
+      .is_err());
+  }
+
+  #[test]
+  fn abandoned_and_rejected_batches_remove_their_staging() {
+    let (_directory, store) = fixture();
+    let batch = store
+      .stage_generated([("answer.png", b"image".as_slice())])
+      .unwrap();
+    let staged = batch.0.path().to_owned();
+    drop(batch);
+    assert!(!staged.exists());
+    assert!(store
+      .stage_generated([("child/answer.png", b"image".as_slice())])
+      .is_err());
+
+    write(&store, "first", "llm", b"unrelated applet file").unwrap();
+    let batch = store
+      .stage_generated([("answer.png", b"image".as_slice())])
+      .unwrap();
+    let staged = batch.0.path().to_owned();
+    assert!(store.publish_generated("first", batch).is_err());
+    assert!(!staged.exists());
+    assert_eq!(
+      store.read_bounded("first", "llm", 30).ok().as_deref(),
+      Some(b"unrelated applet file".as_slice())
+    );
   }
 
   #[test]

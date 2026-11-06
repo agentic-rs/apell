@@ -52,6 +52,8 @@ export interface LlmCapabilities {
   image_input: LlmCapability;
   pdf_input: LlmCapability;
   audio_input: LlmCapability;
+  image_output: LlmCapability;
+  audio_output: LlmCapability;
 }
 
 export interface LlmToolCall {
@@ -72,6 +74,20 @@ export type LlmToolChoice = 'auto' | 'none' | 'required' | { name: string };
 export type LlmInputPart =
   { type: 'text'; text: string } | { type: 'image' | 'document' | 'audio'; path: string };
 
+/** Requests completed media files. Requires the `fs` permission. */
+export type LlmMediaOutput =
+  | { type: 'image'; format?: 'png' | 'jpeg' | 'webp' }
+  | { type: 'audio'; voice: string; format?: 'wav' | 'mp3' };
+
+export type LlmMediaFile = {
+  /** Relative path in the calling applet's private files. */
+  path: string;
+  size_bytes: number;
+} & (
+  | { type: 'image'; mime_type: 'image/png' | 'image/jpeg' | 'image/webp' }
+  | { type: 'audio'; mime_type: 'audio/wav' | 'audio/mpeg'; transcript?: string }
+);
+
 /** Applet-owned message. Preserve all returned fields, including native provider_state, on replay. */
 export type LlmMessage = (
   | { role: 'user'; content?: string | null | LlmInputPart[] }
@@ -87,6 +103,7 @@ export interface LlmRequest {
   temperature?: number;
   tools?: LlmTool[];
   tool_choice?: LlmToolChoice;
+  output?: LlmMediaOutput;
 }
 
 export interface LlmGenerateOptions {
@@ -115,6 +132,7 @@ export interface LlmResult {
   request_id: string;
   content: string;
   tool_calls: LlmToolCall[];
+  media: LlmMediaFile[];
   /** Replayable assistant message, present only for completed or tool_calls results. */
   message: LlmMessage | null;
   status: LlmStatus;

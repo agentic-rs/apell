@@ -7,6 +7,7 @@ function llmResult(request_id: string, overrides: Partial<LlmResult> = {}): LlmR
     status: 'completed',
     content: 'An answer',
     tool_calls: [],
+    media: [],
     message: { role: 'assistant', content: 'An answer' },
     finish_reason: 'stop',
     provenance: {

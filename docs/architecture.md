@@ -147,12 +147,12 @@ The host limits SQL to 64 KiB, 256 parameters, 1 MiB of parameter data, 1 MiB SQ
 
 Apell owns provider connections, credentials, model selection, transport, cancellation, and request attribution. Applets own prompts, complete message history and provider replay metadata, context selection, persistence, tool implementations, validation, and user review. The host never stores a conversation or executes an applet's tools. Provider setup stays in the shell's Settings screen.
 
-| Method             | Parameters                                                                                                        | Result                                                                        |
-| ------------------ | ----------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
-| `llm.config`       | Optional `target: { connection_id, model_id }`                                                                    | `{ model_id, mode, connection_id, provider_id, provider_name, capabilities }` |
-| `llm.choose_model` | Optional `current: { connection_id, model_id }`                                                                   | `{ connection_id, model_id, provider_id, provider_name }` or `null` on cancel |
-| `llm.generate`     | `request_id`, `messages`, optional `target`, `temperature`, `tools`, `tool_choice`, `stream`, `max_output_tokens` | `LlmResult` with an explicit final status                                     |
-| `llm.cancel`       | `request_id`                                                                                                      | `null`                                                                        |
+| Method             | Parameters                                                                                                                  | Result                                                                        |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| `llm.config`       | Optional `target: { connection_id, model_id }`                                                                              | `{ model_id, mode, connection_id, provider_id, provider_name, capabilities }` |
+| `llm.choose_model` | Optional `current: { connection_id, model_id }`                                                                             | `{ connection_id, model_id, provider_id, provider_name }` or `null` on cancel |
+| `llm.generate`     | `request_id`, `messages`, optional `target`, `temperature`, `tools`, `tool_choice`, `stream`, `max_output_tokens`, `output` | `LlmResult` with an explicit final status                                     |
+| `llm.cancel`       | `request_id`                                                                                                                | `null`                                                                        |
 
 The SDK exports `llm.config(target?)`, `llm.chooseModel({ current? })`, `llm.generate(request, { signal?, on_event? })`, and `llm.cancel(request_id)`. It generates request IDs when omitted, scopes progress callbacks to one call, and forwards AbortSignal cancellation to the host. Rust/WASM clients may supply request IDs explicitly. The promise result is the sole authoritative final outcome. There is no legacy completion method or global LLM event subscriber API; applets must use the current contract.
 
@@ -201,13 +201,43 @@ File attachments require `llm` and `fs` manifest permissions and enabled network
 
 A request can reference up to eight file parts totaling at most 8 MiB. Files must use an accepted format. Camera JPEGs work directly. Photo imports in HEIC, HEIF, or AVIF and native recordings in M4A need conversion first. Applets that keep attachments in message history must keep the corresponding files available for future requests.
 
-Check `llm.config(target).capabilities` for advisory `image_input`, `pdf_input`, and `audio_input` states. Demo mode reports media input as unsupported. Protocol compatibility does not establish model support, and attaching a file keeps the selected route. The generation result still carries text, tools, and replay metadata.
+Check `llm.config(target).capabilities` for advisory `image_input`, `pdf_input`, and `audio_input` states. Demo mode reports media input as unsupported. Protocol compatibility does not establish model support, and attaching a file keeps the selected route.
 
 For an OpenAI model that accepts Chat Completions audio, use a **Custom compatible endpoint** connection pointed at the OpenAI API. The **OpenAI** preset uses Responses.
 
+### Media output
+
+Set `output` on `llm.generate` to request a completed image or audio file. For example:
+
+```ts
+const result = await llm.generate({
+  target,
+  messages: [{ role: 'user', content: 'Draw a lighthouse at dusk.' }],
+  output: { type: 'image', format: 'webp' },
+});
+
+if (result.status === 'completed') {
+  const image = result.media.find((file) => file.type === 'image');
+  // Read image.path with fs.read to display it in the applet.
+}
+```
+
+| Output option                       | Formats                   | Eligible route                                           |
+| ----------------------------------- | ------------------------- | -------------------------------------------------------- |
+| `{ type: 'image', format? }`        | PNG (default), JPEG, WebP | Buffered Responses with the native image generation tool |
+| `{ type: 'audio', voice, format? }` | WAV (default), MP3        | Buffered Chat Completions with an audio-capable model    |
+
+Use the selected provider's voice ID, for example `output: { type: 'audio', voice: 'alloy' }` on an eligible OpenAI audio model via a **Custom compatible endpoint** connection. The **OpenAI** preset uses Responses and can generate images with eligible models. Apell keeps the selected route. `llm.config(target).capabilities.image_output` and `audio_output` report `unsupported` on ineligible routes and `unknown` when the protocol permits the request but model support is unverified. Demo mode and the streaming-only Codex route cannot generate files through this API.
+
+Output requests require `llm` and `fs` manifest permissions and enabled network access. They run buffered, with a `started` event and the final result, even when `stream` defaults to `true`. Use the usual `AbortSignal` or `llm.cancel` to stop them. Image output accepts automatic tool choice only: with no applet tools Apell selects the provider's image tool; with applet tools a `tool_calls` result can hand control back to the applet before any files are produced.
+
+`result.media` contains `{ type, path, mime_type, size_bytes, transcript? }` descriptors. Files appear together under a fresh `llm/<id>` directory in the calling applet's private storage, up to four files and 8 MiB total per result. Cancellation, truncation, or failure returns an empty list. Read images in chunks with `fs.read`, or play a private audio file using `hostCall('audio.play', { path })` with the `audio` permission on iOS/Android. Applets can remove files they no longer need.
+
+The assistant message preserves text and applet tool calls. When audio includes a transcript and no separate answer text, the transcript supplies the assistant text. Saved history does not carry generated file bytes or provider media handles. To reference the image or audio itself in a follow-up, send its path as a new user attachment on a compatible model. For audio with neither answer text nor transcript, omit the empty assistant message or summarize the audio yourself when building history.
+
 ### Outcomes, events, and attribution
 
-Every `generate` outcome contains `request_id`, `status`, `content`, normalized `tool_calls`, nullable `message`, nullable `finish_reason`, `provenance`, and nullable `error`. Only `completed` and `tool_calls` return a replayable assistant `message`; interrupted outcomes retain partial display text with `message: null`. The native result is authoritative even if progress events arrive late or are missed.
+Every `generate` outcome contains `request_id`, `status`, `content`, normalized `tool_calls`, `media`, nullable `message`, nullable `finish_reason`, `provenance`, and nullable `error`. Only `completed` and `tool_calls` return an assistant `message`; interrupted outcomes retain partial display text with `message: null`. The native result is authoritative even if progress events arrive late or are missed.
 
 | Status        | Meaning                                                                                       |
 | ------------- | --------------------------------------------------------------------------------------------- |

@@ -42,19 +42,25 @@ impl LlmConfig {
     } else {
       CapabilityState::Unknown
     };
+    let protocol = (self.base_url != "demo")
+      .then(|| super::wire::protocol(self).ok())
+      .flatten();
+    let output = |supports| {
+      if supports {
+        state
+      } else {
+        CapabilityState::Unsupported
+      }
+    };
     LlmCapabilities {
       tools: state,
       required_tool_choice: state,
       exposed_reasoning: state,
       image_input: state,
       pdf_input: state,
-      audio_input: if super::wire::protocol(self)
-        .is_ok_and(|protocol| protocol.supports_audio_input())
-      {
-        state
-      } else {
-        CapabilityState::Unsupported
-      },
+      audio_input: output(protocol.is_some_and(|protocol| protocol.supports_audio_input())),
+      image_output: output(protocol.is_some_and(|protocol| protocol.supports_image_output(self))),
+      audio_output: output(protocol.is_some_and(|protocol| protocol.supports_audio_output())),
     }
   }
 
@@ -83,6 +89,66 @@ pub struct LlmCapabilities {
   pub image_input: CapabilityState,
   pub pdf_input: CapabilityState,
   pub audio_input: CapabilityState,
+  pub image_output: CapabilityState,
+  pub audio_output: CapabilityState,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LlmImageFormat {
+  #[default]
+  Png,
+  Jpeg,
+  Webp,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LlmAudioFormat {
+  #[default]
+  Wav,
+  Mp3,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum LlmMediaOutput {
+  Image {
+    #[serde(default)]
+    format: LlmImageFormat,
+  },
+  Audio {
+    voice: String,
+    #[serde(default)]
+    format: LlmAudioFormat,
+  },
+}
+
+impl LlmMediaOutput {
+  pub(super) fn capability(&self) -> &'static str {
+    match self {
+      Self::Image { .. } => "image_output",
+      Self::Audio { .. } => "audio_output",
+    }
+  }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct LlmMediaFile {
+  #[serde(rename = "type")]
+  pub kind: LlmMediaKind,
+  pub path: String,
+  pub mime_type: String,
+  pub size_bytes: usize,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub transcript: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LlmMediaKind {
+  Image,
+  Audio,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -156,6 +222,8 @@ pub struct LlmRequest {
   pub tools: Vec<LlmToolDefinition>,
   #[serde(default)]
   pub tool_choice: Option<LlmToolChoice>,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub output: Option<LlmMediaOutput>,
 }
 
 fn default_stream() -> bool {
@@ -173,6 +241,7 @@ impl Default for LlmRequest {
       temperature: None,
       tools: Vec::new(),
       tool_choice: None,
+      output: None,
     }
   }
 }
@@ -211,6 +280,7 @@ pub struct LlmResult {
   pub status: LlmStatus,
   pub content: String,
   pub tool_calls: Vec<LlmToolCall>,
+  pub media: Vec<LlmMediaFile>,
   /// Complete assistant message, present only for a successful generation.
   pub message: Option<Value>,
   pub finish_reason: Option<String>,

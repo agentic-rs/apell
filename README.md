@@ -141,7 +141,7 @@ Settings supports saved named connections, model discovery and manual IDs, API k
 
 The native host uses the embedded Tokn SDK for provider routing. Supported connections include OpenAI, Codex, GitHub Copilot, DeepSeek, OpenCode Go, llama.cpp, Z.ai/Zhipu and their coding plans, and custom OpenAI-compatible endpoints. Applets keep their complete assistant messages and inspect the returned generation status. See the [provider settings contract](docs/architecture.md#provider-settings) and [LLM history and tool example](docs/llm.md).
 
-Applets can send private images, PDFs, or WAV/MP3 audio as user message attachments to compatible models. See the [media input contract](docs/architecture.md#media-input) for permissions, formats, and limits.
+Applets can send private images, PDFs, or WAV/MP3 audio as user message attachments and request generated images or speech as private files. See the [media input](docs/architecture.md#media-input) and [media output](docs/architecture.md#media-output) contracts for permissions, formats, and limits.
 
 ## Recorder applet services
 

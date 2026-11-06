@@ -1,11 +1,11 @@
 use super::{
-  event,
+  event, generated,
   media::{self, Attachments},
   platform::{ApellBody, ApellPlatform, PlatformError},
   sse::SseParser,
-  tokn_config, validation, wire, Failure, LlmConfig, LlmEvent, LlmProvenance, LlmRequest,
-  LlmResult, LlmStatus, LlmToolCall, LlmToolChoice, MAX_ERROR_BYTES, MAX_INPUT_BYTES,
-  MAX_OUTPUT_BYTES, MAX_RESPONSE_BYTES, MAX_TOOLS,
+  tokn_config, validation, wire, Failure, LlmConfig, LlmEvent, LlmMediaFile, LlmMediaOutput,
+  LlmProvenance, LlmRequest, LlmResult, LlmStatus, LlmToolCall, LlmToolChoice, MAX_ERROR_BYTES,
+  MAX_INPUT_BYTES, MAX_OUTPUT_BYTES, MAX_RESPONSE_BYTES, MAX_TOOLS,
 };
 use reqwest::Client;
 use serde_json::{json, Map, Value};
@@ -19,6 +19,8 @@ pub(super) struct Output {
   pub content: String,
   pub tool_calls: Vec<LlmToolCall>,
   pub provenance: LlmProvenance,
+  pub(super) generated: Vec<generated::Asset>,
+  pub(super) media: Vec<LlmMediaFile>,
   message: Map<String, Value>,
   finish_reason: Option<String>,
   response_id: Option<String>,
@@ -35,6 +37,8 @@ impl Output {
       content: String::new(),
       tool_calls: Vec::new(),
       provenance,
+      generated: Vec::new(),
+      media: Vec::new(),
       message: json!({"role": "assistant", "content": null})
         .as_object()
         .unwrap()
@@ -308,6 +312,61 @@ impl Output {
     Ok(())
   }
 
+  fn buffered(
+    &mut self,
+    mut value: Value,
+    config: &LlmConfig,
+    protocol: wire::Protocol,
+    request: &LlmRequest,
+    emit: &impl Fn(LlmEvent),
+  ) -> Result<LlmStatus, Failure> {
+    // Keep inline bytes out of the assistant message and its metadata budget.
+    // Validate the terminal response before decoding any generated files.
+    let items = match protocol {
+      wire::Protocol::ChatCompletions => {
+        let audio = take_chat_audio(&mut value, request.output.as_ref());
+        self.consume(&value, false, emit)?;
+        audio.into_iter().collect()
+      }
+      wire::Protocol::Responses => {
+        let images = native::take_response_images(&mut value);
+        self.responses(&value, false, config, emit)?;
+        images
+      }
+      wire::Protocol::Messages => {
+        self.messages(&value, false, config, emit)?;
+        Vec::new()
+      }
+    };
+    let status = self.finish(request)?;
+    if !matches!(status, LlmStatus::Completed | LlmStatus::ToolCalls) {
+      return Ok(status);
+    }
+    let mut assets = Vec::new();
+    match (&request.output, protocol) {
+      (Some(LlmMediaOutput::Image { format }), wire::Protocol::Responses) => {
+        for item in items {
+          generated::decode_image(&item, *format, &mut assets)?;
+        }
+      }
+      (Some(LlmMediaOutput::Audio { format, .. }), wire::Protocol::ChatCompletions) => {
+        if let Some(audio) = items.first() {
+          generated::decode_audio(audio, *format, &mut assets)?;
+        }
+      }
+      _ if !items.is_empty() => return Err(Failure::unsupported("media_output")),
+      _ => {}
+    }
+    if request.output.is_some() && status == LlmStatus::Completed && assets.is_empty() {
+      return Err(Failure::new(
+        "missing_media",
+        "The provider completed without returning the requested media.",
+      ));
+    }
+    self.generated = assets;
+    Ok(status)
+  }
+
   fn finish(&mut self, request: &LlmRequest) -> Result<LlmStatus, Failure> {
     if self.refusal {
       return Err(Failure::new(
@@ -401,7 +460,7 @@ impl Output {
         "The provider completed without the required tool call.",
       ));
     }
-    if self.content.is_empty() {
+    if self.content.is_empty() && request.output.is_none() {
       return Err(Failure::new(
         "empty_response",
         "The LLM provider returned no answer.",
@@ -429,6 +488,7 @@ impl Output {
         Some(error),
       ),
     };
+    let successful = matches!(status, LlmStatus::Completed | LlmStatus::ToolCalls);
     LlmResult {
       request_id: self.request_id,
       status,
@@ -438,13 +498,33 @@ impl Output {
       } else {
         Vec::new()
       },
-      message: matches!(status, LlmStatus::Completed | LlmStatus::ToolCalls)
-        .then_some(Value::Object(self.message)),
+      message: successful.then_some(Value::Object(self.message)),
+      media: if successful { self.media } else { Vec::new() },
       finish_reason: self.finish_reason,
       provenance: self.provenance,
       error,
     }
   }
+}
+
+fn take_chat_audio(response: &mut Value, output: Option<&LlmMediaOutput>) -> Option<Value> {
+  let message = response
+    .pointer_mut("/choices/0/message")?
+    .as_object_mut()?;
+  if message.get("audio")?.is_null() {
+    return None;
+  }
+  let audio = message.remove("audio")?;
+  if matches!(output, Some(LlmMediaOutput::Audio { .. }))
+    && message
+      .get("content")
+      .is_none_or(|value| value.is_null() || value.as_str() == Some(""))
+  {
+    if let Some(transcript) = audio.get("transcript").and_then(Value::as_str) {
+      message.insert("content".into(), json!(transcript));
+    }
+  }
+  Some(audio)
 }
 
 fn append_string(
@@ -491,6 +571,8 @@ fn provider_error(value: &Value, status: Option<u16>) -> Failure {
       "tool_choice" => Some("required_tool_choice"),
       "reasoning" | "reasoning_content" => Some("exposed_reasoning"),
       "max_tokens" | "max_completion_tokens" | "max_output_tokens" => Some("max_output_tokens"),
+      "audio" | "audio.format" | "audio.voice" | "modalities" => Some("audio_output"),
+      "image_generation" | "tools.image_generation" => Some("image_output"),
       _ => None,
     };
     if let Some(capability) = capability {
@@ -568,7 +650,7 @@ pub(super) async fn remote(
   let body = wire::request(request, config, protocol, &attachments)?;
   drop(attachments);
   let progress = |event| {
-    if request.stream {
+    if request.stream && request.output.is_none() {
       emit(event);
     }
   };
@@ -588,19 +670,29 @@ pub(super) async fn remote(
       "The LLM connection configuration is invalid.",
     )
   })?;
-  let sdk = tokn_sdk::Client::new(rules, Vec::new(), ApellPlatform::new(client.clone()))
-    .map_err(|_| {
-      Failure::new(
-        "invalid_configuration",
-        "Could not configure the LLM connection.",
-      )
-    })?
-    .with_limits(tokn_sdk::Limits {
-      max_response_bytes: MAX_RESPONSE_BYTES,
-      max_event_bytes: MAX_OUTPUT_BYTES,
-      max_error_body_bytes: MAX_ERROR_BYTES,
-      ..tokn_sdk::Limits::default()
-    });
+  let response_limit = if request.output.is_some() {
+    // The decoded file budget is independent of the base64 transport overhead.
+    12 * 1024 * 1024
+  } else {
+    MAX_RESPONSE_BYTES
+  };
+  let sdk = tokn_sdk::Client::new(
+    rules,
+    Vec::new(),
+    ApellPlatform::new(client.clone(), response_limit),
+  )
+  .map_err(|_| {
+    Failure::new(
+      "invalid_configuration",
+      "Could not configure the LLM connection.",
+    )
+  })?
+  .with_limits(tokn_sdk::Limits {
+    max_response_bytes: response_limit,
+    max_event_bytes: MAX_OUTPUT_BYTES,
+    max_error_body_bytes: MAX_ERROR_BYTES,
+    ..tokn_sdk::Limits::default()
+  });
   let options = tokn_config::options(
     config,
     account.as_ref(),
@@ -646,11 +738,10 @@ pub(super) async fn remote(
   match response_body {
     ApellBody::Buffered(bytes) if content_type.starts_with("application/json") => {
       let value: Value = serde_json::from_slice(&bytes).map_err(|_| invalid_response())?;
-      match protocol {
-        wire::Protocol::ChatCompletions => output.consume(&value, false, &progress)?,
-        wire::Protocol::Responses => output.responses(&value, false, config, &progress)?,
-        wire::Protocol::Messages => output.messages(&value, false, config, &progress)?,
-      }
+      return output.buffered(value, config, protocol, request, &progress);
+    }
+    ApellBody::Stream(_) if request.output.is_some() => {
+      return Err(Failure::unsupported("media_streaming"));
     }
     ApellBody::Stream(mut stream) if content_type.starts_with("text/event-stream") => {
       let mut parser = SseParser::default();

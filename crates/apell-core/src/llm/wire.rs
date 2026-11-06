@@ -1,4 +1,6 @@
-use super::{media, validation, Failure, LlmConfig, LlmRequest, LlmToolCall, LlmToolChoice};
+use super::{
+  media, validation, Failure, LlmConfig, LlmMediaOutput, LlmRequest, LlmToolCall, LlmToolChoice,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokn_convert::{error::ConvertError, media::content_to_parts};
@@ -23,6 +25,23 @@ impl Protocol {
 
   pub(super) fn supports_audio_input(self) -> bool {
     self == Self::ChatCompletions
+  }
+
+  pub(super) fn supports_image_output(self, config: &LlmConfig) -> bool {
+    // Tokn's Codex route requires upstream SSE. The output API accepts a
+    // buffered response so only complete, validated files become visible.
+    self == Self::Responses && config.provider_id != "codex"
+  }
+
+  pub(super) fn supports_audio_output(self) -> bool {
+    self == Self::ChatCompletions
+  }
+
+  pub(super) fn supports_output(self, config: &LlmConfig, output: &LlmMediaOutput) -> bool {
+    match output {
+      LlmMediaOutput::Image { .. } => self.supports_image_output(config),
+      LlmMediaOutput::Audio { .. } => self.supports_audio_output(),
+    }
   }
 }
 
@@ -244,7 +263,8 @@ pub(super) fn request(
   protocol: Protocol,
   attachments: &media::Attachments,
 ) -> Result<Value, Failure> {
-  let mut body = json!({"model":config.model_id, "messages":[], "stream":request.stream});
+  let stream = request.stream && request.output.is_none();
+  let mut body = json!({"model":config.model_id, "messages":[], "stream":stream});
   if let Some(temperature) = request.temperature {
     body["temperature"] = json!(temperature);
   }
@@ -338,7 +358,7 @@ pub(super) fn request(
         Endpoint::ChatCompletions,
         protocol.endpoint(),
         &json!({
-          "model":config.model_id, "messages":[message], "stream":request.stream
+          "model":config.model_id, "messages":[message], "stream":stream
         }),
       )
       .map_err(|_| {
@@ -392,11 +412,29 @@ pub(super) fn request(
       };
       body[key] = json!(instructions.join("\n\n"));
     }
-    body["stream"] = json!(request.stream);
+    body["stream"] = json!(stream);
     if protocol == Protocol::Responses {
       body["store"] = json!(false);
       body["include"] = json!(["reasoning.encrypted_content"]);
     }
+  }
+  match &request.output {
+    Some(LlmMediaOutput::Image { format }) => {
+      let tool = json!({"type":"image_generation", "output_format":format});
+      if let Some(tools) = body.get_mut("tools").and_then(Value::as_array_mut) {
+        tools.push(tool);
+      } else {
+        body["tools"] = json!([tool]);
+      }
+      if request.tools.is_empty() {
+        body["tool_choice"] = json!({"type":"image_generation"});
+      }
+    }
+    Some(LlmMediaOutput::Audio { voice, format }) => {
+      body["modalities"] = json!(["text", "audio"]);
+      body["audio"] = json!({"voice":voice, "format":format});
+    }
+    None => {}
   }
   tokn_accounts::native::transform_body(
     driver(config).map_err(|_| invalid())?,
@@ -486,6 +524,7 @@ pub(super) fn project(protocol: Protocol, output: &[Value]) -> Result<Projection
             }
           }
           "custom_tool_call" => return Err(Failure::unsupported("tool_type")),
+          "image_generation_call" => return Err(Failure::unsupported("output_content")),
           // Other provider-owned output items remain intact in replay state.
           _ => {}
         }

@@ -1,6 +1,20 @@
 use super::*;
 use wire::Protocol;
 
+pub(super) fn take_response_images(response: &mut Value) -> Vec<Value> {
+  let mut images = Vec::new();
+  if let Some(items) = response.get_mut("output").and_then(Value::as_array_mut) {
+    items.retain_mut(|item| {
+      if item["type"] != "image_generation_call" {
+        return true;
+      }
+      images.push(std::mem::take(item));
+      false
+    });
+  }
+  images
+}
+
 #[derive(Default)]
 pub(super) struct NativeOutput {
   pub terminal: bool,

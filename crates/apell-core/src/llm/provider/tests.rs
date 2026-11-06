@@ -97,6 +97,27 @@ fn buffered_messages_preserve_arbitrary_metadata_at_every_level() {
 }
 
 #[test]
+fn unsolicited_buffered_audio_cannot_be_replayed_as_assistant_metadata() {
+  let config = LlmConfig::default();
+  let mut output = output();
+  let status = output.buffered(
+    json!({"choices":[{
+      "message":{"role":"assistant","content":"Partial text","audio":{"data":"private audio"}},
+      "finish_reason":"stop"
+    }]}),
+    &config,
+    wire::Protocol::ChatCompletions,
+    &request(),
+    &|_| {},
+  );
+  let result = output.result(status);
+  assert_eq!(result.status, LlmStatus::Unsupported);
+  assert_eq!(result.content, "Partial text");
+  assert!(result.message.is_none());
+  assert!(result.media.is_empty());
+}
+
+#[test]
 fn every_non_successful_finish_keeps_partial_text_but_no_replay_message() {
   for (reason, status, code) in [
     ("length", LlmStatus::Truncated, "truncated"),

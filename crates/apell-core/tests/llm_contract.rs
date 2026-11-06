@@ -1,7 +1,7 @@
 use apell_core::filesystem::FileStore;
 use apell_core::llm::{
-  LlmConfig, LlmEvent, LlmFiles, LlmRequest, LlmResult, LlmService, LlmStatus, LlmTarget,
-  LlmToolChoice,
+  CapabilityState, LlmAudioFormat, LlmConfig, LlmEvent, LlmFiles, LlmImageFormat, LlmMediaOutput,
+  LlmRequest, LlmResult, LlmService, LlmStatus, LlmTarget, LlmToolChoice,
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde_json::{json, Value};
@@ -28,6 +28,7 @@ enum Reply {
   HttpError(u16, Value),
   Stream(String),
   HoldStream(String),
+  HoldJson(String),
   Redirect(String),
   TruncatedHttpError(u16),
 }
@@ -87,6 +88,7 @@ impl Server {
           Reply::HttpError(status, body) => (status, "application/json", body.to_string(), false),
           Reply::Stream(body) => (200, "text/event-stream", body, false),
           Reply::HoldStream(body) => (200, "text/event-stream", body, true),
+          Reply::HoldJson(body) => (200, "application/json", body, true),
           Reply::Redirect(_) | Reply::TruncatedHttpError(_) => unreachable!(),
         };
         let length = if hold {
@@ -806,6 +808,239 @@ fn response_text(text: &str) -> Value {
   json!({"type":"message", "id":"message_fixture", "role":"assistant", "status":"completed", "content":[{
     "type":"output_text", "text":text, "annotations":[{"type":"fixture", "nested":{"retain":true}}]
   }]})
+}
+
+fn media_fixture() -> (tempfile::TempDir, Arc<FileStore>, LlmService) {
+  let temporary = tempfile::tempdir().unwrap();
+  let store = Arc::new(FileStore::new(temporary.path().join("files")));
+  let service = LlmService::new().unwrap();
+  service.register_session("session").unwrap();
+  (temporary, store, service)
+}
+
+async fn generate_media(
+  server: &Server,
+  service: &LlmService,
+  store: Option<&Arc<FileStore>>,
+  request: LlmRequest,
+) -> LlmResult {
+  tokio::time::timeout(
+    DEADLINE,
+    service.generate_with_files(
+      "session",
+      request,
+      server.config.clone(),
+      Some(account(&server.config, "fixture-api-key")),
+      store.map(|store| LlmFiles {
+        store: store.clone(),
+        applet_id: "fixture".into(),
+      }),
+      |_| {},
+    ),
+  )
+  .await
+  .unwrap()
+}
+
+#[tokio::test]
+async fn responses_image_returns_private_file_without_embedding_it_in_history() {
+  let png =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jR9sAAAAASUVORK5CYII=";
+  let image = json!({"type":"image_generation_call", "id":"image_fixture", "status":"completed", "result":png});
+  let mut server = Server::start(vec![
+    Reply::Json(responses(json!([image]), "completed")),
+    Reply::Json(responses(json!([response_text("Follow-up.")]), "completed")),
+  ])
+  .await;
+  server.config.provider_id = "openai".into();
+  let (_temporary, store, service) = media_fixture();
+  let mut request = native_input("image");
+  request.tools.clear();
+  request.output = Some(LlmMediaOutput::Image {
+    format: LlmImageFormat::Png,
+  });
+  assert_eq!(
+    server.config.capabilities().image_output,
+    CapabilityState::Unknown
+  );
+  let result = generate_media(&server, &service, Some(&store), request).await;
+  assert_eq!(result.status, LlmStatus::Completed, "{:?}", result.error);
+  assert!(result.content.is_empty());
+  assert_eq!(result.media.len(), 1);
+  let media = &result.media[0];
+  assert_eq!(media.mime_type, "image/png");
+  assert_eq!(media.size_bytes, STANDARD.decode(png).unwrap().len());
+  assert!(media.path.starts_with("llm/"));
+  assert_eq!(
+    std::fs::read(store.native_path("fixture", &media.path, false).unwrap()).unwrap(),
+    STANDARD.decode(png).unwrap()
+  );
+  assert!(store.native_path("other", &media.path, false).is_err());
+  assert!(!serde_json::to_string(&result).unwrap().contains(png));
+  let mut followup = native_input("after_image");
+  followup.messages.push(assistant(&result));
+  followup
+    .messages
+    .push(json!({"role":"user", "content":"Continue the conversation."}));
+  assert_eq!(
+    generate_media(&server, &service, None, followup)
+      .await
+      .status,
+    LlmStatus::Completed
+  );
+  let sent = server.requests();
+  assert!(sent[0].headers.starts_with("POST /v1/responses "));
+  assert_eq!(sent[0].body["stream"], false);
+  assert_eq!(
+    sent[0].body["tool_choice"],
+    json!({"type":"image_generation"})
+  );
+  assert_eq!(
+    sent[0].body["tools"],
+    json!([{"type":"image_generation", "output_format":"png"}])
+  );
+  assert!(!sent[1].body.to_string().contains("image_generation_call"));
+}
+
+#[tokio::test]
+async fn chat_audio_returns_playable_bytes_and_replays_the_transcript() {
+  let wave = b"RIFF\x26\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x40\x1f\0\0\x80\x3e\0\0\x02\0\x10\0data\x02\0\0\0\0\0";
+  let encoded = STANDARD.encode(wave);
+  let server = Server::start(vec![
+    Reply::Json(completion(
+      json!({"role":"assistant", "content":null,
+      "audio":{"id":"ephemeral_audio", "expires_at":1, "data":encoded, "transcript":"Hello."}}),
+      "stop",
+    )),
+    Reply::Json(completion(
+      json!({"role":"assistant", "content":"Follow-up."}),
+      "stop",
+    )),
+  ])
+  .await;
+  let (_temporary, store, service) = media_fixture();
+  let mut request = native_input("audio");
+  request.output = Some(LlmMediaOutput::Audio {
+    voice: "fixture_voice".into(),
+    format: LlmAudioFormat::Wav,
+  });
+  assert_eq!(
+    server.config.capabilities().audio_output,
+    CapabilityState::Unknown
+  );
+  let result = generate_media(&server, &service, Some(&store), request).await;
+  assert_eq!(result.status, LlmStatus::Completed, "{:?}", result.error);
+  assert_eq!(result.content, "Hello.");
+  assert_eq!(result.media.len(), 1);
+  let media = &result.media[0];
+  assert_eq!(media.mime_type, "audio/wav");
+  assert_eq!(media.transcript.as_deref(), Some("Hello."));
+  assert_eq!(
+    std::fs::read(store.native_path("fixture", &media.path, false).unwrap()).unwrap(),
+    wave
+  );
+  assert!(!serde_json::to_string(&result).unwrap().contains(&encoded));
+  let mut followup = native_input("after_audio");
+  followup.messages.push(assistant(&result));
+  followup
+    .messages
+    .push(json!({"role":"user", "content":"Continue the conversation."}));
+  assert_eq!(
+    generate_media(&server, &service, None, followup)
+      .await
+      .status,
+    LlmStatus::Completed
+  );
+  let sent = server.requests();
+  assert!(sent[0].headers.starts_with("POST /v1/chat/completions "));
+  assert_eq!(sent[0].body["stream"], false);
+  assert_eq!(sent[0].body["modalities"], json!(["text", "audio"]));
+  assert_eq!(
+    sent[0].body["audio"],
+    json!({"voice":"fixture_voice", "format":"wav"})
+  );
+  assert_eq!(
+    sent[1].body["messages"][1],
+    json!({"role":"assistant", "content":"Hello."})
+  );
+}
+
+#[tokio::test]
+async fn rejects_ineligible_or_unsuccessful_media_without_publishing_files() {
+  let server = Server::start(vec![
+    Reply::Json(completion(
+      json!({"role":"assistant", "content":"Partial.", "audio":{"data":"invalid"}}),
+      "length",
+    )),
+    Reply::Json(completion(
+      json!({"role":"assistant", "content":"Invalid.", "audio":{"data":"invalid"}}),
+      "stop",
+    )),
+    Reply::Json(completion(
+      json!({"role":"assistant", "content":"Missing."}),
+      "stop",
+    )),
+  ])
+  .await;
+  let (_temporary, store, service) = media_fixture();
+  let mut request = native_input("image_wrong_route");
+  request.output = Some(LlmMediaOutput::Image {
+    format: LlmImageFormat::Png,
+  });
+  let result = generate_media(&server, &service, Some(&store), request).await;
+  assert_eq!(result.status, LlmStatus::Unsupported);
+  assert_eq!(
+    result.error.unwrap().capability.as_deref(),
+    Some("image_output")
+  );
+  let mut request = native_input("audio_no_files");
+  request.output = Some(LlmMediaOutput::Audio {
+    voice: "fixture_voice".into(),
+    format: LlmAudioFormat::Wav,
+  });
+  let result = generate_media(&server, &service, None, request.clone()).await;
+  assert_eq!(result.error.unwrap().code, "media_output_permission");
+  assert!(server.requests().is_empty());
+  for (status, code) in [
+    (LlmStatus::Truncated, Some("truncated")),
+    (LlmStatus::Failed, Some("invalid_response")),
+    (LlmStatus::Failed, Some("missing_media")),
+  ] {
+    let result = generate_media(&server, &service, Some(&store), request.clone()).await;
+    assert_eq!(result.status, status, "{:?}", result.error);
+    assert_eq!(result.error.as_ref().map(|error| error.code.as_str()), code);
+    assert!(result.media.is_empty());
+    assert!(result.message.is_none());
+  }
+  assert!(store.native_path("fixture", "llm", false).is_err());
+}
+
+#[tokio::test]
+async fn cancelling_buffered_generation_publishes_no_files() {
+  let server = Server::start(vec![Reply::HoldJson("{\"choices\":[".into())]).await;
+  let (_temporary, store, service) = media_fixture();
+  let mut request = native_input("cancel_audio");
+  request.output = Some(LlmMediaOutput::Audio {
+    voice: "fixture_voice".into(),
+    format: LlmAudioFormat::Wav,
+  });
+  let cancel = async {
+    tokio::time::timeout(DEADLINE, async {
+      while server.requests().is_empty() {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+      }
+    })
+    .await
+    .unwrap();
+    service.cancel("session", "cancel_audio").unwrap();
+  };
+  let (result, ()) = tokio::join!(
+    generate_media(&server, &service, Some(&store), request),
+    cancel
+  );
+  assert_eq!(result.status, LlmStatus::Cancelled);
+  assert!(result.media.is_empty());
+  assert!(store.native_path("fixture", "llm", false).is_err());
 }
 
 fn response_tools() -> Value {

@@ -1,4 +1,4 @@
-use super::{MAX_ERROR_BYTES, MAX_RESPONSE_BYTES};
+use super::MAX_ERROR_BYTES;
 use reqwest::Client;
 use serde::de::DeserializeOwned;
 use std::{
@@ -57,10 +57,10 @@ pub(super) struct ApellPlatform {
 }
 
 impl ApellPlatform {
-  pub fn new(client: Client) -> Self {
+  pub fn new(client: Client, response_limit: usize) -> Self {
     Self {
       client,
-      response_limit: MAX_RESPONSE_BYTES,
+      response_limit,
       origin: Instant::now(),
     }
   }

@@ -28,6 +28,7 @@ fn failed_generation(
     status: LlmStatus::Failed,
     content: String::new(),
     tool_calls: Vec::new(),
+    media: Vec::new(),
     message: None,
     finish_reason: None,
     provenance,
