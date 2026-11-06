@@ -169,7 +169,14 @@ pub async fn dispatch(
         Ok(json!({"path":relative,"file_name":imported["file_name"],
           "mime_type":imported["mime_type"],"duration_ms":imported["duration_ms"],"size_bytes":size_bytes}))
       } else {
-        checked_native(app, owner, &session, "start", json!({"path":path})).await?;
+        checked_native(
+          app,
+          owner,
+          &session,
+          "start",
+          json!({"path":path,"applet_name":session.manifest.name}),
+        )
+        .await?;
         state.recording_path = Some(relative.clone());
         Ok(json!({"path":relative,"mime_type":"audio/mp4"}))
       }

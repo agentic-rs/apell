@@ -145,7 +145,7 @@ The native host uses the embedded Tokn SDK for provider routing. Supported conne
 
 The host supports native iOS/Android recording, audio import/playback, and file sharing through the `audio` permission. The `speech` permission provides offline Whisper transcription and language detection after an explicit multilingual model download. Audio stays on the device. See [the audio and speech contract](docs/architecture.md#audio-and-offline-speech) for methods, formats, lifecycle, and limits.
 
-Native speech compilation additionally requires CMake and a C/C++ toolchain. Models and recordings live in application data and are never bundled into source control.
+Native speech compilation additionally requires CMake and a C/C++ toolchain. For Android builds, `pnpm tauri` also makes `NDK_HOME` available to Whisper's CMake build. Models and recordings live in application data and are never bundled into source control.
 
 ## Tokn development dependency
 

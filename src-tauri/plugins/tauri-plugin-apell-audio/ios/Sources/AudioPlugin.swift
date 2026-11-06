@@ -5,11 +5,12 @@ import UIKit
 
 struct SessionArgs: Decodable { let session_id: String }
 struct PathArgs: Decodable { let path: String }
+struct RecordingArgs: Decodable { let path: String; let applet_name: String }
 struct ImportArgs: Decodable { let directory: String }
 struct ShareArgs: Decodable { let path: String; let file_name: String; let mime_type: String }
 struct SeekArgs: Decodable { let position_ms: Double }
 
-final class AudioPlugin: Plugin, AVAudioRecorderDelegate {
+final class AudioPlugin: Plugin, AVAudioRecorderDelegate, AVAudioPlayerDelegate {
   var recorder: AVAudioRecorder?
   var player: AVAudioPlayer?
   var recording_state = "idle"
@@ -20,6 +21,7 @@ final class AudioPlugin: Plugin, AVAudioRecorderDelegate {
   var closed_sessions = Set<String>()
   var generation = 0
   var pending_start: Invoke?
+  var start_prompt: UIAlertController?
   var pending_share: Invoke?
   var share_sheet: UIActivityViewController?
   var share_folder: URL?
@@ -30,11 +32,15 @@ final class AudioPlugin: Plugin, AVAudioRecorderDelegate {
       forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main
     ) { [weak self] _ in
       guard let self = self else { return }
+      self.cancelPendingStart("Apell must be in the foreground to record.")
       if self.recording_state == "recording" {
         self.recorder?.pause()
         self.recording_state = "paused"
       }
-      self.player?.pause()
+      if let player = self.player {
+        player.pause()
+        self.deactivateAudioSession()
+      }
     }
     interruption = NotificationCenter.default.addObserver(
       forName: AVAudioSession.interruptionNotification, object: nil, queue: .main
@@ -58,48 +64,88 @@ final class AudioPlugin: Plugin, AVAudioRecorderDelegate {
   }
 
   @objc func start(_ invoke: Invoke) throws {
-    let args = try invoke.parseArgs(PathArgs.self)
+    let args = try invoke.parseArgs(RecordingArgs.self)
     DispatchQueue.main.async {
       guard self.sessionOpen(invoke) else { return }
+      guard UIApplication.shared.applicationState == .active else {
+        invoke.reject("Apell must be in the foreground to record."); return
+      }
       guard self.recorder == nil, self.pending_start == nil else { invoke.reject("A recording is already active."); return }
+      guard let presenter = self.manager.viewController, presenter.presentedViewController == nil else {
+        invoke.reject("Microphone confirmation is unavailable."); return
+      }
       self.pending_start = invoke
       let generation = self.generation
-      AVAudioSession.sharedInstance().requestRecordPermission { granted in
-        DispatchQueue.main.async {
-          guard self.generation == generation, self.pending_start === invoke else { return }
-          self.pending_start = nil
-          guard granted else {
-            invoke.reject("Microphone access is denied. Enable it for Apell in Settings.")
-            return
-          }
-          do {
-            self.player?.stop()
-            self.player = nil
-            let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker])
-            try session.setActive(true)
-            let recorder = try AVAudioRecorder(url: URL(fileURLWithPath: args.path), settings: [
-              AVFormatIDKey: kAudioFormatMPEG4AAC,
-              AVSampleRateKey: 44100.0,
-              AVNumberOfChannelsKey: 1,
-              AVEncoderBitRateKey: 64000,
-              AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue,
-            ])
-            recorder.delegate = self
-            guard recorder.prepareToRecord(), recorder.record() else {
-              throw AudioFailure.operation
+      let prompt = UIAlertController(
+        title: "Allow microphone recording?",
+        message: "\(args.applet_name) wants to start recording audio.",
+        preferredStyle: .alert
+      )
+      prompt.addAction(UIAlertAction(title: "Cancel", style: .cancel) { [weak self] _ in
+        guard let self = self, self.generation == generation, self.pending_start === invoke else { return }
+        self.start_prompt = nil
+        self.pending_start = nil
+        invoke.reject("Microphone recording was cancelled.")
+      })
+      prompt.addAction(UIAlertAction(title: "Start recording", style: .default) { [weak self] _ in
+        guard let self = self, self.generation == generation, self.pending_start === invoke else { return }
+        self.start_prompt = nil
+        AVAudioSession.sharedInstance().requestRecordPermission { [weak self] granted in
+          DispatchQueue.main.async {
+            guard let self = self, self.generation == generation, self.pending_start === invoke else { return }
+            self.pending_start = nil
+            guard granted else {
+              invoke.reject("Microphone access is denied. Enable it for Apell in Settings.")
+              return
             }
-            self.recorder = recorder
-            self.recording_state = "recording"
-            self.last_elapsed_ms = 0
-            invoke.resolve()
-          } catch {
-            try? FileManager.default.removeItem(atPath: args.path)
-            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-            invoke.reject("Could not start the microphone recording.")
+            // The system permission alert can leave the app temporarily inactive.
+            guard UIApplication.shared.applicationState != .background else {
+              invoke.reject("Apell must be in the foreground to record.")
+              return
+            }
+            self.startRecording(invoke, path: args.path)
           }
         }
+      })
+      self.start_prompt = prompt
+      presenter.present(prompt, animated: true)
+    }
+  }
+
+  private func cancelPendingStart(_ message: String) {
+    let pending = pending_start
+    pending_start = nil
+    start_prompt?.dismiss(animated: true)
+    start_prompt = nil
+    pending?.reject(message)
+  }
+
+  private func startRecording(_ invoke: Invoke, path: String) {
+    do {
+      player?.stop()
+      player = nil
+      let session = AVAudioSession.sharedInstance()
+      try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker])
+      try session.setActive(true)
+      let recorder = try AVAudioRecorder(url: URL(fileURLWithPath: path), settings: [
+        AVFormatIDKey: kAudioFormatMPEG4AAC,
+        AVSampleRateKey: 44100.0,
+        AVNumberOfChannelsKey: 1,
+        AVEncoderBitRateKey: 64000,
+        AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue,
+      ])
+      recorder.delegate = self
+      guard recorder.prepareToRecord(), recorder.record() else {
+        throw AudioFailure.operation
       }
+      self.recorder = recorder
+      recording_state = "recording"
+      last_elapsed_ms = 0
+      invoke.resolve()
+    } catch {
+      try? FileManager.default.removeItem(atPath: path)
+      deactivateAudioSession()
+      invoke.reject("Could not start the microphone recording.")
     }
   }
 
@@ -116,6 +162,9 @@ final class AudioPlugin: Plugin, AVAudioRecorderDelegate {
   @objc func resume(_ invoke: Invoke) {
     DispatchQueue.main.async {
       guard self.sessionOpen(invoke) else { return }
+      guard UIApplication.shared.applicationState == .active else {
+        invoke.reject("Apell must be in the foreground to record."); return
+      }
       guard self.recording_state == "paused", let recorder = self.recorder else {
         invoke.reject("No recording is paused."); return
       }
@@ -136,7 +185,7 @@ final class AudioPlugin: Plugin, AVAudioRecorderDelegate {
       recorder.stop()
       self.recorder = nil
       self.recording_state = "idle"
-      try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+      self.deactivateAudioSession()
       invoke.resolve(["duration_ms": self.last_elapsed_ms])
     }
   }
@@ -221,12 +270,25 @@ final class AudioPlugin: Plugin, AVAudioRecorderDelegate {
       guard self.recorder == nil else { invoke.reject("Finish recording before playback."); return }
       do {
         let url = URL(fileURLWithPath: args.path)
+        let player: AVAudioPlayer
+        if let loaded = self.player, loaded.url == url {
+          player = loaded
+        } else {
+          player = try AVAudioPlayer(contentsOf: url)
+          player.delegate = self
+        }
         let session = AVAudioSession.sharedInstance()
         try session.setCategory(.playback)
         try session.setActive(true)
-        if self.player?.url != url { self.player = try AVAudioPlayer(contentsOf: url) }
-        if let player = self.player, player.currentTime >= player.duration { player.currentTime = 0 }
-        guard self.player?.play() == true else { throw AudioFailure.operation }
+        if self.player !== player {
+          self.player?.stop()
+          self.player = player
+        }
+        if player.currentTime >= player.duration { player.currentTime = 0 }
+        guard player.play() else {
+          self.releaseIdlePlaybackSession()
+          throw AudioFailure.operation
+        }
         invoke.resolve()
       } catch { invoke.reject("This audio file could not be played.") }
     }
@@ -235,7 +297,10 @@ final class AudioPlugin: Plugin, AVAudioRecorderDelegate {
   @objc func playbackPause(_ invoke: Invoke) {
     DispatchQueue.main.async {
       guard self.sessionOpen(invoke) else { return }
-      self.player?.pause()
+      if let player = self.player {
+        player.pause()
+        self.releaseIdlePlaybackSession()
+      }
       invoke.resolve()
     }
   }
@@ -270,8 +335,7 @@ final class AudioPlugin: Plugin, AVAudioRecorderDelegate {
     DispatchQueue.main.async {
       self.closed_sessions.insert(args.session_id)
       self.generation += 1
-      self.pending_start?.reject("The audio session closed.")
-      self.pending_start = nil
+      self.cancelPendingStart("The audio session closed.")
       self.pending_share?.resolve()
       self.pending_share = nil
       self.share_sheet?.dismiss(animated: true)
@@ -286,7 +350,7 @@ final class AudioPlugin: Plugin, AVAudioRecorderDelegate {
       self.player = nil
       self.picker?.cancel()
       self.picker = nil
-      try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+      self.deactivateAudioSession()
       invoke.resolve()
     }
   }
@@ -306,6 +370,31 @@ final class AudioPlugin: Plugin, AVAudioRecorderDelegate {
   func audioRecorderEncodeErrorDidOccur(_ recorder: AVAudioRecorder, error: Error?) {
     recording_state = "paused"
     recorder.pause()
+  }
+
+  func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+    DispatchQueue.main.async {
+      guard self.player === player else { return }
+      self.releaseIdlePlaybackSession()
+    }
+  }
+
+  func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) {
+    DispatchQueue.main.async {
+      guard self.player === player else { return }
+      player.stop()
+      self.player = nil
+      self.releaseIdlePlaybackSession()
+    }
+  }
+
+  private func releaseIdlePlaybackSession() {
+    guard recorder == nil, player?.isPlaying != true else { return }
+    deactivateAudioSession()
+  }
+
+  private func deactivateAudioSession() {
+    try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
   }
 }
 
