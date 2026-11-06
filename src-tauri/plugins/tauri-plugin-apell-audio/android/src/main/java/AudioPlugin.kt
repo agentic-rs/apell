@@ -2,6 +2,7 @@ package dev.apell.audio
 
 import android.Manifest
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.ClipData
 import android.content.Intent
 import android.media.MediaPlayer
@@ -10,6 +11,7 @@ import android.os.SystemClock
 import androidx.activity.result.ActivityResult
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.FileProvider
+import androidx.lifecycle.Lifecycle
 import app.tauri.PermissionState
 import app.tauri.annotation.ActivityCallback
 import app.tauri.annotation.Command
@@ -24,6 +26,10 @@ import java.io.File
 import java.util.concurrent.Executors
 
 @InvokeArg class PathArgs { lateinit var path: String }
+@InvokeArg class StartArgs {
+  lateinit var path: String
+  lateinit var applet_name: String
+}
 @InvokeArg class ImportArgs { lateinit var directory: String }
 @InvokeArg class ShareArgs {
   lateinit var path: String
@@ -34,6 +40,8 @@ import java.util.concurrent.Executors
 
 @TauriPlugin(permissions = [Permission(strings = [Manifest.permission.RECORD_AUDIO], alias = "microphone")])
 class AudioPlugin(private val activity: Activity): Plugin(activity) {
+  private data class PendingStart(val invoke: Invoke, val path: String)
+
   private val closed_sessions = mutableSetOf<String>()
   private var recorder: MediaRecorder? = null
   private var recording_file: File? = null
@@ -43,7 +51,8 @@ class AudioPlugin(private val activity: Activity): Plugin(activity) {
   private var recording_state = "idle"
   private var accumulated_ms = 0L
   private var started_at = 0L
-  private var pending_start: Invoke? = null
+  private var pending_start: PendingStart? = null
+  private var start_confirmation: AlertDialog? = null
   private var pending_share: Invoke? = null
   private var pending_import: Invoke? = null
   private var import_directory: String? = null
@@ -52,52 +61,92 @@ class AudioPlugin(private val activity: Activity): Plugin(activity) {
 
   private fun elapsed(): Long = accumulated_ms + if (recording_state == "recording") SystemClock.elapsedRealtime() - started_at else 0
 
+  private fun isVisible(): Boolean =
+    (activity as? AppCompatActivity)?.lifecycle?.currentState?.isAtLeast(Lifecycle.State.STARTED) == true
+
   @Command fun start(invoke: Invoke) {
+    val args = invoke.parseArgs(StartArgs::class.java)
     activity.runOnUiThread {
       if (!sessionOpen(invoke)) return@runOnUiThread
+      if (!isVisible()) { invoke.reject("Open Apell to start recording."); return@runOnUiThread }
       if (recorder != null || pending_start != null) { invoke.reject("A recording is already active."); return@runOnUiThread }
-      pending_start = invoke
+      pending_start = PendingStart(invoke, args.path)
+      try {
+        val dialog = AlertDialog.Builder(activity)
+          .setTitle("Use microphone?")
+          .setMessage("${args.applet_name} wants to start a recording.")
+          .setNegativeButton("Cancel") { _, _ -> cancelStart(invoke, "Microphone recording was cancelled.") }
+          .setPositiveButton("Start recording") { _, _ -> requestMicrophone(invoke) }
+          .setOnCancelListener { cancelStart(invoke, "Microphone recording was cancelled.") }
+          .create()
+        start_confirmation = dialog
+        dialog.show()
+      } catch (_: Exception) {
+        cancelStart(invoke, "The microphone confirmation is unavailable.")
+      }
+    }
+  }
+
+  private fun cancelStart(invoke: Invoke, reason: String) {
+    if (pending_start?.invoke !== invoke) return
+    pending_start = null
+    val dialog = start_confirmation
+    start_confirmation = null
+    runCatching { dialog?.dismiss() }
+    invoke.reject(reason)
+  }
+
+  private fun requestMicrophone(invoke: Invoke) {
+    if (pending_start?.invoke !== invoke) return
+    start_confirmation = null
+    if (!isVisible()) { cancelStart(invoke, "Open Apell to start recording."); return }
+    try {
       if (getPermissionState("microphone") != PermissionState.GRANTED) {
         requestPermissionForAlias("microphone", invoke, "microphoneResult")
       } else startGranted(invoke)
+    } catch (_: Exception) {
+      cancelStart(invoke, "Microphone access could not be requested.")
     }
   }
 
   @PermissionCallback fun microphoneResult(invoke: Invoke) {
-    if (pending_start !== invoke) return
-    if (getPermissionState("microphone") != PermissionState.GRANTED) {
-      pending_start = null
-      invoke.reject("Microphone access is denied. Enable it for Apell in Settings.")
-    } else activity.runOnUiThread { startGranted(invoke) }
+    activity.runOnUiThread {
+      if (pending_start?.invoke !== invoke) return@runOnUiThread
+      if (getPermissionState("microphone") != PermissionState.GRANTED) {
+        cancelStart(invoke, "Microphone access is denied. Enable it for Apell in Settings.")
+      } else startGranted(invoke)
+    }
   }
 
   @Suppress("DEPRECATION")
   private fun startGranted(invoke: Invoke) {
-    if (pending_start !== invoke) return
+    val request = pending_start?.takeIf { it.invoke === invoke } ?: return
+    if (!isVisible()) { cancelStart(invoke, "Open Apell to start recording."); return }
     pending_start = null
-    val args = invoke.parseArgs(PathArgs::class.java)
     if (recorder != null) { invoke.reject("A recording is already active."); return }
-    val next = MediaRecorder()
+    var next: MediaRecorder? = null
     try {
       releasePlayer()
-      next.setAudioSource(MediaRecorder.AudioSource.MIC)
-      next.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-      next.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-      next.setAudioSamplingRate(44100)
-      next.setAudioChannels(1)
-      next.setAudioEncodingBitRate(64000)
-      next.setOutputFile(args.path)
-      next.prepare()
-      next.start()
-      recorder = next
-      recording_file = File(args.path)
+      val created = MediaRecorder()
+      next = created
+      created.setAudioSource(MediaRecorder.AudioSource.MIC)
+      created.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+      created.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+      created.setAudioSamplingRate(44100)
+      created.setAudioChannels(1)
+      created.setAudioEncodingBitRate(64000)
+      created.setOutputFile(request.path)
+      created.prepare()
+      created.start()
+      recorder = created
+      recording_file = File(request.path)
       accumulated_ms = 0
       started_at = SystemClock.elapsedRealtime()
       recording_state = "recording"
       invoke.resolve()
     } catch (_: Exception) {
-      runCatching { next.release() }
-      File(args.path).delete()
+      runCatching { next?.release() }
+      File(request.path).delete()
       invoke.reject("Could not start the microphone recording.")
     }
   }
@@ -121,6 +170,7 @@ class AudioPlugin(private val activity: Activity): Plugin(activity) {
   @Command fun resume(invoke: Invoke) {
     activity.runOnUiThread {
       if (!sessionOpen(invoke)) return@runOnUiThread
+      if (!isVisible()) { invoke.reject("Open Apell to resume recording."); return@runOnUiThread }
       if (recording_state != "paused") { invoke.reject("No recording is paused."); return@runOnUiThread }
       try {
         recorder?.resume()
@@ -374,8 +424,7 @@ class AudioPlugin(private val activity: Activity): Plugin(activity) {
 
   private fun releaseAll() {
     generation += 1
-    pending_start?.reject("The audio session closed.")
-    pending_start = null
+    pending_start?.let { cancelStart(it.invoke, "The audio session closed.") }
     pending_share?.resolve()
     pending_share = null
     finishRecording()
@@ -388,6 +437,7 @@ class AudioPlugin(private val activity: Activity): Plugin(activity) {
   }
 
   override fun onStop(activity: AppCompatActivity) {
+    pending_start?.let { cancelStart(it.invoke, "Open Apell to start recording.") }
     // Background capture is intentionally unsupported without a foreground
     // service. Keep the partial recording and make the paused state explicit.
     if (recording_state == "recording") {

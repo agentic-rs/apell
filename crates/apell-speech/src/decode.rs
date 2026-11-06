@@ -2,13 +2,11 @@ use crate::check_cancelled;
 use rubato::{FftFixedInOut, Resampler};
 use std::{fs::File, io::ErrorKind, path::Path, sync::atomic::AtomicBool};
 use symphonia::core::{
-  audio::SampleBuffer,
-  codecs::{DecoderOptions, CODEC_TYPE_NULL},
+  codecs::audio::AudioDecoderOptions,
   errors::Error,
-  formats::FormatOptions,
+  formats::{probe::Hint, well_known::FORMAT_ID_WAVE, FormatOptions, TrackType},
   io::MediaSourceStream,
   meta::MetadataOptions,
-  probe::Hint,
 };
 
 pub(crate) const SAMPLE_RATE: usize = 16_000;
@@ -30,64 +28,71 @@ pub(crate) fn decode(path: &Path, cancel: &AtomicBool) -> Result<Vec<f32>, Strin
     hint.with_extension(extension);
   }
   let mut format = symphonia::default::get_probe()
-    .format(
+    .probe(
       &hint,
       source,
-      &FormatOptions {
-        enable_gapless: true,
-        ..Default::default()
-      },
-      &MetadataOptions::default(),
+      FormatOptions::default(),
+      MetadataOptions::default(),
     )
-    .map_err(|_| "Unsupported audio. Use WAV, MP3, M4A (AAC/ALAC), FLAC, or Ogg Vorbis.")?
-    .format;
+    .map_err(|_| "Unsupported audio. Use WAV, MP3, M4A (AAC/ALAC), FLAC, or Ogg Vorbis.")?;
   let track = format
-    .default_track()
-    .filter(|track| track.codec_params.codec != CODEC_TYPE_NULL)
-    .or_else(|| {
-      format
-        .tracks()
-        .iter()
-        .find(|track| track.codec_params.codec != CODEC_TYPE_NULL)
-    })
+    .default_track(TrackType::Audio)
     .ok_or("The file does not contain a supported audio track.")?;
+  let codec = track
+    .codec_params
+    .as_ref()
+    .and_then(|params| params.audio())
+    .ok_or("The file does not contain a supported audio track.")?;
+  let is_wave = format.format_info().format == FORMAT_ID_WAVE;
+  // The WAV demuxer expresses its declared data length in sample frames.
+  let wave_frames = if is_wave {
+    track.duration.map(|duration| duration.get())
+  } else {
+    None
+  };
+  let streaming_wave = is_wave && wave_frames.is_none();
   let track_id = track.id;
   let mut decoder = symphonia::default::get_codecs()
-    .make(&track.codec_params, &DecoderOptions::default())
+    .make_audio_decoder(codec, &AudioDecoderOptions::default())
     .map_err(|_| "This audio codec is not supported. Use WAV, MP3, AAC, ALAC, FLAC, or Vorbis.")?;
   let mut resampler: Option<MonoResampler> = None;
+  let mut samples = Vec::<f32>::new();
   loop {
     check_cancelled(cancel)?;
     let packet = match format.next_packet() {
-      Ok(packet) => packet,
-      Err(Error::IoError(error)) if error.kind() == ErrorKind::UnexpectedEof => break,
+      Ok(Some(packet)) => packet,
+      Ok(None) => break,
+      // A WAV written to a pipe can explicitly omit its length. The WAV
+      // reader signals EOF with an I/O error in that case.
+      Err(Error::IoError(error)) if streaming_wave && error.kind() == ErrorKind::UnexpectedEof => {
+        break;
+      }
       Err(_) => return Err("The audio file is damaged or changes format midway.".into()),
     };
-    if packet.track_id() != track_id {
+    if packet.track_id != track_id {
       continue;
     }
     // Do not silently omit damaged frames and return a misleading partial transcript.
     let decoded = decoder
       .decode(&packet)
       .map_err(|_| "The audio contains damaged or unsupported frames.")?;
-    let spec = *decoded.spec();
-    let channels = spec.channels.count();
-    if channels == 0 || channels > 8 || !(8_000..=192_000).contains(&spec.rate) {
+    let channels = decoded.spec().channels().count();
+    let rate = decoded.spec().rate() as usize;
+    if channels == 0 || channels > 8 || !(8_000..=192_000).contains(&rate) {
       return Err("Audio must have 1–8 channels and a sample rate between 8 and 192 kHz.".into());
     }
-    if decoded.frames() > spec.rate as usize * 10 {
+    if decoded.frames() > rate * 10 {
       return Err("The audio decoder returned an oversized frame.".into());
     }
     if resampler.is_none() {
-      resampler = Some(MonoResampler::new(spec.rate as usize)?);
+      resampler = Some(MonoResampler::new(rate)?);
     }
     let resampler = resampler.as_mut().unwrap();
-    if resampler.input_rate != spec.rate as usize {
+    if resampler.input_rate != rate {
       return Err("Audio that changes sample rate midway is not supported.".into());
     }
-    let mut samples = SampleBuffer::<f32>::new(decoded.capacity() as u64, spec);
-    samples.copy_interleaved_ref(decoded);
-    for frame in samples.samples().chunks_exact(channels) {
+    decoded.copy_to_vec_interleaved(&mut samples);
+    for frame in samples.chunks_exact(channels) {
       let mono = frame.iter().copied().sum::<f32>() / channels as f32;
       if !mono.is_finite() {
         return Err("The audio contains invalid samples.".into());
@@ -96,9 +101,11 @@ pub(crate) fn decode(path: &Path, cancel: &AtomicBool) -> Result<Vec<f32>, Strin
     }
   }
   check_cancelled(cancel)?;
-  let samples = resampler
-    .ok_or("The audio file contains no samples.")?
-    .finish()?;
+  let resampler = resampler.ok_or("The audio file contains no samples.")?;
+  if wave_frames.is_some_and(|frames| (resampler.input_count as u64) < frames) {
+    return Err("The WAV file ends before its declared audio length.".into());
+  }
+  let samples = resampler.finish()?;
   if samples.len() < SAMPLE_RATE / 10 {
     return Err("Record at least a tenth of a second before transcribing.".into());
   }
@@ -239,5 +246,55 @@ mod tests {
     assert!(decode(file.path(), &AtomicBool::new(true))
       .unwrap_err()
       .contains("cancelled"));
+  }
+
+  #[test]
+  fn rejects_truncated_wave_without_returning_partial_audio() {
+    for bytes_missing in [1, 2, 16_000] {
+      let file = wav(16_000, 1, 1.0, 440.0);
+      let length = file.as_file().metadata().unwrap().len();
+      file.as_file().set_len(length - bytes_missing).unwrap();
+      assert!(decode(file.path(), &AtomicBool::new(false)).is_err());
+    }
+  }
+
+  #[test]
+  fn accepts_wave_explicitly_written_without_a_known_length() {
+    let file = wav(16_000, 1, 1.0, 440.0);
+    let mut bytes = std::fs::read(file.path()).unwrap();
+    assert_eq!(&bytes[36..40], b"data");
+    bytes[4..8].copy_from_slice(&u32::MAX.to_le_bytes());
+    bytes[40..44].copy_from_slice(&u32::MAX.to_le_bytes());
+    std::fs::write(file.path(), bytes).unwrap();
+    assert_eq!(
+      decode(file.path(), &AtomicBool::new(false)).unwrap().len(),
+      SAMPLE_RATE
+    );
+  }
+
+  #[test]
+  fn rejects_mp4_handler_whose_size_exceeds_the_file() {
+    fn atom(kind: &[u8; 4], data: &[u8]) -> Vec<u8> {
+      [(8 + data.len() as u32).to_be_bytes().as_slice(), kind, data].concat()
+    }
+
+    // A short file whose track handler advertises a huge extended atom size.
+    let handler = [
+      1u32.to_be_bytes().as_slice(),
+      b"hdlr",
+      &(1u64 << 60).to_be_bytes(),
+      &[0; 8],
+      b"soun",
+      &[0; 12],
+    ]
+    .concat();
+    let bytes = [
+      atom(b"ftyp", b"M4A \0\0\0\0M4A "),
+      atom(b"moov", &atom(b"trak", &atom(b"mdia", &handler))),
+    ]
+    .concat();
+    let file = tempfile::Builder::new().suffix(".m4a").tempfile().unwrap();
+    std::fs::write(file.path(), bytes).unwrap();
+    assert!(decode(file.path(), &AtomicBool::new(false)).is_err());
   }
 }
