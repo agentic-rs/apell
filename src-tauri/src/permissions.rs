@@ -1,6 +1,6 @@
 use crate::host::Host;
 use apell_core::{bundles::InstalledApplet, config::ConfigStore};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 
@@ -12,6 +12,13 @@ enum MicrophoneAccess {
   Ask,
   Remembered,
   PreviousPackage,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MicrophoneMode {
+  Ask,
+  Remembered,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -52,6 +59,28 @@ impl MicrophoneGrants {
 
   pub fn remembered(&self, applet_id: &str, source: &GrantSource) -> Result<bool, String> {
     Ok(self.access(applet_id, Some(source))? == MicrophoneAccess::Remembered)
+  }
+
+  pub fn mode(&self, applet_id: &str, source: &GrantSource) -> Result<MicrophoneMode, String> {
+    Ok(if self.remembered(applet_id, source)? {
+      MicrophoneMode::Remembered
+    } else {
+      MicrophoneMode::Ask
+    })
+  }
+
+  pub fn set_mode(
+    &self,
+    applet_id: &str,
+    source: &GrantSource,
+    mode: MicrophoneMode,
+  ) -> Result<MicrophoneMode, String> {
+    match mode {
+      MicrophoneMode::Remembered => self.remember(applet_id, source)?,
+      MicrophoneMode::Ask if self.remembered(applet_id, source)? => self.forget(applet_id)?,
+      MicrophoneMode::Ask => {}
+    }
+    Ok(mode)
   }
 
   fn access(

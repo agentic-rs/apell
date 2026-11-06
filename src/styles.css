@@ -657,12 +657,33 @@ svg {
   margin: 24px 0 10px;
   font-size: 14px;
 }
-.applet-about ul {
-  display: grid;
-  gap: 10px;
-  padding-left: 20px;
+.applet-access {
   margin: 0;
   font-size: 14px;
+}
+.applet-access > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, auto);
+  align-items: center;
+  gap: 8px 12px;
+  min-height: 42px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+}
+.applet-access dd {
+  margin: 0;
+  color: var(--muted);
+  text-align: right;
+}
+.applet-access select {
+  width: auto;
+  max-width: 100%;
+  min-height: 44px;
+  padding: 8px;
+}
+.applet-access .applet-access-error {
+  grid-column: 1 / -1;
+  text-align: left;
 }
 .applet-state {
   flex: 1;
