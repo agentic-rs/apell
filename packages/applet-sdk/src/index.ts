@@ -262,7 +262,13 @@ async function callHost<T>(
       // A backend command can outlive its UI, and a picker waits for the user.
       // Both settle with the host's response while this view remains attached.
       const request_timeout =
-        method === 'llm.choose_model' || method === 'backend.invoke'
+        method === 'llm.choose_model' ||
+        method === 'backend.invoke' ||
+        method === 'speech.transcribe' ||
+        method === 'speech.download_model' ||
+        method === 'audio.start' ||
+        method === 'audio.import' ||
+        method === 'audio.share'
           ? undefined
           : setTimeout(
               () => {
