@@ -148,14 +148,21 @@ pub async fn dispatch(
         return Err("Stop the current recording first.".into());
       }
       let importing = method == "audio.import";
-      let relative = format!("recordings/{}.m4a", Uuid::new_v4());
+      let id = Uuid::new_v4().simple().to_string();
+      let directory = format!("recordings/{}", &id[..2]);
+      let relative = format!("{directory}/{id}.m4a");
+      let target_directory = directory.clone();
       let target = relative.clone();
       let applet = applet_id.clone();
       let path = tauri::async_runtime::spawn_blocking(move || {
-        files.dispatch(&applet, "fs.mkdir", json!({"path":"recordings"}))?;
+        files.dispatch(&applet, "fs.mkdir", json!({"path":target_directory}))?;
         files.native_path(
           &applet,
-          if importing { "recordings" } else { &target },
+          if importing {
+            &target_directory
+          } else {
+            &target
+          },
           !importing,
         )
       })
@@ -174,7 +181,7 @@ pub async fn dispatch(
           .filter(|value| value.components().count() == 1)
           .and_then(|value| value.to_str())
           .ok_or("The imported audio was not saved in private storage.")?;
-        let relative = format!("recordings/{name}");
+        let relative = format!("{directory}/{name}");
         let files = host.files.clone();
         let relative_check = relative.clone();
         let checked = tauri::async_runtime::spawn_blocking(move || {
@@ -186,8 +193,8 @@ pub async fn dispatch(
           .await
           .map_err(|_| "Could not inspect imported audio.")?
           .len();
-        if size_bytes == 0 || size_bytes > 128 * 1024 * 1024 {
-          return Err("Imported audio must contain between 1 byte and 128 MiB.".into());
+        if size_bytes == 0 || size_bytes > apell_speech::MAX_AUDIO_BYTES {
+          return Err("Imported audio must contain between 1 byte and 2 GiB.".into());
         }
         Ok(json!({"path":relative,"file_name":imported["file_name"],
           "mime_type":imported["mime_type"],"duration_ms":imported["duration_ms"],"size_bytes":size_bytes}))

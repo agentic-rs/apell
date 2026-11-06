@@ -15,7 +15,7 @@ struct ImportedAudio: Encodable {
 /// large or cloud-backed documents do not block the app's interface.
 final class AudioPicker: NSObject, UIDocumentPickerDelegate {
   let controller = UIDocumentPickerViewController(forOpeningContentTypes: [.audio], asCopy: true)
-  private let copy_progress = Progress(totalUnitCount: 128 * 1024 * 1024)
+  private let copy_progress = Progress(totalUnitCount: 2 * 1024 * 1024 * 1024)
   private let directory: String
   private var completion: ((Result<ImportedAudio?, Error>) -> Void)?
 
@@ -45,11 +45,13 @@ final class AudioPicker: NSObject, UIDocumentPickerDelegate {
       let destination = URL(fileURLWithPath: self.directory).appendingPathComponent(UUID().uuidString + "." + safe_ext)
       do {
         let size = try Self.copyBounded(source, destination, progress: self.copy_progress)
-        let audio = try AVAudioPlayer(contentsOf: destination)
-        guard audio.duration.isFinite, audio.duration > 0 else { throw AudioFailure.operation }
+        let audio = AVURLAsset(url: destination)
+        let duration = CMTimeGetSeconds(audio.duration)
+        guard !audio.tracks(withMediaType: .audio).isEmpty, duration.isFinite, duration > 0,
+          duration <= 3 * 60 * 60 else { throw AudioFailure.operation }
         let asset = ImportedAudio(path: destination.path, file_name: source.lastPathComponent,
           mime_type: UTType(filenameExtension: ext)?.preferredMIMEType ?? "application/octet-stream",
-          duration_ms: audio.duration * 1000, size_bytes: size)
+          duration_ms: duration * 1000, size_bytes: size)
         DispatchQueue.main.async {
           // A reset can dismiss the picker while its cloud copy is in flight.
           if self.completion == nil { try? FileManager.default.removeItem(at: destination) }
@@ -81,7 +83,7 @@ final class AudioPicker: NSObject, UIDocumentPickerDelegate {
       guard !progress.isCancelled else { throw AudioFailure.operation }
       let count = input.read(&buffer, maxLength: buffer.count)
       if count == 0 { break }
-      guard count > 0, total + count <= 128 * 1024 * 1024 else { throw AudioFailure.operation }
+      guard count > 0, total + count <= 2 * 1024 * 1024 * 1024 else { throw AudioFailure.operation }
       try buffer.withUnsafeBufferPointer { bytes in
         var written = 0
         while written < count {
