@@ -91,6 +91,32 @@ pub async fn shell_command(
       Ok(Value::Null)
     }
     "permissions.list" => crate::permissions::list(&host).await,
+    "permissions.microphone" | "permissions.set_microphone" => {
+      let session_id = string(&params, "session_id")?.to_owned();
+      let view_id = string(&params, "view_id")?.to_owned();
+      let update = if method == "permissions.set_microphone" {
+        Some(
+          serde_json::from_value(params["mode"].clone())
+            .map_err(|_| "Choose a microphone permission mode.")?,
+        )
+      } else {
+        None
+      };
+      blocking(move || {
+        let host = app.state::<Host>();
+        if !tauri_plugin_apell_audio::available() {
+          if update.is_some() {
+            return Err("Native microphone access is available on iOS and Android.".into());
+          }
+          host.require_view(&session_id, &view_id)?;
+          host.session(&view_id, "audio.capabilities")?;
+          return Ok(json!("unavailable"));
+        }
+        let mode = host.view_microphone(&session_id, &view_id, update)?;
+        Ok(json!(mode))
+      })
+      .await
+    }
     "permissions.forget_microphone" => {
       let applet_id = string(&params, "applet_id")?.to_owned();
       blocking(move || {

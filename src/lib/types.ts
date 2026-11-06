@@ -31,6 +31,7 @@ export interface AppletPermission {
   name: string;
   microphone_access: 'ask' | 'remembered' | 'previous_package';
 }
+export type MicrophoneMode = 'ask' | 'remembered';
 export interface AppletSession {
   session_id: string;
   manifest: Manifest;

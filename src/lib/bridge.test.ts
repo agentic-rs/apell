@@ -69,6 +69,8 @@ describe('applet bridge boundary', () => {
       'applets.install',
       'permissions.list',
       'permissions.forget_microphone',
+      'permissions.microphone',
+      'permissions.set_microphone',
       'shell_command',
       '__proto__',
       'audio.reset',

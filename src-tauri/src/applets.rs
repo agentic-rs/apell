@@ -1,5 +1,5 @@
 use crate::host::{Host, Session};
-use crate::permissions::GrantSource;
+use crate::permissions::{GrantSource, MicrophoneMode};
 use apell_core::bundles::{Bundle, Manifest};
 use apell_runtime::{HostError, HostEvents, HostServices, RuntimeHandle, ServiceFuture};
 use serde::Serialize;
@@ -219,6 +219,46 @@ impl Host {
       .and_then(|(run, _)| running.runs.get(run))
       .ok_or("Applet view is unavailable.")?;
     Ok(run.grant_source.clone())
+  }
+
+  pub fn view_microphone(
+    &self,
+    session_id: &str,
+    view_id: &str,
+    update: Option<MicrophoneMode>,
+  ) -> Result<MicrophoneMode, String> {
+    // Keep the verified attachment current through the grant read or write.
+    let _gate = self
+      .view_gate
+      .lock()
+      .map_err(|_| "Applet views are unavailable.")?;
+    let (applet_id, source) = {
+      let running = self
+        .running
+        .lock()
+        .map_err(|_| "Applet state is unavailable.")?;
+      let run = running
+        .view
+        .as_ref()
+        .filter(|(run, view)| run == session_id && view == view_id)
+        .and_then(|(run, _)| running.runs.get(run))
+        .ok_or("This applet view was detached. Reopen the applet.")?;
+      let manifest = &run.bundle.manifest;
+      if !manifest
+        .permissions
+        .iter()
+        .any(|permission| permission == "audio")
+      {
+        return Err("This applet did not declare audio access.".into());
+      }
+      (manifest.applet_id.clone(), run.grant_source.clone())
+    };
+    match update {
+      Some(mode) => self.audio.edit_microphone_grant(view_id, || {
+        self.microphone.set_mode(&applet_id, &source, mode)
+      }),
+      None => self.microphone.mode(&applet_id, &source),
+    }
   }
 
   pub fn forget_microphone(&self, applet_id: &str) -> Result<(), String> {
@@ -451,10 +491,14 @@ mod tests {
   const RUN: &str = "native-run";
 
   fn install(host: &Host, applet_id: &str, version: &str) {
+    install_with_permissions(host, applet_id, version, &["sqlite", "llm"]);
+  }
+
+  fn install_with_permissions(host: &Host, applet_id: &str, version: &str, permissions: &[&str]) {
     let source = tempfile::tempdir().unwrap();
     let manifest = json!({
       "schema_version": 1, "api_version": API_VERSION, "applet_id": applet_id,
-      "name": "View fixture", "version": version, "permissions": ["sqlite", "llm"]
+      "name": "View fixture", "version": version, "permissions": permissions
     });
     fs::write(source.path().join("manifest.json"), manifest.to_string()).unwrap();
     fs::write(
@@ -515,6 +559,82 @@ mod tests {
       .is_err());
     assert!(!host.microphone.remembered(APPLET, &source).unwrap());
     assert!(host.running.lock().unwrap().runs.contains_key(RUN));
+  }
+
+  #[test]
+  fn about_microphone_uses_the_attached_package_and_rejects_stale_views() {
+    let dir = tempfile::tempdir().unwrap();
+    let host = Host::new(dir.path().into()).unwrap();
+    install_with_permissions(&host, APPLET, "1.0.0", &["audio"]);
+    seed_run(&host, RUN, APPLET);
+    let first = host.attach_run(RUN).unwrap();
+    let first_source = host.view_grant_source(&first.view_id).unwrap();
+    assert_eq!(
+      host.view_microphone(RUN, &first.view_id, None).unwrap(),
+      MicrophoneMode::Ask
+    );
+    assert!(host
+      .view_microphone("different", &first.view_id, None)
+      .is_err());
+    host
+      .view_microphone(RUN, &first.view_id, Some(MicrophoneMode::Remembered))
+      .unwrap();
+
+    let reloaded = host.attach_view(RUN, &first.view_id).unwrap();
+    assert!(host
+      .view_microphone(RUN, &first.view_id, Some(MicrophoneMode::Ask))
+      .is_err());
+    assert_eq!(
+      host.view_microphone(RUN, &reloaded.view_id, None).unwrap(),
+      MicrophoneMode::Remembered
+    );
+
+    install_with_permissions(&host, APPLET, "2.0.0", &["audio"]);
+    assert_eq!(
+      host.view_microphone(RUN, &reloaded.view_id, None).unwrap(),
+      MicrophoneMode::Remembered
+    );
+    host.retire_run(RUN).unwrap();
+    seed_run(&host, "reopened", APPLET);
+    let replaced = host.attach_run("reopened").unwrap();
+    assert_eq!(
+      host
+        .view_microphone("reopened", &replaced.view_id, Some(MicrophoneMode::Ask))
+        .unwrap(),
+      MicrophoneMode::Ask
+    );
+    assert!(host.microphone.remembered(APPLET, &first_source).unwrap());
+    host
+      .view_microphone(
+        "reopened",
+        &replaced.view_id,
+        Some(MicrophoneMode::Remembered),
+      )
+      .unwrap();
+    assert!(!host.microphone.remembered(APPLET, &first_source).unwrap());
+    host
+      .view_microphone("reopened", &replaced.view_id, Some(MicrophoneMode::Ask))
+      .unwrap();
+    assert_eq!(
+      host
+        .view_microphone("reopened", &replaced.view_id, None)
+        .unwrap(),
+      MicrophoneMode::Ask
+    );
+  }
+
+  #[test]
+  fn about_microphone_requires_declared_audio() {
+    let (_directory, host) = fixture();
+    let attachment = host.attach_run(RUN).unwrap();
+    for update in [None, Some(MicrophoneMode::Remembered)] {
+      assert_eq!(
+        host
+          .view_microphone(RUN, &attachment.view_id, update)
+          .unwrap_err(),
+        "This applet did not declare audio access."
+      );
+    }
   }
 
   fn database(host: &Host, session: &str) -> Value {

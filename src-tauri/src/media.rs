@@ -11,6 +11,29 @@ pub struct AudioService {
   state: Mutex<AudioSession>,
 }
 
+impl AudioService {
+  pub fn edit_microphone_grant<T>(
+    &self,
+    view_id: &str,
+    edit: impl FnOnce() -> Result<T, String>,
+  ) -> Result<T, String> {
+    // Return busy immediately if a native command is waiting on a picker or prompt.
+    let state = self
+      .state
+      .try_lock()
+      .map_err(|_| "Wait for the audio operation to finish before changing microphone access.")?;
+    if state.recording_path.is_some() {
+      return Err("Stop recording before changing microphone access.".into());
+    }
+    if state.owner.as_deref().is_some_and(|owner| owner != view_id) {
+      return Err(
+        "Wait for audio from the previous view to finish before changing microphone access.".into(),
+      );
+    }
+    edit()
+  }
+}
+
 #[derive(Default)]
 struct AudioSession {
   owner: Option<String>,
@@ -321,6 +344,43 @@ fn valid_share_name(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn microphone_grant_edits_require_idle_audio_and_hold_the_capture_lock() {
+    let service = AudioService::default();
+    let mut state = service.state.try_lock().unwrap();
+    state.owner = Some("view".into());
+    assert!(service
+      .edit_microphone_grant("view", || -> Result<(), String> {
+        panic!("the native operation is still in progress");
+      })
+      .unwrap_err()
+      .contains("audio operation"));
+
+    state.recording_path = Some("recordings/active.m4a".into());
+    drop(state);
+    assert!(service
+      .edit_microphone_grant("view", || -> Result<(), String> {
+        panic!("the recording is still active");
+      })
+      .unwrap_err()
+      .contains("Stop recording"));
+
+    service.state.try_lock().unwrap().recording_path = None;
+    assert!(service
+      .edit_microphone_grant("other-view", || -> Result<(), String> {
+        panic!("the previous owner has not yet been released");
+      })
+      .unwrap_err()
+      .contains("previous view"));
+    service
+      .edit_microphone_grant("view", || {
+        assert!(service.state.try_lock().is_err());
+        Ok(())
+      })
+      .unwrap();
+  }
+
   #[test]
   fn failed_stop_releases_recording_only_after_native_confirms_idle() {
     let mut state = AudioSession {

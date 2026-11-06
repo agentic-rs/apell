@@ -161,7 +161,7 @@ export function AppletView({
         <span>{session.manifest.name}</span>
         <AppletControls
           key={choice ? 'choosing-model' : 'applet-controls'}
-          manifest={session.manifest}
+          session={session}
           disabled={action !== null || !!choice}
           stopped={stopped}
           onClose={() => void run('close')}

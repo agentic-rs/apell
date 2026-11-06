@@ -16,6 +16,7 @@ import type {
   LlmModels,
   LlmSettings,
   LoginChallenge,
+  MicrophoneMode,
   NativeConnectionDraft,
   SaveConnection,
 } from './types';
@@ -61,6 +62,10 @@ export const currentApplet = () => shellCall<AppletSession | null>('applets.curr
 export const listAppletPermissions = () => shellCall<AppletPermission[]>('permissions.list');
 export const forgetMicrophone = (applet_id: string) =>
   shellCall<void>('permissions.forget_microphone', { applet_id });
+export const getMicrophoneMode = (session_id: string, view_id: string) =>
+  shellCall<MicrophoneMode | 'unavailable'>('permissions.microphone', { session_id, view_id });
+export const setMicrophoneMode = (session_id: string, view_id: string, mode: MicrophoneMode) =>
+  shellCall<MicrophoneMode>('permissions.set_microphone', { session_id, view_id, mode });
 export const getSettings = () => shellCall<LlmSettings>('llm.settings');
 export const createConnectionDraft = (params: CreateConnectionDraft) =>
   shellCall<NativeConnectionDraft>('llm.create_draft', params);
