@@ -261,6 +261,18 @@ describe('applet bridge', () => {
     const timer = vi.spyOn(globalThis, 'setTimeout');
     const operations = [
       {
+        call: () => sdk.photos.pick(),
+        method: 'photos.pick',
+        params: {},
+        result: null,
+      },
+      {
+        call: () => sdk.photos.pick({ output_format: 'jpeg' }),
+        method: 'photos.pick',
+        params: { output_format: 'jpeg' },
+        result: { path: 'images/fixture.jpg', mime_type: 'image/jpeg', size_bytes: 128 },
+      },
+      {
         call: () => sdk.fs.write('cache/data.bin', new Uint8Array([0, 128, 255])),
         method: 'fs.write',
         params: { path: 'cache/data.bin', bytes: [0, 128, 255] },

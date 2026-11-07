@@ -42,6 +42,7 @@ import java.util.concurrent.TimeUnit
   var remembered: Boolean = false
   var staging_path: String? = null
   var max_image_bytes: Long = 0
+  var output_format: String? = null
 }
 
 @InvokeArg class SensorCancelArgs {
@@ -93,7 +94,8 @@ class SensorsPlugin(private val activity: Activity) : Plugin(activity) {
     val args = invoke.parseArgs(SensorRunArgs::class.java)
     val id = OperationId(args.session_id, args.operation_id)
     activity.runOnUiThread {
-      if (!id.isValid() || args.kind !in setOf("camera", "photos", "location")) {
+      if (!id.isValid() || args.kind !in setOf("camera", "photos", "location") ||
+        (args.output_format != null && (args.kind != "photos" || args.output_format != "jpeg"))) {
         invoke.reject("The sensor request is invalid.")
         return@runOnUiThread
       }
@@ -273,7 +275,11 @@ class SensorsPlugin(private val activity: Activity) : Plugin(activity) {
           val photo = PhotoRead(activity.contentResolver, uri)
           operation.photo = photo
           writeImage(operation, "Could not import the selected photo within the image size limit.") { target, limit ->
-            SensorImages.copyPhoto(photo, target, limit) { operation.active }
+            if (operation.args.output_format == "jpeg") {
+              SensorImages.convertPhoto(photo, target, limit) { operation.active }
+            } else {
+              SensorImages.copyPhoto(photo, target, limit) { operation.active }
+            }
           }
         }
       }

@@ -1,4 +1,11 @@
-import { applet, llm, type LlmSelection, type LlmTarget } from '../../../packages/applet-sdk/src';
+import {
+  applet,
+  llm,
+  type LlmConfiguration,
+  type LlmTarget,
+} from '../../../packages/applet-sdk/src';
+import { createComposerMedia } from './composer';
+import { createMediaRenderer, pauseMediaPlayback, type MediaAsset } from './media';
 import './style.css';
 
 interface Conversation {
@@ -12,6 +19,7 @@ interface Message {
   role: 'user' | 'assistant';
   content: string;
   status: 'complete' | 'pending' | 'interrupted';
+  media: MediaAsset[];
 }
 
 const root =
@@ -59,7 +67,7 @@ const modelButton = element<HTMLButtonElement>('.model-pill');
 const footer = element<HTMLParagraphElement>('.footer-note');
 let conversations: Conversation[] = [];
 let currentId = '';
-let selected: LlmSelection | null = null;
+let selected: LlmConfiguration | null = null;
 let changingView = false;
 interface Reply {
   request_id: string;
@@ -81,6 +89,16 @@ let activeRequest: Reply | null = null;
 let streamNode: HTMLParagraphElement | undefined;
 let revision = -1;
 let ready = false;
+const messageMedia = createMediaRenderer(showError);
+const composer = createComposerMedia(element<HTMLFormElement>('form'), updateControls, showError);
+window.addEventListener(
+  'pagehide',
+  () => {
+    messageMedia.dispose();
+    composer.dispose();
+  },
+  { once: true },
+);
 
 function showError(error?: unknown): void {
   errorElement.hidden = error === undefined;
@@ -94,17 +112,23 @@ function scrollToBottom(): void {
 
 function updateControls(): void {
   const busy = !ready || !!activeRequest || changingView;
-  textarea.disabled = busy;
+  composer.update(busy, selected);
+  const submitting = busy || composer.isBusy();
+  textarea.disabled = submitting;
   sendButton.hidden = !!activeRequest;
-  sendButton.disabled = busy || !selected || !textarea.value.trim();
+  sendButton.disabled =
+    submitting ||
+    !selected ||
+    !composer.valid() ||
+    (!textarea.value.trim() && !composer.attachments().length);
   stopButton.hidden = !activeRequest;
   stopButton.disabled = !!activeRequest?.stopping;
-  modelButton.disabled = busy;
-  select.disabled = busy;
+  modelButton.disabled = submitting;
+  select.disabled = submitting;
   for (const button of root.querySelectorAll<HTMLButtonElement>(
     '.conversation-list button, .new-chat, .mobile-new',
   )) {
-    button.disabled = busy;
+    button.disabled = submitting;
   }
 }
 
@@ -149,8 +173,15 @@ function appendMessage(message: Message): HTMLParagraphElement {
   const text = document.createElement('p');
   text.className = 'message-content';
   text.textContent =
-    message.content || (message.status === 'pending' ? 'Thinking…' : 'No reply received.');
+    message.content ||
+    (message.status === 'pending'
+      ? 'Thinking…'
+      : message.media?.length
+        ? ''
+        : 'No reply received.');
+  text.hidden = !text.textContent;
   article.append(label, text);
+  messageMedia.render(article, message.media ?? []);
   if (message.status === 'interrupted') {
     const status = document.createElement('span');
     status.className = 'message-status';
@@ -162,6 +193,7 @@ function appendMessage(message: Message): HTMLParagraphElement {
 }
 
 function renderMessages(messages: Message[]): void {
+  messageMedia.reset();
   messagesElement.replaceChildren();
   if (messages.length === 0) {
     const empty = document.createElement('div');
@@ -194,7 +226,7 @@ function targetOf({ connection_id, model_id }: LlmTarget) {
 }
 
 async function applySnapshot(view: Snapshot): Promise<void> {
-  let model: LlmSelection | null = null;
+  let model: LlmConfiguration | null = null;
   let modelError: unknown;
   if (view.target) {
     try {
@@ -204,6 +236,8 @@ async function applySnapshot(view: Snapshot): Promise<void> {
       modelError = error;
     }
   }
+  if (view.revision < revision) return;
+  if (view.conversation_id !== currentId) await pauseMediaPlayback();
   if (view.revision < revision) return;
   revision = view.revision;
   currentId = view.conversation_id;
@@ -246,7 +280,7 @@ function refresh(): Promise<void> {
 }
 
 async function changeView(action: () => Promise<unknown>): Promise<void> {
-  if (!ready || activeRequest || changingView) return;
+  if (!ready || activeRequest || changingView || composer.isBusy()) return;
   changingView = true;
   updateControls();
   showError();
@@ -263,10 +297,27 @@ async function changeView(action: () => Promise<unknown>): Promise<void> {
 
 function send(): void {
   const content = textarea.value.trim();
-  if (!ready || activeRequest || changingView || !selected || !content) return;
+  const media = composer.attachments();
+  if (
+    !ready ||
+    activeRequest ||
+    changingView ||
+    composer.isBusy() ||
+    !selected ||
+    !composer.valid() ||
+    (!content && !media.length)
+  )
+    return;
   void changeView(async () => {
-    await applet.invoke('start_send', { conversation_id: currentId, content });
+    const output = composer.output();
+    await applet.invoke('start_send', {
+      conversation_id: currentId,
+      content,
+      media,
+      ...(output ? { output } : {}),
+    });
     textarea.value = '';
+    composer.clearSent();
   });
 }
 

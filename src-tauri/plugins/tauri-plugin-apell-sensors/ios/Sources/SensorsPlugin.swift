@@ -28,6 +28,7 @@ private struct SensorArgs: Decodable {
   let remembered: Bool
   let staging_path: String?
   let max_image_bytes: UInt64
+  let output_format: String?
 
   var id: SensorID { SensorID(session_id: session_id, operation_id: operation_id) }
 }
@@ -75,6 +76,10 @@ final class SensorsPlugin: Plugin {
   @objc func run(_ invoke: Invoke) {
     guard let args = try? invoke.parseArgs(SensorArgs.self) else {
       invoke.reject("Invalid sensor request.")
+      return
+    }
+    guard args.output_format == nil || (args.kind == .photos && args.output_format == "jpeg") else {
+      invoke.reject("Invalid photo output format.")
       return
     }
     DispatchQueue.main.async {
@@ -287,7 +292,8 @@ final class SensorsPlugin: Plugin {
       fail(operation, "The camera is unavailable on this device.")
       return
     }
-    let picker = SensorImagePicker(camera: camera, path: path, maxBytes: limit) {
+    let picker = SensorImagePicker(camera: camera, path: path, maxBytes: limit,
+      jpeg: operation.args.output_format == "jpeg") {
       [weak self, weak operation] result in
       guard let self = self, let operation = operation else { return }
       switch result {

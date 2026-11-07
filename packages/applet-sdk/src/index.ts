@@ -11,6 +11,7 @@ import type {
   ImageAsset,
   JsonValue,
   LocationFix,
+  PhotoPickOptions,
   LlmChooseModelOptions,
   LlmConfiguration,
   LlmEvent,
@@ -382,8 +383,8 @@ export const camera = {
 
 /** Import one image through the system picker. Requires the photos and fs permissions. */
 export const photos = {
-  pick(): Promise<ImageAsset | null> {
-    return hostCall('photos.pick');
+  pick(options: PhotoPickOptions = {}): Promise<ImageAsset | null> {
+    return hostCall('photos.pick', omitUndefined({ ...options }, ['output_format']));
   },
 };
 

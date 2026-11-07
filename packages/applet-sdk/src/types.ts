@@ -178,6 +178,11 @@ export interface ImageAsset {
   size_bytes: number;
 }
 
+export interface PhotoPickOptions {
+  /** Normalize the selected photo to an upright JPEG with capture metadata removed. */
+  output_format?: 'jpeg';
+}
+
 export interface LocationFix {
   latitude: number;
   longitude: number;

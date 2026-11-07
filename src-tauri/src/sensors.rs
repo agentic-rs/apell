@@ -58,6 +58,18 @@ enum Kind {
   Location,
 }
 
+#[derive(Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum PhotoFormat {
+  Jpeg,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PhotoOptions {
+  output_format: Option<PhotoFormat>,
+}
+
 impl Kind {
   fn permission(self) -> Option<ManagedPermission> {
     match self {
@@ -187,9 +199,16 @@ pub async fn dispatch(
     "location.current" => Kind::Location,
     _ => return Err("Unknown sensor operation.".into()),
   };
-  if params != json!({}) {
-    return Err("This request does not take parameters.".into());
-  }
+  let output_format = if matches!(kind, Kind::Photos) {
+    serde_json::from_value::<PhotoOptions>(params)
+      .map_err(|_| "Invalid photo picker options.")?
+      .output_format
+  } else {
+    if params != json!({}) {
+      return Err("This request does not take parameters.".into());
+    }
+    None
+  };
   if !tauri_plugin_apell_sensors::available() {
     return Err("Camera, photo library, and location require iOS or Android.".into());
   }
@@ -250,6 +269,9 @@ pub async fn dispatch(
   args["applet_name"] = json!(session.manifest.name);
   args["remembered"] = json!(remembered);
   args["max_image_bytes"] = json!(MAX_IMAGE_BYTES);
+  if let Some(output_format) = output_format {
+    args["output_format"] = json!(output_format);
+  }
   if let Some(path) = &staged {
     args["staging_path"] = json!(path);
   }
@@ -271,6 +293,9 @@ pub async fn dispatch(
           let (extension, mime_type, size_bytes) = inspect_image(&staged)?;
           if matches!(kind, Kind::Camera) && extension != "jpg" {
             return Err("The camera returned an invalid image.".into());
+          }
+          if output_format.is_some() && extension != "jpg" {
+            return Err("The photo could not be converted to JPEG.".into());
           }
           let path = format!("images/{}.{extension}", Uuid::new_v4());
           files.import_file(&applet_id, &path, &staged)?;
@@ -295,6 +320,18 @@ pub async fn dispatch(
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn photo_output_format_is_optional_and_rejects_unknown_options() {
+    assert!(serde_json::from_value::<PhotoOptions>(json!({}))
+      .unwrap()
+      .output_format
+      .is_none());
+    let options: PhotoOptions = serde_json::from_value(json!({"output_format":"jpeg"})).unwrap();
+    assert!(matches!(options.output_format, Some(PhotoFormat::Jpeg)));
+    assert!(serde_json::from_value::<PhotoOptions>(json!({"output_format":"heic"})).is_err());
+    assert!(serde_json::from_value::<PhotoOptions>(json!({"format":"jpeg"})).is_err());
+  }
 
   #[test]
   fn staged_images_are_bounded_and_must_have_a_supported_signature() {

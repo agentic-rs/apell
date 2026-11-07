@@ -52,9 +52,19 @@ pub async fn handle(command: String, params: Value) -> Result<Value, HostError> 
         Ok(json!(id))
       }
       "start_send" => {
+        let media = params
+          .get("media")
+          .cloned()
+          .map(serde_json::from_value)
+          .transpose()
+          .map_err(HostError::new)?
+          .unwrap_or_default();
+        let output = serde_json::from_value(params["output"].clone()).map_err(HostError::new)?;
         let id = chat::start(
           string(&params, "conversation_id")?,
           string(&params, "content")?,
+          media,
+          output,
         )
         .await?;
         Ok(json!({"request_id":id}))

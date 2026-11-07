@@ -5,6 +5,7 @@ target/
 examples/*/pkg/
 artifacts/
 src-tauri/gen/
+src-tauri/plugins/*/android/build/
 src-tauri/.tauri/
 **/.tauri/
 .DS_Store

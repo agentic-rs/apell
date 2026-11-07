@@ -123,9 +123,13 @@ impl App {
   }
 
   async fn request(&mut self, id: &str, text: &str) -> Generation {
-    let ack = self
-      .invoke("start_send", json!({"conversation_id":id,"content":text}))
-      .await;
+    self
+      .request_with(json!({"conversation_id":id,"content":text}))
+      .await
+  }
+
+  async fn request_with(&mut self, params: Value) -> Generation {
+    let ack = self.invoke("start_send", params).await;
     let call = tokio::time::timeout(TEST_TIMEOUT, self.requests.recv())
       .await
       .unwrap()
@@ -257,15 +261,21 @@ fn seed_history(root: &Path, version: u32, attributions: &[Option<Value>]) {
   let text = |s: &str| json!({"type":"text","value":s});
   execute("CREATE TABLE conversations (conversation_id TEXT PRIMARY KEY,title TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL)",json!([]));
   execute("CREATE TABLE messages (message_id TEXT PRIMARY KEY,conversation_id TEXT NOT NULL,role TEXT NOT NULL,content TEXT NOT NULL,status TEXT NOT NULL,request_id TEXT NOT NULL,created_at TEXT NOT NULL)",json!([]));
-  if version == 2 {
+  if version >= 2 {
     execute(
       "ALTER TABLE messages ADD COLUMN provider_message TEXT",
       json!([]),
     );
     execute("ALTER TABLE messages ADD COLUMN provenance TEXT", json!([]));
   }
+  if version >= 3 {
+    execute(
+      "ALTER TABLE conversations ADD COLUMN model_target TEXT",
+      json!([]),
+    );
+  }
   execute(
-    "INSERT INTO conversations VALUES ('old','Old chat','then','then')",
+    "INSERT INTO conversations (conversation_id,title,created_at,updated_at) VALUES ('old','Old chat','then','then')",
     json!([]),
   );
   for (index, attribution) in attributions.iter().enumerate() {
@@ -294,6 +304,7 @@ async fn schema_migration_keeps_old_chats_and_only_replays_proven_history() {
       vec![Some(attribution.clone()), Some(attribution.clone())],
       true,
     ),
+    (3, vec![Some(attribution.clone())], true),
     (2, vec![Some(attribution.clone()), Some(other)], false),
     (2, vec![Some(attribution), None], false),
     (2, vec![Some(demo)], false),
@@ -303,6 +314,11 @@ async fn schema_migration_keeps_old_chats_and_only_replays_proven_history() {
     let app = App::launch(dir.path()).await;
     let view = app.snapshot().await;
     assert_eq!(view["messages"].as_array().unwrap().len(), rows.len());
+    assert!(view["messages"]
+      .as_array()
+      .unwrap()
+      .iter()
+      .all(|message| message["media"] == json!([])));
     assert_eq!(view["target"], if infer { target() } else { Value::Null });
     let id = app
       .invoke(
@@ -437,5 +453,177 @@ async fn a_large_provider_chunk_is_recovered_from_snapshot_without_oversizing_ui
   let update = event(&mut view, "view").await;
   assert!(update.get("text").is_none());
   assert_eq!(app.snapshot().await["active"]["partial"], chunk);
+  app.runtime.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn user_image_and_audio_attachments_are_restored_as_structured_history() {
+  let dir = tempfile::tempdir().unwrap();
+  let mut app = App::launch(dir.path()).await;
+  let id = app.snapshot().await["conversation_id"]
+    .as_str()
+    .unwrap()
+    .to_owned();
+  app
+    .invoke(
+      "choose_model",
+      json!({"conversation_id":id,"target":target()}),
+    )
+    .await;
+  let media = json!([
+    {"type":"image","path":"attachments/photo.png","mime_type":"image/png","size_bytes":64,"file_name":"Photo.png"},
+    {"type":"audio","path":"attachments/question.wav","mime_type":"audio/wav","size_bytes":128,"file_name":"Question.wav"}
+  ]);
+  let parts = json!([
+    {"type":"image","path":"attachments/photo.png"},
+    {"type":"audio","path":"attachments/question.wav"}
+  ]);
+  let mut view = app.runtime.subscribe();
+  let call = app
+    .request_with(json!({"conversation_id":id,"content":"","media":media}))
+    .await;
+  assert_eq!(
+    call.params["messages"][1],
+    json!({"role":"user","content":parts})
+  );
+  let assistant = json!({"role":"assistant","content":"Understood.","reasoning_details":[{"signature":"retained-provider-state"}]});
+  let finished = result(&call, "completed", "Understood.", assistant.clone());
+  call.complete.send(Ok(finished)).unwrap();
+  event(&mut view, "finish").await;
+  let stored = app.snapshot().await;
+  assert_eq!(stored["messages"][0]["content"], "");
+  assert_eq!(stored["messages"][0]["media"], media);
+  assert_eq!(stored["conversations"][0]["title"], "Photo.png");
+  app.runtime.stop().await;
+
+  let mut reopened = App::launch(dir.path()).await;
+  assert_eq!(reopened.snapshot().await["messages"], stored["messages"]);
+  let followup = reopened.request(&id, "Follow up").await;
+  assert_eq!(
+    followup.params["messages"][1],
+    json!({"role":"user","content":parts})
+  );
+  assert_eq!(followup.params["messages"][2], assistant);
+  assert_eq!(followup.params["messages"][3]["content"], "Follow up");
+  reopened.runtime.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn media_only_generated_images_and_audio_survive_reopening_and_replay_safely() {
+  for (output, media, assistant) in [
+    (
+      json!({"type":"image","format":"webp"}),
+      json!({"type":"image","path":"llm/image_fixture/1.webp","mime_type":"image/webp","size_bytes":256}),
+      json!({"role":"assistant","content":null,"provider_state":{"version":1,"output":[]}}),
+    ),
+    (
+      json!({"type":"audio","voice":"fixture_voice","format":"wav"}),
+      json!({"type":"audio","path":"llm/audio_fixture/1.wav","mime_type":"audio/wav","size_bytes":512}),
+      json!({"role":"assistant","content":null}),
+    ),
+  ] {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = App::launch(dir.path()).await;
+    let id = app.snapshot().await["conversation_id"]
+      .as_str()
+      .unwrap()
+      .to_owned();
+    app
+      .invoke(
+        "choose_model",
+        json!({"conversation_id":id,"target":target()}),
+      )
+      .await;
+    let mut view = app.runtime.subscribe();
+    let call = app
+      .request_with(json!({"conversation_id":id,"content":"Generate a reply.","output":output}))
+      .await;
+    assert_eq!(call.params["output"], output);
+    let mut finished = result(&call, "completed", "", assistant.clone());
+    finished["media"] = json!([media]);
+    call.complete.send(Ok(finished)).unwrap();
+    event(&mut view, "finish").await;
+    let stored = app.snapshot().await;
+    assert_eq!(stored["messages"][1]["status"], "complete");
+    assert_eq!(stored["messages"][1]["content"], "");
+    assert_eq!(stored["messages"][1]["media"], json!([media]));
+    app.runtime.stop().await;
+
+    let mut reopened = App::launch(dir.path()).await;
+    assert_eq!(reopened.snapshot().await["messages"], stored["messages"]);
+    let followup = reopened.request(&id, "Continue").await;
+    assert!(followup.params.get("output").is_none());
+    let history = followup.params["messages"].as_array().unwrap();
+    if output["type"] == "image" {
+      assert_eq!(history[2], assistant);
+    } else {
+      assert!(history.iter().all(|message| message["role"] != "assistant"));
+    }
+    reopened.runtime.stop().await;
+  }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn attachment_limits_reject_new_turns_before_creating_pending_rows() {
+  let dir = tempfile::tempdir().unwrap();
+  let mut app = App::launch(dir.path()).await;
+  let id = app.snapshot().await["conversation_id"]
+    .as_str()
+    .unwrap()
+    .to_owned();
+  app
+    .invoke(
+      "choose_model",
+      json!({"conversation_id":id,"target":target()}),
+    )
+    .await;
+  let media: Vec<_> = (0..8).map(|index| json!({
+    "type":"image", "path":format!("attachments/{index}.png"), "mime_type":"image/png", "size_bytes":1024*1024
+  })).collect();
+  let mut view = app.runtime.subscribe();
+  let call = app
+    .request_with(json!({"conversation_id":id,"content":"Inspect these images.","media":media}))
+    .await;
+  let finished = result(
+    &call,
+    "completed",
+    "Inspected.",
+    json!({"role":"assistant","content":"Inspected."}),
+  );
+  call.complete.send(Ok(finished)).unwrap();
+  event(&mut view, "finish").await;
+  let before = app.snapshot().await;
+  for (attachment, expected_error) in [
+    (
+      json!({"type":"image","path":"attachments/ninth.png","mime_type":"image/png","size_bytes":1}),
+      "context limit",
+    ),
+    (
+      json!({"type":"audio","path":"attachments/oversized.wav","mime_type":"audio/wav","size_bytes":8*1024*1024+1}),
+      "no larger than 8 MiB",
+    ),
+    (
+      json!({"type":"image","path":"../other/photo.png","mime_type":"image/png","size_bytes":1}),
+      "private",
+    ),
+  ] {
+    let error = tokio::time::timeout(
+      TEST_TIMEOUT,
+      app.runtime.invoke(
+        "start_send",
+        json!({
+          "conversation_id":id,"content":"Another file.","media":[attachment]
+        }),
+      ),
+    )
+    .await
+    .unwrap()
+    .unwrap_err();
+    assert!(error.message.contains(expected_error), "{}", error.message);
+    let after = app.snapshot().await;
+    assert!(after["active"].is_null());
+    assert_eq!(after["messages"], before["messages"]);
+    assert!(app.requests.try_recv().is_err());
+  }
   app.runtime.stop().await;
 }

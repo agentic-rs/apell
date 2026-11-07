@@ -1,4 +1,4 @@
-use crate::models::{Conversation, Message};
+use crate::models::{Conversation, Media, Message};
 use apell_guest::HostError;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -163,12 +163,15 @@ async fn migrate() -> Result<(), HostError> {
         execute("ALTER TABLE messages ADD COLUMN provider_message TEXT", vec![], Some(&transaction)).await?;
         execute("ALTER TABLE messages ADD COLUMN provenance TEXT", vec![], Some(&transaction)).await?;
       }
-      "2" | "3" => {}
+      "2" | "3" | "4" => {}
       _ => return Err(HostError::new("This chatbot database requires a newer applet.")),
     }
-    if version != "3" {
+    if matches!(version.as_str(), "0" | "1" | "2") {
       execute("ALTER TABLE conversations ADD COLUMN model_target TEXT", vec![], Some(&transaction)).await?;
-      execute("PRAGMA user_version = 3", vec![], Some(&transaction)).await?;
+    }
+    if version != "4" {
+      execute("ALTER TABLE messages ADD COLUMN media TEXT NOT NULL DEFAULT '[]'", vec![], Some(&transaction)).await?;
+      execute("PRAGMA user_version = 4", vec![], Some(&transaction)).await?;
     }
     execute("UPDATE messages SET status = 'interrupted' WHERE status = 'pending'", vec![], Some(&transaction)).await?;
     commit(&transaction).await
@@ -187,8 +190,14 @@ pub async fn conversations() -> Result<Vec<Conversation>, HostError> {
 }
 
 pub async fn messages(conversation_id: &str) -> Result<Vec<Message>, HostError> {
-  query("SELECT message_id, role, content, status FROM messages WHERE conversation_id = ?1 ORDER BY rowid LIMIT 1000", vec![text(conversation_id)], None).await?
+  query("SELECT message_id, role, content, status, media FROM messages WHERE conversation_id = ?1 ORDER BY rowid LIMIT 1000", vec![text(conversation_id)], None).await?
     .into_iter().map(|row| Ok(Message {
       message_id: cell(&row, 0)?, role: cell(&row, 1)?, content: cell(&row, 2)?, status: cell(&row, 3)?,
+      media: media(&row, 4)?,
     })).collect()
+}
+
+pub fn media(row: &[Value], index: usize) -> Result<Vec<Media>, HostError> {
+  serde_json::from_str(&cell(row, index)?)
+    .map_err(|_| HostError::new("A stored media attachment cannot be read."))
 }

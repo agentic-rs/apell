@@ -398,7 +398,7 @@ Resource IDs are SHA-256 digests, and files are stored separately for each apple
 
 ## Camera, photo library, and location
 
-These iOS and Android calls run from the attached applet frontend and take no parameters. The host cancels pending requests on close or reload, even when the applet backend keeps running.
+These iOS and Android calls run from the attached applet frontend. The host cancels pending requests on close or reload, even when the applet backend keeps running.
 
 | Bridge method and SDK call                | Manifest permissions | Result                                                                      |
 | ----------------------------------------- | -------------------- | --------------------------------------------------------------------------- |
@@ -407,6 +407,8 @@ These iOS and Android calls run from the attached applet frontend and take no pa
 | `location.current` / `location.current()` | `location`           | One fix with `latitude`, `longitude`, `accuracy_m`, and Unix `timestamp_ms` |
 
 Image results are `{ path, mime_type, size_bytes }`. Read the relative private path with `fs.read` in chunks. Camera output preserves orientation and strips capture metadata. The photo picker shares only the selected file and may include its embedded metadata. Imports accept JPEG, PNG, GIF, WebP, HEIC, HEIF, and AVIF up to 32 MiB. The operating system can retrieve cloud-backed images you select.
+
+Use `photos.pick({ output_format: 'jpeg' })` to normalize the selected photo to an upright JPEG with capture metadata removed and a maximum edge of 4,096 pixels. This lets applets attach native HEIC photos to models that accept JPEG. Omitting the option preserves the selected file's original format. Camera and location calls take no parameters.
 
 Camera and Location default to **Ask every time**. The Apell prompt names the applet and offers **Allow once**, **Always allow**, and **Cancel**. Saved grants apply separately to each applet and verified package source. Change them in **About this applet** or reset them in Settings. OS permission and location accuracy still apply. Photo Library shows **Pick each time** because choosing an image authorizes only that selection.
 

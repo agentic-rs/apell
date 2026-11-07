@@ -1,4 +1,5 @@
 import Foundation
+import ImageIO
 import PhotosUI
 import UIKit
 import UniformTypeIdentifiers
@@ -45,15 +46,18 @@ final class SensorImagePicker: NSObject, UIImagePickerControllerDelegate,
   private let camera: Bool
   private let destination: URL
   private let maxBytes: Int
+  private let jpeg: Bool
   private let gate = ImageWriteGate()
   private var controller: UIViewController?
   private var providerLoad: Progress?
   private var completion: ((SensorImageResult) -> Void)?
 
-  init(camera: Bool, path: String, maxBytes: Int, completion: @escaping (SensorImageResult) -> Void) {
+  init(camera: Bool, path: String, maxBytes: Int, jpeg: Bool = false,
+    completion: @escaping (SensorImageResult) -> Void) {
     self.camera = camera
     destination = URL(fileURLWithPath: path)
     self.maxBytes = maxBytes
+    self.jpeg = jpeg
     self.completion = completion
     super.init()
   }
@@ -151,7 +155,11 @@ final class SensorImagePicker: NSObject, UIImagePickerControllerDelegate,
       // The provider deletes this temporary file when its callback returns.
       self.write {
         guard let url = url else { throw ImageWriteFailure.invalid }
-        try self.copyPhoto(from: url)
+        if self.jpeg {
+          try self.storeJPEG(from: url)
+        } else {
+          try self.copyPhoto(from: url, to: self.destination)
+        }
       }
     }
   }
@@ -183,9 +191,9 @@ final class SensorImagePicker: NSObject, UIImagePickerControllerDelegate,
     callback?(result)
   }
 
-  private func copyPhoto(from source: URL) throws {
+  private func copyPhoto(from source: URL, to target: URL) throws {
     guard let input = InputStream(url: source),
-      let output = OutputStream(url: destination, append: false) else {
+      let output = OutputStream(url: target, append: false) else {
       throw ImageWriteFailure.invalid
     }
     input.open()
@@ -208,6 +216,34 @@ final class SensorImagePicker: NSObject, UIImagePickerControllerDelegate,
       total += count
     }
     throw ImageWriteFailure.invalid
+  }
+
+  private func storeJPEG(from source: URL) throws {
+    // Bound the provider file before ImageIO opens it. Its original URL is only
+    // valid for this callback, and the temporary copy stays outside applet files.
+    let staged = destination.appendingPathExtension("source")
+    defer { try? FileManager.default.removeItem(at: staged) }
+    try copyPhoto(from: source, to: staged)
+    guard !gate.isCancelled,
+      let imageSource = CGImageSourceCreateWithURL(staged as CFURL,
+        [kCGImageSourceShouldCache: false] as CFDictionary) else {
+      throw ImageWriteFailure.invalid
+    }
+    let options: [CFString: Any] = [
+      kCGImageSourceCreateThumbnailFromImageAlways: true,
+      kCGImageSourceCreateThumbnailWithTransform: true,
+      kCGImageSourceThumbnailMaxPixelSize: 4096,
+      kCGImageSourceShouldCacheImmediately: true,
+    ]
+    guard let thumbnail = CGImageSourceCreateThumbnailAtIndex(imageSource, 0,
+      options as CFDictionary), !gate.isCancelled else {
+      throw ImageWriteFailure.invalid
+    }
+    let data = try Self.cameraJPEG(UIImage(cgImage: thumbnail))
+    guard !data.isEmpty, data.count <= maxBytes, !gate.isCancelled else {
+      throw ImageWriteFailure.invalid
+    }
+    try data.write(to: destination, options: .withoutOverwriting)
   }
 
   private static func cameraJPEG(_ image: UIImage) throws -> Data {

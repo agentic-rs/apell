@@ -11,6 +11,7 @@ import android.os.OperationCanceledException
 import java.io.File
 import java.io.InputStream
 import java.io.OutputStream
+import java.util.UUID
 import java.util.concurrent.atomic.AtomicReference
 
 internal class PhotoRead(private val resolver: ContentResolver, private val uri: Uri) {
@@ -46,8 +47,8 @@ internal class PhotoRead(private val resolver: ContentResolver, private val uri:
 
 internal object SensorImages {
   // Bound the pixel allocation separately from the compressed input and output sizes.
-  private const val MAX_CAPTURE_PIXELS = 12_500_000L
-  private const val MAX_CAPTURE_EDGE = 4096L
+  private const val MAX_IMAGE_PIXELS = 12_500_000L
+  private const val MAX_IMAGE_EDGE = 4096L
 
   fun copyPhoto(
     source: PhotoRead,
@@ -71,28 +72,57 @@ internal object SensorImages {
   }
 
   fun encodeCapture(source: File, target: File, max_bytes: Long, active: () -> Boolean) {
+    encodeImage(source, target, max_bytes, active, require_jpeg = true)
+  }
+
+  fun convertPhoto(source: PhotoRead, target: File, max_bytes: Long, active: () -> Boolean) {
+    check(active())
+    // Keep the original beside Rust's staged output, outside applet storage.
+    // Opening a fresh file cannot recreate a directory removed on cancellation.
+    val original = File(target.parentFile, ".photo-${UUID.randomUUID()}.source")
+    try {
+      copyPhoto(source, original, max_bytes, active)
+      encodeImage(original, target, max_bytes, active, require_jpeg = false)
+    } finally {
+      original.delete()
+    }
+  }
+
+  private fun encodeImage(
+    source: File,
+    target: File,
+    max_bytes: Long,
+    active: () -> Boolean,
+    require_jpeg: Boolean,
+  ) {
     check(active())
     require(source.length() in 1..max_bytes)
     val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
     BitmapFactory.decodeFile(source.path, options)
-    require(options.outWidth > 0 && options.outHeight > 0 && options.outMimeType == "image/jpeg")
+    require(options.outWidth > 0 && options.outHeight > 0)
+    if (require_jpeg) require(options.outMimeType == "image/jpeg")
     var sample = 1
-    while (sampled(options.outWidth, sample) > MAX_CAPTURE_EDGE ||
-      sampled(options.outHeight, sample) > MAX_CAPTURE_EDGE ||
-      sampled(options.outWidth, sample) * sampled(options.outHeight, sample) > MAX_CAPTURE_PIXELS
+    while (sampled(options.outWidth, sample) > MAX_IMAGE_EDGE ||
+      sampled(options.outHeight, sample) > MAX_IMAGE_EDGE ||
+      sampled(options.outWidth, sample) * sampled(options.outHeight, sample) > MAX_IMAGE_PIXELS
     ) sample *= 2
-    val orientation = ExifInterface(source.path).getAttributeInt(
-      ExifInterface.TAG_ORIENTATION,
-      ExifInterface.ORIENTATION_NORMAL,
-    )
+    val orientation = if (require_jpeg) {
+      readOrientation(source)
+    } else {
+      // Some decodable formats (such as GIF) have no EXIF metadata.
+      runCatching { readOrientation(source) }.getOrDefault(ExifInterface.ORIENTATION_NORMAL)
+    }
     check(active())
     val bitmap = BitmapFactory.decodeFile(source.path, BitmapFactory.Options().apply { inSampleSize = sample })
-      ?: error("Camera output is not a supported image.")
+      ?: error("The selected photo is not a supported image.")
     try {
+      check(active())
+      require(bitmap.width.toLong() <= MAX_IMAGE_EDGE && bitmap.height.toLong() <= MAX_IMAGE_EDGE &&
+        bitmap.width.toLong() * bitmap.height <= MAX_IMAGE_PIXELS)
       val matrix = orientationMatrix(orientation)
       val upright = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
       try {
-        // Encoding decoded pixels keeps the visual orientation and drops camera metadata.
+        // Encoding decoded pixels keeps the visual orientation and drops source metadata.
         writeImage(target, max_bytes, active) { output ->
           check(upright.compress(Bitmap.CompressFormat.JPEG, 90, output))
         }
@@ -103,6 +133,11 @@ internal object SensorImages {
       bitmap.recycle()
     }
   }
+
+  private fun readOrientation(source: File): Int = ExifInterface(source.path).getAttributeInt(
+    ExifInterface.TAG_ORIENTATION,
+    ExifInterface.ORIENTATION_NORMAL,
+  )
 
   private fun sampled(edge: Int, sample: Int): Long = (edge.toLong() + sample - 1) / sample
 
