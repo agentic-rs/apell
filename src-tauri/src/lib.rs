@@ -2,6 +2,8 @@ mod applets;
 mod assets;
 mod backend_services;
 mod commands;
+#[cfg(target_os = "macos")]
+mod desktop;
 mod host;
 mod install;
 #[cfg(target_os = "ios")]
@@ -57,8 +59,10 @@ pub fn run() {
       // On iOS an explicit inner size becomes the actual native view frame.
       // Mobile must inherit the device bounds for responsive CSS and safe areas.
       #[cfg(desktop)]
-      let window = window.inner_size(1100., 800.).min_inner_size(320., 480.);
+      let window = window.inner_size(420., 820.).min_inner_size(320., 480.);
       let _window = window.build()?;
+      #[cfg(target_os = "macos")]
+      desktop::configure_window(&_window);
       #[cfg(target_os = "ios")]
       ios::configure_safe_area(&_window)?;
       let handle = app.handle().clone();
@@ -78,6 +82,10 @@ pub fn run() {
       commands::shell_command,
       commands::applet_call
     ])
-    .run(tauri::generate_context!())
-    .expect("Could not start Apell");
+    .build(tauri::generate_context!())
+    .expect("Could not start Apell")
+    .run(|_app, _event| {
+      #[cfg(target_os = "macos")]
+      desktop::on_event(_app, &_event);
+    });
 }

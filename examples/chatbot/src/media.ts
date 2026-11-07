@@ -328,7 +328,7 @@ export function createMediaRenderer(onError: (error: unknown) => void) {
           button.disabled = !audio.available || audio.busy;
           status.textContent = '';
           if (audio.available === false)
-            status.textContent = 'Playback is available on iOS and Android.';
+            status.textContent = 'Playback is available on iOS, Android, and macOS.';
           else if (audio.available === undefined) status.textContent = 'Checking playback…';
           else if (audio.path === asset.path)
             status.textContent = playing ? 'Playing' : audio.ended ? 'Finished' : 'Paused';

@@ -65,7 +65,14 @@ async fn native(
   params["session_id"] = json!(owner);
   let method = method.to_owned();
   tauri::async_runtime::spawn_blocking(move || {
-    tauri_plugin_apell_audio::call(&app, &method, params)
+    #[cfg(target_os = "macos")]
+    {
+      crate::desktop::audio::call(&app, &method, params)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+      tauri_plugin_apell_audio::call(&app, &method, params)
+    }
   })
   .await
   .map_err(|_| "The native audio operation could not finish.".to_string())?
@@ -116,11 +123,22 @@ pub async fn dispatch(
   params: Value,
 ) -> Result<Value, String> {
   let mobile = cfg!(any(target_os = "ios", target_os = "android"));
+  let file_audio = mobile || cfg!(target_os = "macos");
   if method == "audio.capabilities" {
-    return Ok(json!({"recording":mobile,"import":mobile,"sharing":mobile,"playback":mobile}));
+    return Ok(
+      json!({"recording":mobile,"import":file_audio,"sharing":mobile,"playback":file_audio}),
+    );
   }
-  if !mobile {
-    return Err("Native audio is available on iOS and Android. Use the browser preview for desktop recording.".into());
+  if !file_audio {
+    return Err("Native audio is available on iOS, Android, and macOS.".into());
+  }
+  if !mobile
+    && matches!(
+      method,
+      "audio.start" | "audio.pause" | "audio.resume" | "audio.stop" | "audio.share"
+    )
+  {
+    return Err("Recording and audio sharing are available on iOS and Android.".into());
   }
   let _modal = if matches!(method, "audio.start" | "audio.import" | "audio.share") {
     Some(

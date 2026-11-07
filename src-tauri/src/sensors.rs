@@ -26,7 +26,7 @@ pub struct SensorService {
 
 impl SensorService {
   pub fn new(staging: PathBuf) -> Result<Self, String> {
-    if tauri_plugin_apell_sensors::available() {
+    if tauri_plugin_apell_sensors::available() || cfg!(target_os = "macos") {
       // A process that was killed during capture may have left a staging file.
       match fs::remove_dir_all(&staging) {
         Ok(()) => {}
@@ -166,9 +166,7 @@ async fn run_native(
     return Err("Applet session is closed.".into());
   }
   let runner = app.clone();
-  let mut operation = std::pin::pin!(blocking(move || {
-    tauri_plugin_apell_sensors::call(&runner, Command::Run, args)
-  }));
+  let mut operation = std::pin::pin!(blocking(move || { native(&runner, Command::Run, args) }));
   let result = tokio::select! {
     biased;
     _ = cancellation.changed() => {
@@ -176,13 +174,29 @@ async fn run_native(
       // settle. The plugin retains a matching cancel that arrives before run.
       let _ = tokio::join!(
         &mut operation,
-        blocking(move || tauri_plugin_apell_sensors::call(&app, Command::Cancel, identity)),
+        blocking(move || native(&app, Command::Cancel, identity)),
       );
       return Err("Applet session is closed.".into());
     }
     response = &mut operation => response?,
   };
   serde_json::from_value(result).map_err(|_| "The device returned an invalid response.".into())
+}
+
+fn native(app: &AppHandle, command: Command, args: Value) -> Result<Value, String> {
+  #[cfg(target_os = "macos")]
+  match command {
+    Command::Run => crate::desktop::photos::run(app, args),
+    Command::Cancel => {
+      let owner = crate::host::string(&args, "session_id")?;
+      let operation = crate::host::string(&args, "operation_id")?;
+      crate::desktop::picker::cancel(app, owner, Some(operation))?;
+      Ok(Value::Null)
+    }
+    _ => Err("This native operation is unavailable on macOS.".into()),
+  }
+  #[cfg(not(target_os = "macos"))]
+  tauri_plugin_apell_sensors::call(app, command, args)
 }
 
 pub async fn dispatch(
@@ -209,8 +223,12 @@ pub async fn dispatch(
     }
     None
   };
-  if !tauri_plugin_apell_sensors::available() {
-    return Err("Camera, photo library, and location require iOS or Android.".into());
+  let available = tauri_plugin_apell_sensors::available()
+    || (cfg!(target_os = "macos") && matches!(kind, Kind::Photos));
+  if !available {
+    return Err(
+      "This device does not support the requested camera, photo, or location operation.".into(),
+    );
   }
   if kind.writes_image()
     && !session

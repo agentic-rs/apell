@@ -1,12 +1,12 @@
 # Apell
 
-Apell is a personal Tauri shell for iOS and Android, with a macOS development host. Install a `.apel` package from a file or a public GitHub release. Its frontend runs in a sandboxed web view. An optional Rust WebAssembly backend runs in the native shell through the Wasmi interpreter. Applets use host APIs for SQLite, files, resources, HTTP, configuration, device information, and shared model access.
+Apell is a personal Tauri shell for iOS, Android, and macOS. Install a `.apel` package from a file or a public GitHub release. Its frontend runs in a sandboxed web view. An optional Rust WebAssembly backend runs in the native shell through the Wasmi interpreter. Applets use host APIs for SQLite, files, resources, HTTP, configuration, device information, and shared model access.
 
 The included **Companion** chatbot keeps conversations, SQL migrations, model targets, and in-flight replies in its Rust backend. The interface can close or reload while the backend completes a reply. Reopening the interface asks the backend for its current state. Saved chats survive an Apell restart.
 
 Use the conversation drawer to search saved chats and start a new one. Switching chats keeps each draft and reading position while the interface stays open. The compact composer has an attachment **+** menu and a reply format selector.
 
-On iOS and Android, Companion can attach a selected photo as JPEG and import WAV/MP3 audio files. Choose **Image** or **Audio** in the composer's reply format selector to request generated media from a compatible model. Audio replies use a provider voice ID. Completed images appear in the conversation, and audio has Play/Pause controls. Attachments and generated files stay with the saved chat.
+Companion can attach a selected photo as JPEG and import WAV/MP3 audio files on iOS, Android, and macOS. On macOS, **Photo** opens an image file picker. Choose **Image** or **Audio** in the composer's reply format selector to request generated media from a compatible model. Audio replies use a provider voice ID. Completed images appear in the conversation, and audio has Play/Pause controls. Attachments and generated files stay with the saved chat.
 
 Building an applet? [View the Apell Applet skill](skills/apell-applet/SKILL.md) or [install it in Codex](#applet-authoring-skill).
 
@@ -38,6 +38,21 @@ pnpm desktop:build
 ```
 
 The TypeScript suite exercises the SDK and shell bridge. The Rust suites cover package integrity, source-bound updates, native services, guest execution, and run/view isolation. The runtime integration tests compile and execute Companion in Wasmi with native SQLite and controlled model responses. See the [verification notes](docs/verification.md) for platform checks.
+
+## macOS app
+
+The native macOS app starts with a 420×820 content area and the same launcher, settings, and applet controls as mobile. Resize the window to use the existing wider layouts, including Companion's conversation sidebar. Closing the window keeps Apell and its applet backends running; reopening Apell from the Dock restores the window. Use **Apell → Quit Apell** to stop the host.
+
+Build and open the standalone application on macOS 11 or later:
+
+```sh
+pnpm desktop:build --bundles app
+open target/release/bundle/macos/Apell.app
+```
+
+The `.app` contains the frontend and Companion bundle and runs without a development server. The macOS configuration uses an ad-hoc signature for local use. Configure a Developer ID locally for public distribution, following [Tauri's macOS signing guide](https://v2.tauri.app/distribute/sign/macos/). For an interactive development build, use `pnpm desktop:dev`. Build products and personal signing configuration stay outside Git.
+
+macOS uses Keychain for provider credentials and native file dialogs for packages and encrypted settings transfers. Applets can import images and audio into their private files and play private audio through the same bridge used on mobile. Camera capture, microphone recording, location, QR transfer, and audio sharing remain mobile features; query audio capabilities before offering those controls. Windows and Linux do not yet have the credential and native media support required for this desktop release.
 
 ## Mobile development
 
@@ -143,7 +158,7 @@ Build with `cargo build --release --target wasm32-unknown-unknown` and copy the 
 apell pack stage --output artifacts/example.apel
 ```
 
-The output must be outside the input directory. The CLI writes a deterministic ZIP archive and prints its SHA-256. From the Apell checkout, `pnpm build:chatbot` produces `artifacts/chatbot.apel` and `artifacts/chatbot.sha256` for Companion 0.6.0.
+The output must be outside the input directory. The CLI writes a deterministic ZIP archive and prints its SHA-256. From the Apell checkout, `pnpm build:chatbot` produces `artifacts/chatbot.apel` and `artifacts/chatbot.sha256` for Companion 0.6.1.
 
 Install a local `.apel` file from the **+** sheet. For GitHub distribution, attach the `.apel` file to a published release in a public applet repository. Use the same asset name for later releases, such as `example.apel`. In Apell, choose **Install from GitHub**, enter `owner/repository` for the latest stable release, and choose its package if several are available. To install a nightly or another named release, enter `owner/repository@nightly` or paste its `https://github.com/owner/repository/releases/tag/nightly` URL. Explicit release selections accept published prereleases; repository-only lookup stays on stable releases. The package contains its own manifest. The host checks GitHub's asset digest when available and computes its own content hash. Only install packages from developers you trust. Publisher signatures are outside the current format.
 
@@ -165,9 +180,9 @@ Applets can send private images, PDFs, or WAV/MP3 audio as user message attachme
 
 ## Recorder applet services
 
-The host supports native iOS/Android recording, audio import/playback, and file sharing through the `audio` permission. The `speech` permission provides offline Whisper transcription and language detection after an explicit multilingual model download. Audio stays on the device. See [the audio and speech contract](docs/architecture.md#audio-and-offline-speech) for methods, formats, lifecycle, and limits.
+The host supports audio import and playback on iOS, Android, and macOS through the `audio` permission. Recording and file sharing are available on iOS and Android. The `speech` permission provides offline Whisper transcription and language detection after an explicit multilingual model download. Audio stays on the device. See [the audio and speech contract](docs/architecture.md#audio-and-offline-speech) for methods, formats, lifecycle, and limits.
 
-Applets can take a still photo, import one selected photo, or request a foreground location fix on iOS and Android. See [the camera, photo library, and location contract](docs/architecture.md#camera-photo-library-and-location) for SDK calls and permission behavior.
+Applets can take a still photo, import one selected photo, or request a foreground location fix on iOS and Android. macOS supports selecting an image file through the same photo API. See [the camera, photo library, and location contract](docs/architecture.md#camera-photo-library-and-location) for SDK calls and permission behavior.
 
 Native speech compilation additionally requires CMake and a C/C++ toolchain. For Android builds, `pnpm tauri` also makes `NDK_HOME` available to Whisper's CMake build. Models and recordings live in application data and are never bundled into source control.
 

@@ -155,11 +155,7 @@ async fn run_job(
     let progress = job.clone();
     speech
       .download_model(job.cancel.clone(), move |received, total| {
-        let percent = if total == 0 {
-          0
-        } else {
-          received.saturating_mul(100) / total
-        };
+        let percent = received.saturating_mul(100).checked_div(total).unwrap_or(0);
         progress
           .progress
           .store(percent.min(100) as u32, Ordering::Relaxed);
