@@ -10,6 +10,12 @@ import { createMediaRenderer, validateInputMedia, type MediaAsset } from './medi
 const MAX_MEDIA_BYTES = 8 * 1024 * 1024;
 const MAX_MEDIA_FILES = 8;
 
+export interface ComposerDraft {
+  media: MediaAsset[];
+  reply_mode: 'text' | 'image' | 'audio';
+  voice: string;
+}
+
 export function createComposerMedia(
   form: HTMLFormElement,
   onChange: () => void,
@@ -19,26 +25,45 @@ export function createComposerMedia(
   controls.className = 'composer-media';
   controls.innerHTML = `
     <div class="draft-media" aria-label="Attachments" hidden></div>
-    <div class="media-options">
-      <button type="button" class="attach-photo">Photo</button>
-      <button type="button" class="attach-audio">Audio file</button>
-      <label class="reply-mode">Reply
-        <select aria-label="Reply format">
+    <label class="voice-option" hidden>Voice
+      <input aria-label="Audio voice" value="alloy" maxlength="128" autocomplete="off" autocapitalize="none" spellcheck="false" />
+    </label>
+    <p class="media-notice" role="status" hidden></p>`;
+  form.prepend(controls);
+  const tools = document.createElement('div');
+  tools.className = 'composer-tools';
+  tools.innerHTML = `
+    <div class="attachment-control">
+      <button type="button" class="attachment-toggle" aria-label="Add attachment" title="Add attachment" aria-expanded="false" aria-controls="companion-attachment-menu">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+      </button>
+      <div class="attachment-menu" id="companion-attachment-menu" role="group" aria-label="Add attachment" hidden>
+        <button type="button" class="attach-photo">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="3" /><circle cx="8" cy="8" r="1.5" /><path d="m3 17 5-5 4 4 3-3 6 6" /></svg>
+          Photo
+        </button>
+        <button type="button" class="attach-audio">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 9v6M8 5v14M12 3v18M16 6v12M20 9v6" /></svg>
+          Audio file
+        </button>
+      </div>
+    </div>
+    <label class="reply-mode">
+      <span class="sr-only">Reply format</span>
+        <select class="reply-select" aria-label="Reply format">
           <option value="text">Text</option>
           <option value="image">Image</option>
           <option value="audio">Audio</option>
         </select>
-      </label>
-      <label class="voice-option" hidden>Voice
-        <input aria-label="Audio voice" value="alloy" maxlength="128" autocomplete="off" autocapitalize="none" spellcheck="false" />
-      </label>
-    </div>
-    <p class="media-notice" role="status" hidden></p>`;
-  form.prepend(controls);
+    </label>`;
+  form.querySelector<HTMLElement>('.composer-bottom')!.prepend(tools);
   const draft = controls.querySelector<HTMLDivElement>('.draft-media')!;
-  const photo = controls.querySelector<HTMLButtonElement>('.attach-photo')!;
-  const audio = controls.querySelector<HTMLButtonElement>('.attach-audio')!;
-  const mode = controls.querySelector<HTMLSelectElement>('select')!;
+  const attachmentControl = tools.querySelector<HTMLDivElement>('.attachment-control')!;
+  const attachmentToggle = tools.querySelector<HTMLButtonElement>('.attachment-toggle')!;
+  const attachmentMenu = tools.querySelector<HTMLDivElement>('.attachment-menu')!;
+  const photo = tools.querySelector<HTMLButtonElement>('.attach-photo')!;
+  const audio = tools.querySelector<HTMLButtonElement>('.attach-audio')!;
+  const mode = tools.querySelector<HTMLSelectElement>('select')!;
   const voice = controls.querySelector<HTMLInputElement>('input')!;
   const voiceOption = controls.querySelector<HTMLLabelElement>('.voice-option')!;
   const notice = controls.querySelector<HTMLParagraphElement>('.media-notice')!;
@@ -50,6 +75,79 @@ export function createComposerMedia(
   let importing = false;
   let disposed = false;
   let focusFrame = 0;
+  let menuOpen = false;
+  const nativePopover = typeof attachmentMenu.showPopover === 'function';
+  if (nativePopover) attachmentMenu.setAttribute('popover', 'auto');
+
+  function closeMenu(restoreFocus = false) {
+    if (!menuOpen) return;
+    menuOpen = false;
+    if (nativePopover && attachmentMenu.matches(':popover-open')) attachmentMenu.hidePopover();
+    attachmentMenu.hidden = true;
+    attachmentToggle.setAttribute('aria-expanded', 'false');
+    if (restoreFocus && !attachmentToggle.disabled) attachmentToggle.focus();
+  }
+
+  function positionMenu() {
+    if (!nativePopover || !menuOpen) return;
+    const anchor = attachmentToggle.getBoundingClientRect();
+    const width = attachmentMenu.getBoundingClientRect().width;
+    attachmentMenu.style.left = `${Math.max(12, Math.min(anchor.left, window.innerWidth - width - 12))}px`;
+    attachmentMenu.style.top = `${Math.max(12, anchor.top - attachmentMenu.getBoundingClientRect().height - 8)}px`;
+  }
+
+  function openMenu() {
+    if (attachmentToggle.disabled) return;
+    menuOpen = true;
+    attachmentMenu.hidden = false;
+    attachmentToggle.setAttribute('aria-expanded', 'true');
+    if (nativePopover) {
+      attachmentMenu.style.position = 'fixed';
+      attachmentMenu.style.margin = '0';
+      attachmentMenu.style.bottom = 'auto';
+      attachmentMenu.style.right = 'auto';
+      attachmentMenu.style.maxWidth = 'calc(100vw - 24px)';
+      attachmentMenu.showPopover();
+      positionMenu();
+    } else {
+      attachmentMenu.style.position = 'static';
+      controls.append(attachmentMenu);
+    }
+    (photo.disabled ? audio : photo).focus();
+  }
+
+  function outsideMenu(event: PointerEvent) {
+    if (
+      event.target instanceof Node &&
+      !attachmentControl.contains(event.target) &&
+      !attachmentMenu.contains(event.target)
+    )
+      closeMenu();
+  }
+
+  function menuKey(event: KeyboardEvent) {
+    if (event.key !== 'Escape' || !menuOpen) return;
+    event.preventDefault();
+    event.stopPropagation();
+    closeMenu(true);
+  }
+
+  function menuFocus(event: FocusEvent) {
+    const next = event.relatedTarget;
+    if (next instanceof Node && !attachmentControl.contains(next) && !attachmentMenu.contains(next))
+      closeMenu();
+  }
+
+  function popoverToggle() {
+    if (nativePopover && menuOpen && !attachmentMenu.matches(':popover-open')) closeMenu();
+  }
+
+  document.addEventListener('pointerdown', outsideMenu);
+  document.addEventListener('keydown', menuKey);
+  attachmentControl.addEventListener('focusout', menuFocus);
+  attachmentMenu.addEventListener('focusout', menuFocus);
+  attachmentMenu.addEventListener('toggle', popoverToggle);
+  window.addEventListener('resize', positionMenu);
   function revealInput() {
     if (document.activeElement !== textarea) return;
     cancelAnimationFrame(focusFrame);
@@ -75,6 +173,8 @@ export function createComposerMedia(
     const busy = disabled || importing || !configuration;
     photo.disabled = busy || configuration?.capabilities.image_input === 'unsupported';
     audio.disabled = busy || configuration?.capabilities.audio_input === 'unsupported';
+    attachmentToggle.disabled = busy || (photo.disabled && audio.disabled);
+    if (attachmentToggle.disabled) closeMenu();
     mode.disabled = busy;
     voice.disabled = busy;
     for (const type of ['image', 'audio'] as const) {
@@ -113,7 +213,8 @@ export function createComposerMedia(
       const remove = document.createElement('button');
       remove.type = 'button';
       remove.className = 'remove-attachment';
-      remove.textContent = 'Remove';
+      remove.innerHTML =
+        '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>';
       remove.setAttribute('aria-label', `Remove ${attachment.file_name ?? attachment.type}`);
       remove.addEventListener('click', () => {
         media = media.filter((value) => value.path !== attachment.path);
@@ -128,6 +229,7 @@ export function createComposerMedia(
   }
 
   async function attach(type: 'image' | 'audio') {
+    closeMenu();
     if (disabled || importing || !configuration) return;
     if (media.length >= MAX_MEDIA_FILES) {
       onError(new Error('Attach up to 8 files per message.'));
@@ -168,6 +270,10 @@ export function createComposerMedia(
 
   photo.addEventListener('click', () => void attach('image'));
   audio.addEventListener('click', () => void attach('audio'));
+  attachmentToggle.addEventListener('click', () => {
+    if (menuOpen) closeMenu();
+    else openMenu();
+  });
   mode.addEventListener('change', () => {
     update();
     onChange();
@@ -193,11 +299,32 @@ export function createComposerMedia(
       media = [];
       render();
     },
+    draft(): ComposerDraft {
+      return {
+        media: media.map((asset) => ({ ...asset })),
+        reply_mode: mode.value as ComposerDraft['reply_mode'],
+        voice: voice.value,
+      };
+    },
+    restoreDraft(value?: ComposerDraft) {
+      closeMenu();
+      media = value?.media.map((asset) => ({ ...asset })) ?? [];
+      mode.value = value?.reply_mode ?? 'text';
+      voice.value = value?.voice ?? 'alloy';
+      render();
+    },
     dispose() {
       disposed = true;
+      closeMenu();
       cancelAnimationFrame(focusFrame);
       textarea.removeEventListener('focus', revealInput);
       window.removeEventListener('resize', revealInput);
+      document.removeEventListener('pointerdown', outsideMenu);
+      document.removeEventListener('keydown', menuKey);
+      attachmentControl.removeEventListener('focusout', menuFocus);
+      attachmentMenu.removeEventListener('focusout', menuFocus);
+      attachmentMenu.removeEventListener('toggle', popoverToggle);
+      window.removeEventListener('resize', positionMenu);
       previews.dispose();
     },
   };

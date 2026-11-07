@@ -3,7 +3,7 @@
   "api_version": 2,
   "applet_id": "chatbot",
   "name": "Companion",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "permissions": ["sqlite", "llm", "fs", "photos", "audio"],
   "lib": "lib/main.wasm"
 }

@@ -4,15 +4,10 @@ import {
   type LlmConfiguration,
   type LlmTarget,
 } from '../../../packages/applet-sdk/src';
-import { createComposerMedia } from './composer';
+import { createComposerMedia, type ComposerDraft } from './composer';
+import { createHistory, type ConversationSummary } from './history';
 import { createMediaRenderer, pauseMediaPlayback, type MediaAsset } from './media';
 import './style.css';
-
-interface Conversation {
-  conversation_id: string;
-  title: string;
-  updated_at: string;
-}
 
 interface Message {
   message_id: string;
@@ -26,27 +21,31 @@ const root =
   document.getElementById('app') ?? document.body.appendChild(document.createElement('div'));
 root.id = 'app';
 root.innerHTML = `
-  <aside class="sidebar">
-    <div class="brand"><span class="brand-mark" aria-hidden="true">✳</span><div>Companion<span>A little room to think</span></div></div>
-    <button class="new-chat" type="button"><span aria-hidden="true">＋</span> New conversation</button>
-    <div class="section-label">YOUR CONVERSATIONS</div>
-    <nav class="conversation-list" aria-label="Conversations"></nav>
-    <div class="sidebar-footer"><span class="local-dot"></span> Saved on this device</div>
-  </aside>
+  <button class="history-backdrop" type="button" aria-label="Close conversations" tabindex="-1" hidden></button>
+  <aside class="sidebar" id="conversations-panel" aria-label="Conversations"></aside>
   <main class="chat">
     <header class="chat-header">
-      <div><p class="eyebrow">COMPANION</p><h1>New conversation</h1></div>
+      <button class="header-icon history-toggle" type="button" aria-label="Open conversations" aria-controls="conversations-panel" aria-expanded="false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 6h16M4 12h11M4 18h7" /></svg>
+      </button>
+      <div class="chat-heading"><h1>New chat</h1>
       <button class="model-pill" type="button" disabled>Choose model ▾</button>
+      </div>
+      <button class="header-icon header-new" type="button" aria-label="New chat" title="New chat">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M13 5H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8M16 3l5 5M10 14l1-5 8-8 5 5-8 8-6 1Z" transform="translate(0 1) scale(.9)" /></svg>
+      </button>
     </header>
-    <div class="mobile-history"><select aria-label="Conversation"></select><button type="button" class="mobile-new" aria-label="New conversation">＋</button></div>
     <div class="error-banner" role="alert" hidden></div>
     <div class="messages" aria-live="polite" aria-relevant="additions text">
       <div class="loading">Opening your conversations…</div>
     </div>
     <form class="composer">
       <label class="sr-only" for="message">Message</label>
-      <textarea id="message" rows="2" maxlength="32768" enterkeyhint="send" placeholder="Ask a question, explore an idea…" disabled></textarea>
-      <div class="composer-bottom"><span class="composer-hint">Enter to send · Shift + Enter for a new line</span><button class="send" type="submit" disabled>Send <span aria-hidden="true">↑</span></button><button class="stop" type="button" hidden>Stop reply <span aria-hidden="true">■</span></button></div>
+      <textarea id="message" rows="1" maxlength="32768" enterkeyhint="send" placeholder="Message Companion" disabled></textarea>
+      <div class="composer-bottom">
+        <button class="send composer-action" type="submit" aria-label="Send message" title="Send message" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 19V5m-6 6 6-6 6 6" /></svg></button>
+        <button class="stop composer-action" type="button" aria-label="Stop reply" title="Stop reply" hidden><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="2" /></svg></button>
+      </div>
     </form>
     <p class="footer-note"></p>
   </main>`;
@@ -62,10 +61,9 @@ const errorElement = element<HTMLDivElement>('.error-banner');
 const textarea = element<HTMLTextAreaElement>('textarea');
 const sendButton = element<HTMLButtonElement>('.send');
 const stopButton = element<HTMLButtonElement>('.stop');
-const select = element<HTMLSelectElement>('select');
 const modelButton = element<HTMLButtonElement>('.model-pill');
 const footer = element<HTMLParagraphElement>('.footer-note');
-let conversations: Conversation[] = [];
+let conversations: ConversationSummary[] = [];
 let currentId = '';
 let selected: LlmConfiguration | null = null;
 let changingView = false;
@@ -79,7 +77,7 @@ interface Reply {
 interface Snapshot {
   revision: number;
   conversation_id: string;
-  conversations: Conversation[];
+  conversations: ConversationSummary[];
   messages: Message[];
   target: LlmTarget | null;
   active: Reply | null;
@@ -91,11 +89,30 @@ let revision = -1;
 let ready = false;
 const messageMedia = createMediaRenderer(showError);
 const composer = createComposerMedia(element<HTMLFormElement>('form'), updateControls, showError);
+const history = createHistory({
+  panel: element<HTMLElement>('.sidebar'),
+  trigger: element<HTMLButtonElement>('.history-toggle'),
+  backdrop: element<HTMLButtonElement>('.history-backdrop'),
+  onSelect: (conversation_id) => {
+    void changeView(() => applet.invoke('open_conversation', { conversation_id }));
+  },
+  onCreate: newConversation,
+  onStop: stopReply,
+});
+const drafts = new Map<string, { text: string; composer: ComposerDraft }>();
+const scrollPositions = new Map<string, number>();
+const renderedMessages: {
+  message_id: string;
+  media_key: string;
+  article: HTMLElement;
+  text: HTMLParagraphElement;
+}[] = [];
 window.addEventListener(
   'pagehide',
   () => {
     messageMedia.dispose();
     composer.dispose();
+    history.dispose();
   },
   { once: true },
 );
@@ -124,43 +141,20 @@ function updateControls(): void {
   stopButton.hidden = !activeRequest;
   stopButton.disabled = !!activeRequest?.stopping;
   modelButton.disabled = submitting;
-  select.disabled = submitting;
-  for (const button of root.querySelectorAll<HTMLButtonElement>(
-    '.conversation-list button, .new-chat, .mobile-new',
-  )) {
-    button.disabled = submitting;
-  }
+  element<HTMLButtonElement>('.header-new').disabled = submitting;
+  element<HTMLButtonElement>('.history-toggle').disabled = !ready || changingView;
+  history.update(conversations, currentId, {
+    disabled: submitting,
+    active: !!activeRequest,
+    stopping: !!activeRequest?.stopping,
+  });
 }
 
 function renderHistory(): void {
-  const list = element<HTMLElement>('.conversation-list');
-  list.replaceChildren();
-  select.replaceChildren();
-  for (const conversation of conversations) {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className =
-      conversation.conversation_id === currentId ? 'conversation active' : 'conversation';
-    button.textContent = conversation.title;
-    button.title = conversation.title;
-    button.setAttribute(
-      'aria-current',
-      conversation.conversation_id === currentId ? 'page' : 'false',
-    );
-    button.addEventListener('click', () => {
-      void changeView(() =>
-        applet.invoke('open_conversation', { conversation_id: conversation.conversation_id }),
-      );
-    });
-    list.appendChild(button);
-    const option = document.createElement('option');
-    option.value = conversation.conversation_id;
-    option.textContent = conversation.title;
-    option.selected = conversation.conversation_id === currentId;
-    select.appendChild(option);
-  }
   element<HTMLHeadingElement>('h1').textContent =
-    conversations.find((value) => value.conversation_id === currentId)?.title ?? 'New conversation';
+    conversations
+      .find((value) => value.conversation_id === currentId)
+      ?.title.replace(/^New conversation$/, 'New chat') ?? 'New chat';
   updateControls();
 }
 
@@ -172,6 +166,20 @@ function appendMessage(message: Message): HTMLParagraphElement {
   label.textContent = message.role === 'user' ? 'You' : 'Companion';
   const text = document.createElement('p');
   text.className = 'message-content';
+  article.append(label, text);
+  messageMedia.render(article, message.media ?? []);
+  updateMessage(article, text, message);
+  messagesElement.appendChild(article);
+  renderedMessages.push({
+    message_id: message.message_id,
+    media_key: JSON.stringify(message.media ?? []),
+    article,
+    text,
+  });
+  return text;
+}
+
+function updateMessage(article: HTMLElement, text: HTMLParagraphElement, message: Message): void {
   text.textContent =
     message.content ||
     (message.status === 'pending'
@@ -180,28 +188,46 @@ function appendMessage(message: Message): HTMLParagraphElement {
         ? ''
         : 'No reply received.');
   text.hidden = !text.textContent;
-  article.append(label, text);
-  messageMedia.render(article, message.media ?? []);
+  article.querySelector('.message-status')?.remove();
   if (message.status === 'interrupted') {
     const status = document.createElement('span');
     status.className = 'message-status';
     status.textContent = 'Reply interrupted';
     article.appendChild(status);
   }
-  messagesElement.appendChild(article);
-  return text;
 }
 
-function renderMessages(messages: Message[]): void {
-  messageMedia.reset();
-  messagesElement.replaceChildren();
+function renderMessages(messages: Message[], switched: boolean): void {
+  const scrollTop = messagesElement.scrollTop;
+  const savedPosition = switched ? scrollPositions.get(currentId) : undefined;
+  const follow = switched
+    ? savedPosition === undefined
+    : messagesElement.scrollHeight - scrollTop - messagesElement.clientHeight < 100;
+  const rebuild =
+    switched ||
+    !renderedMessages.length ||
+    renderedMessages.some((rendered, index) => {
+      const message = messages[index];
+      return (
+        !message ||
+        message.message_id !== rendered.message_id ||
+        JSON.stringify(message.media ?? []) !== rendered.media_key
+      );
+    });
+  if (rebuild) {
+    messageMedia.reset();
+    renderedMessages.length = 0;
+    messagesElement.replaceChildren();
+  }
+  streamNode = undefined;
   if (messages.length === 0) {
     const empty = document.createElement('div');
     empty.className = 'empty-state';
-    empty.innerHTML = `<div class="empty-symbol" aria-hidden="true">✳</div><h2>What’s on your mind?</h2><p>Ask a question or explore an idea.</p><div class="suggestions"><button type="button">Help me think through an idea</button><button type="button">Explain something simply</button><button type="button">Make a plan for today</button></div>`;
+    empty.innerHTML = `<h2>How can I help?</h2><p>A question, an idea, a fresh perspective.</p><div class="suggestions"><button type="button">Brainstorm an idea</button><button type="button">Explain something</button><button type="button">Make a plan</button></div>`;
     for (const button of empty.querySelectorAll<HTMLButtonElement>('button')) {
       button.addEventListener('click', () => {
         textarea.value = button.textContent ?? '';
+        resizeInput();
         updateControls();
         textarea.focus({ preventScroll: true });
       });
@@ -209,15 +235,18 @@ function renderMessages(messages: Message[]): void {
     messagesElement.appendChild(empty);
     messagesElement.scrollTop = 0;
   } else {
-    streamNode = undefined;
-    for (const message of messages) {
-      const node = appendMessage(message);
+    for (const [index, message] of messages.entries()) {
+      const rendered = renderedMessages[index];
+      const node = rendered?.text ?? appendMessage(message);
+      if (rendered) updateMessage(rendered.article, node, message);
       if (activeRequest?.assistant_id === message.message_id) {
         streamNode = node;
         node.textContent = activeRequest.partial || 'Thinking…';
+        node.hidden = false;
       }
     }
-    scrollToBottom();
+    if (follow) scrollToBottom();
+    else messagesElement.scrollTop = savedPosition ?? scrollTop;
   }
 }
 
@@ -237,13 +266,25 @@ async function applySnapshot(view: Snapshot): Promise<void> {
     }
   }
   if (view.revision < revision) return;
-  if (view.conversation_id !== currentId) await pauseMediaPlayback();
+  const switched = view.conversation_id !== currentId;
+  if (switched) await pauseMediaPlayback();
   if (view.revision < revision) return;
   revision = view.revision;
+  if (switched && currentId) {
+    drafts.set(currentId, { text: textarea.value, composer: composer.draft() });
+    scrollPositions.set(currentId, messagesElement.scrollTop);
+  }
   currentId = view.conversation_id;
   conversations = view.conversations;
   activeRequest = view.active;
   selected = model;
+  if (switched) {
+    const draft = drafts.get(currentId);
+    textarea.value = draft?.text ?? '';
+    composer.update(true, model);
+    composer.restoreDraft(draft?.composer);
+    resizeInput();
+  }
   const label = model ? `${model.provider_name} · ${model.model_id}` : 'Choose model';
   modelButton.textContent = `${label} ▾`;
   modelButton.title = model
@@ -251,13 +292,14 @@ async function applySnapshot(view: Snapshot): Promise<void> {
     : 'Choose a provider and model';
   modelButton.setAttribute('aria-label', modelButton.title);
   footer.textContent = view.messages.length
-    ? 'Choosing a different provider or model starts a new conversation.'
+    ? 'Changing models starts a new chat.'
     : model
-      ? 'Messages use the provider and model shown above.'
-      : 'Choose a provider and model to send a message.';
+      ? ''
+      : 'Choose a model to start chatting.';
+  footer.hidden = !footer.textContent;
   showError(modelError ?? view.error ?? undefined);
   renderHistory();
-  renderMessages(view.messages);
+  renderMessages(view.messages, switched);
 }
 
 // Subscribe before the first snapshot, coalescing refreshes during a slow host
@@ -318,6 +360,8 @@ function send(): void {
     });
     textarea.value = '';
     composer.clearSent();
+    drafts.delete(currentId);
+    resizeInput();
   });
 }
 
@@ -331,26 +375,30 @@ element<HTMLFormElement>('form').addEventListener('submit', (event) => {
   event.preventDefault();
   send();
 });
-textarea.addEventListener('input', updateControls);
+function resizeInput(): void {
+  textarea.style.height = 'auto';
+  textarea.style.height = `${Math.min(textarea.scrollHeight, 160)}px`;
+}
+textarea.addEventListener('input', () => {
+  resizeInput();
+  updateControls();
+});
 textarea.addEventListener('keydown', (event) => {
   if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
     event.preventDefault();
     send();
   }
 });
-stopButton.addEventListener('click', () => {
+function stopReply(): void {
   if (!activeRequest) return;
   stopButton.disabled = true;
   void applet
     .invoke('stop', { request_id: activeRequest.request_id })
     .then(refresh)
     .catch(showError);
-});
-element<HTMLButtonElement>('.new-chat').addEventListener('click', newConversation);
-element<HTMLButtonElement>('.mobile-new').addEventListener('click', newConversation);
-select.addEventListener('change', () => {
-  void changeView(() => applet.invoke('open_conversation', { conversation_id: select.value }));
-});
+}
+stopButton.addEventListener('click', stopReply);
+element<HTMLButtonElement>('.header-new').addEventListener('click', newConversation);
 modelButton.addEventListener('click', () => {
   void changeView(async () => {
     const result = await llm.chooseModel(selected ? { current: targetOf(selected) } : {});
