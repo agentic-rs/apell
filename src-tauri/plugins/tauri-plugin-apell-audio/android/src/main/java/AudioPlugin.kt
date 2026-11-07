@@ -385,8 +385,11 @@ class AudioPlugin(private val activity: Activity): Plugin(activity) {
   @Command fun reset(invoke: Invoke) {
     val session_id = invoke.getArgs().getString("session_id", null)
     if (session_id.isNullOrBlank()) { invoke.reject("An audio session is required."); return }
+    val retire = invoke.getArgs().optBoolean("retire", true)
     activity.runOnUiThread {
-      closed_sessions.add(session_id)
+      // A failed start can be rolled back without retiring the attached view.
+      // Nonterminal rollback never removes a previously closed owner.
+      if (retire) closed_sessions.add(session_id)
       releaseAll()
       invoke.resolve()
     }

@@ -4,6 +4,10 @@ import Tauri
 import UIKit
 
 struct SessionArgs: Decodable { let session_id: String }
+struct ResetArgs: Decodable {
+  let session_id: String
+  let retire: Bool?
+}
 struct PathArgs: Decodable { let path: String }
 struct RecordingArgs: Decodable {
   let path: String
@@ -349,9 +353,11 @@ final class AudioPlugin: Plugin, AVAudioRecorderDelegate, AVAudioPlayerDelegate 
   }
 
   @objc func reset(_ invoke: Invoke) throws {
-    let args = try invoke.parseArgs(SessionArgs.self)
+    let args = try invoke.parseArgs(ResetArgs.self)
     DispatchQueue.main.async {
-      self.closed_sessions.insert(args.session_id)
+      // A failed start can be rolled back without retiring the attached view.
+      // Nonterminal rollback never removes a previously closed owner.
+      if args.retire ?? true { self.closed_sessions.insert(args.session_id) }
       self.generation += 1
       self.cancelPendingStart("The audio session closed.")
       self.pending_share?.resolve()

@@ -295,6 +295,21 @@ pub fn cancel<R: Runtime>(
     .map_err(|_| "Could not cancel the file picker.".into())
 }
 
+/// Abort work already registered for a reversible rollback. Unlike retiring a
+/// view, this must not reject a future attempt from the same owner.
+pub fn cancel_active(owner: &str, operation_id: &str) -> Result<(), String> {
+  let entries = registry()
+    .lock()
+    .map_err(|_| "The file service is unavailable.")?;
+  if let Some(operation) = entries.active.get(&Key {
+    owner: owner.into(),
+    operation_id: operation_id.into(),
+  }) {
+    operation.cancelled.store(true, Ordering::SeqCst);
+  }
+  Ok(())
+}
+
 /// Copy explicitly selected bytes without exposing their native path to an
 /// applet. The destination must be a new private staging file.
 pub fn copy_file(
@@ -391,6 +406,18 @@ mod tests {
     assert!(retry.cancelled());
     drop(retry);
     assert!(Operation::begin_in(&registry, "audio", "another").is_err());
+  }
+
+  #[test]
+  fn reversible_rollback_cancels_only_current_work_and_allows_retry() {
+    let owner = format!("rollback-{}", uuid::Uuid::new_v4());
+    let operation = Operation::begin(&owner, "start").unwrap();
+    let other = Operation::begin(&owner, "other").unwrap();
+    cancel_active(&owner, "start").unwrap();
+    assert!(operation.cancelled());
+    assert!(!other.cancelled());
+    drop(operation);
+    assert!(Operation::begin(&owner, "start").is_ok());
   }
 
   #[test]

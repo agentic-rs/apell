@@ -7,6 +7,14 @@ use tauri::AppHandle;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
+pub(crate) fn recording_available() -> bool {
+  cfg!(any(
+    target_os = "ios",
+    target_os = "android",
+    target_os = "macos"
+  ))
+}
+
 #[derive(Default)]
 pub struct AudioService {
   state: Mutex<AudioSession>,
@@ -105,10 +113,10 @@ fn watch_session(app: AppHandle, service: Arc<AudioService>, owner: String, sess
     // This watcher is the only code that releases ownership. Reset before
     // waiting for the operation lock so a pending picker/permission can settle.
     // No new owner is admitted until that pending call and reset have finished.
-    let _ = native(app.clone(), &owner, "reset", json!({})).await;
+    let _ = native(app.clone(), &owner, "reset", json!({"retire":true})).await;
     let mut state = service.state.lock().await;
     if state.owner.as_deref() == Some(&owner) {
-      let _ = native(app, &owner, "reset", json!({})).await;
+      let _ = native(app, &owner, "reset", json!({"retire":true})).await;
       *state = AudioSession::default();
     }
   });
@@ -126,19 +134,14 @@ pub async fn dispatch(
   let file_audio = mobile || cfg!(target_os = "macos");
   if method == "audio.capabilities" {
     return Ok(
-      json!({"recording":mobile,"import":file_audio,"sharing":mobile,"playback":file_audio}),
+      json!({"recording":recording_available(),"import":file_audio,"sharing":mobile,"playback":file_audio}),
     );
   }
   if !file_audio {
     return Err("Native audio is available on iOS, Android, and macOS.".into());
   }
-  if !mobile
-    && matches!(
-      method,
-      "audio.start" | "audio.pause" | "audio.resume" | "audio.stop" | "audio.share"
-    )
-  {
-    return Err("Recording and audio sharing are available on iOS and Android.".into());
+  if !mobile && method == "audio.share" {
+    return Err("Audio sharing is available on iOS and Android.".into());
   }
   let _modal = if matches!(method, "audio.start" | "audio.import" | "audio.share") {
     Some(
@@ -247,16 +250,31 @@ pub async fn dispatch(
         state.recording_path = Some(relative.clone());
         if started.get("remember").and_then(Value::as_bool) == Some(true) {
           let grants = host.grants.clone();
+          let grant_session = session.clone();
           let saved = crate::commands::blocking(move || {
-            session.run_local(|| grants.remember(Microphone, &applet_id, &source))
+            grant_session.run_local(|| grants.remember(Microphone, &applet_id, &source))
           })
           .await;
           if saved.is_err() {
-            if native(app, owner, "reset", json!({})).await.is_ok() {
-              state.recording_path = None;
+            // Rolling back this start does not retire its still-attached view.
+            // A terminal watcher reset may race this one; native adapters must
+            // keep any already-recorded owner tombstone in either case.
+            if native(app, owner, "reset", json!({"retire":false}))
+              .await
+              .is_ok()
+            {
+              if let Some(path) = state.recording_path.take() {
+                let files = host.files.clone();
+                let _ = crate::commands::blocking(move || {
+                  discard_unpublished_recording(&session, &files, &path)
+                })
+                .await;
+              }
+              return Err("Could not save microphone permission. Try again.".into());
             }
             return Err(
-              "Could not save microphone permission. Reload the applet and try again.".into(),
+              "Could not save microphone permission. Stop the recording before trying again."
+                .into(),
             );
           }
         }
@@ -367,6 +385,24 @@ pub async fn dispatch(
   }
 }
 
+fn discard_unpublished_recording(
+  session: &Session,
+  files: &apell_core::filesystem::FileStore,
+  path: &str,
+) -> Result<(), String> {
+  // Close waits for local mutations. If retirement already won, retain its
+  // partial recording just like every other view-close/reset path.
+  session.run_local(|| {
+    files
+      .dispatch(
+        &session.manifest.applet_id,
+        "fs.remove",
+        json!({"path":path}),
+      )
+      .map(|_| ())
+  })
+}
+
 fn valid_share_name(name: &str) -> bool {
   !name.is_empty()
     && name.len() <= 200
@@ -380,6 +416,68 @@ fn valid_share_name(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use apell_core::{bundles::Manifest, filesystem::FileStore};
+
+  fn recording_fixture() -> (tempfile::TempDir, FileStore, Session) {
+    let directory = tempfile::tempdir().unwrap();
+    let files = FileStore::new(directory.path().join("files"));
+    let session = Session {
+      manifest: Manifest {
+        schema_version: 1,
+        api_version: apell_core::bundles::API_VERSION,
+        applet_id: "recorder-fixture".into(),
+        name: "Recorder fixture".into(),
+        version: "1.0.0".into(),
+        permissions: vec!["audio".into(), "fs".into()],
+        network: true,
+        lib: None,
+      },
+      alive: Arc::new(true.into()),
+      cancellation: tokio::sync::watch::channel(false).0,
+      operations: Arc::default(),
+    };
+    files
+      .dispatch(
+        &session.manifest.applet_id,
+        "fs.mkdir",
+        json!({"path":"recordings"}),
+      )
+      .unwrap();
+    (directory, files, session)
+  }
+
+  #[test]
+  fn failed_start_cleanup_removes_only_its_unpublished_file() {
+    let (_directory, files, session) = recording_fixture();
+    let failed = files
+      .native_path(&session.manifest.applet_id, "recordings/failed.m4a", true)
+      .unwrap();
+    let saved = files
+      .native_path(&session.manifest.applet_id, "recordings/saved.m4a", true)
+      .unwrap();
+    std::fs::write(&failed, b"unpublished recording").unwrap();
+    std::fs::write(&saved, b"saved recording").unwrap();
+    discard_unpublished_recording(&session, &files, "recordings/failed.m4a").unwrap();
+    assert!(!failed.exists());
+    assert_eq!(std::fs::read(saved).unwrap(), b"saved recording");
+    assert!(session.alive.load(Ordering::SeqCst));
+  }
+
+  #[test]
+  fn failed_start_cleanup_preserves_partial_recording_after_view_retirement() {
+    let (_directory, files, session) = recording_fixture();
+    let partial = files
+      .native_path(&session.manifest.applet_id, "recordings/partial.m4a", true)
+      .unwrap();
+    std::fs::write(&partial, b"recoverable recording").unwrap();
+    {
+      let _closed = session.operations.write().unwrap();
+      session.alive.store(false, Ordering::SeqCst);
+      session.cancellation.send_replace(true);
+    }
+    assert!(discard_unpublished_recording(&session, &files, "recordings/partial.m4a").is_err());
+    assert_eq!(std::fs::read(partial).unwrap(), b"recoverable recording");
+  }
 
   #[test]
   fn microphone_grant_edits_require_idle_audio_and_hold_the_capture_lock() {

@@ -52,7 +52,9 @@ open target/release/bundle/macos/Apell.app
 
 The `.app` contains the frontend and Companion bundle and runs without a development server. The macOS configuration uses an ad-hoc signature for local use. Configure a Developer ID locally for public distribution, following [Tauri's macOS signing guide](https://v2.tauri.app/distribute/sign/macos/). For an interactive development build, use `pnpm desktop:dev`. Build products and personal signing configuration stay outside Git.
 
-macOS uses Keychain for provider credentials and native file dialogs for packages and encrypted settings transfers. Applets can import images and audio into their private files and play private audio through the same bridge used on mobile. Camera capture, microphone recording, location, QR transfer, and audio sharing remain mobile features; query audio capabilities before offering those controls. Windows and Linux do not yet have the credential and native media support required for this desktop release.
+macOS uses Keychain for provider credentials and native file dialogs for packages and encrypted settings transfers. Applets can import images and audio, record microphone audio into private files, and play private audio through the same bridge used on mobile. Recording uses the existing per-applet **Allow once / Remember / Cancel** prompt and macOS microphone permission. Start or resume with the window visible; an ongoing recording continues when the window is hidden, closed, or minimized. Closing or reloading the applet stops capture and retains its partial file. Quitting Apell finalizes the recording before the host stops.
+
+Camera capture, location, QR transfer, and audio sharing remain mobile features; query audio capabilities before offering those controls. Windows and Linux do not yet have the credential and native media support required for this desktop release.
 
 ## Mobile development
 
@@ -180,7 +182,7 @@ Applets can send private images, PDFs, or WAV/MP3 audio as user message attachme
 
 ## Recorder applet services
 
-The host supports audio import and playback on iOS, Android, and macOS through the `audio` permission. Recording and file sharing are available on iOS and Android. The `speech` permission provides offline Whisper transcription and language detection after an explicit multilingual model download. Audio stays on the device. See [the audio and speech contract](docs/architecture.md#audio-and-offline-speech) for methods, formats, lifecycle, and limits.
+The host supports microphone recording, audio import, and playback on iOS, Android, and macOS through the `audio` permission. File sharing is available on iOS and Android. The `speech` permission provides offline Whisper transcription and language detection after an explicit multilingual model download. Audio stays on the device. See [the audio and speech contract](docs/architecture.md#audio-and-offline-speech) for methods, formats, lifecycle, and limits.
 
 Applets can take a still photo, import one selected photo, or request a foreground location fix on iOS and Android. macOS supports selecting an image file through the same photo API. See [the camera, photo library, and location contract](docs/architecture.md#camera-photo-library-and-location) for SDK calls and permission behavior.
 

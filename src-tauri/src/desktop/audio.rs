@@ -1,5 +1,8 @@
-//! macOS file import and view-owned playback. Native paths never reach applets.
-use super::picker::{self, copy_file, Operation};
+//! macOS audio dispatch, private imports, and view-owned playback.
+use super::{
+  picker::{self, copy_file, Operation},
+  recording,
+};
 use objc2::{
   extern_class, extern_methods,
   rc::{Allocated, Retained},
@@ -86,7 +89,7 @@ thread_local! {
   static PLAYBACK: RefCell<Option<Playback>> = const { RefCell::new(None) };
 }
 
-fn on_main<R: Runtime, T: Send + 'static>(
+pub(super) fn on_main<R: Runtime, T: Send + 'static>(
   app: &AppHandle<R>,
   action: impl FnOnce(MainThreadMarker) -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
@@ -122,7 +125,7 @@ fn duration_ms(duration: f64) -> Result<f64, String> {
   Ok(duration * 1000.0)
 }
 
-fn load_player(path: &Path, main: MainThreadMarker) -> Result<Retained<AVAudioPlayer>, String> {
+fn open_player(path: &Path, main: MainThreadMarker) -> Result<Retained<AVAudioPlayer>, String> {
   let metadata = fs::metadata(path).map_err(|_| "The audio file is unavailable.")?;
   if !metadata.is_file() || metadata.len() == 0 || metadata.len() > apell_speech::MAX_AUDIO_BYTES {
     return Err("Choose a nonempty audio file no larger than 2 GiB.".into());
@@ -133,8 +136,26 @@ fn load_player(path: &Path, main: MainThreadMarker) -> Result<Retained<AVAudioPl
   if player.channels() == 0 {
     return Err("This file does not contain supported audio.".into());
   }
+  Ok(player)
+}
+
+fn load_player(path: &Path, main: MainThreadMarker) -> Result<Retained<AVAudioPlayer>, String> {
+  let player = open_player(path, main)?;
   duration_ms(player.duration())?;
   Ok(player)
+}
+
+fn capture_duration_ms(duration: f64) -> Result<f64, String> {
+  let maximum = apell_speech::MAX_AUDIO_SECONDS as f64;
+  // AAC framing can slightly pad the finalized container at the capture ceiling.
+  if !duration.is_finite() || duration <= 0.0 || duration > maximum + 0.1 {
+    return Err("The microphone recording could not be finalized. Try stopping it again.".into());
+  }
+  Ok(duration.min(maximum) * 1000.0)
+}
+
+pub(super) fn file_duration_ms(path: &Path, main: MainThreadMarker) -> Result<f64, String> {
+  capture_duration_ms(open_player(path, main)?.duration())
 }
 
 /// Determine the returned MIME from stored bytes; a filename is only a picker hint.
@@ -238,14 +259,31 @@ fn import<R: Runtime>(app: &AppHandle<R>, owner: &str, params: &Value) -> Result
   Ok(result)
 }
 
-fn status(playback: Option<&Playback>) -> Value {
+fn status(playback: Option<&Playback>, capture: Value) -> Value {
   let player = playback.map(|playback| &playback.player);
   json!({
-    "recording_state":"idle",
-    "elapsed_ms":0,
+    "recording_state":capture["recording_state"],
+    "elapsed_ms":capture["elapsed_ms"],
     "playing":player.is_some_and(|player| player.is_playing()),
     "position_ms":player.map(|player| player.current_time() * 1000.0).unwrap_or(0.0),
     "duration_ms":player.map(|player| player.duration() * 1000.0).unwrap_or(0.0),
+  })
+}
+
+// Called on the main thread after consent succeeds, so declining a microphone
+// request does not interrupt audio that is already playing in this view.
+pub(super) fn stop_playback(owner: &str) -> Result<(), String> {
+  PLAYBACK.with_borrow_mut(|loaded| {
+    if loaded
+      .as_ref()
+      .is_some_and(|playback| playback.owner != owner)
+    {
+      return Err("Audio is owned by another applet view.".into());
+    }
+    if let Some(playback) = loaded.take() {
+      playback.player.stop();
+    }
+    Ok(())
   })
 }
 
@@ -254,7 +292,14 @@ pub fn call<R: Runtime>(app: &AppHandle<R>, method: &str, params: Value) -> Resu
   if method == "reset" {
     // Close the shared registry first, including a reset that beats import/play
     // to the main queue. The picker must settle before host ownership is released.
-    picker::cancel(app, &owner, None)?;
+    if params
+      .get("retire")
+      .and_then(Value::as_bool)
+      .unwrap_or(true)
+    {
+      picker::cancel(app, &owner, None)?;
+    }
+    recording::call(app, &owner, "reset", params)?;
     return on_main(app, move |_| {
       PLAYBACK.with_borrow_mut(|loaded| {
         if loaded
@@ -269,7 +314,14 @@ pub fn call<R: Runtime>(app: &AppHandle<R>, method: &str, params: Value) -> Resu
       Ok(Value::Null)
     });
   }
+  if matches!(method, "start" | "pause" | "resume" | "stop") {
+    return recording::call(app, &owner, method, params);
+  }
   if method == "import" {
+    let capture = recording::call(app, &owner, "status", json!({}))?;
+    if capture["recording_state"] != "idle" {
+      return Err("Finish recording before importing audio.".into());
+    }
     return import(app, &owner, &params);
   }
   if !matches!(method, "play" | "playback_pause" | "seek" | "status") {
@@ -279,6 +331,10 @@ pub fn call<R: Runtime>(app: &AppHandle<R>, method: &str, params: Value) -> Resu
   let method = method.to_owned();
   on_main(app, move |main| {
     operation.ensure_active()?;
+    let capture = recording::snapshot(&owner, main)?;
+    if method == "play" && capture["recording_state"] != "idle" {
+      return Err("Finish recording before playback.".into());
+    }
     PLAYBACK.with_borrow_mut(|loaded| {
       if loaded
         .as_ref()
@@ -333,7 +389,7 @@ pub fn call<R: Runtime>(app: &AppHandle<R>, method: &str, params: Value) -> Resu
           player.set_current_time(seconds.min(player.duration()));
           Ok(Value::Null)
         }
-        "status" => Ok(status(loaded.as_ref())),
+        "status" => Ok(status(loaded.as_ref(), capture)),
         _ => unreachable!(),
       }
     })
@@ -351,6 +407,15 @@ mod tests {
     }
     assert_eq!(duration_ms(0.125).unwrap(), 125.0);
     assert_eq!(duration_ms(10_800.0).unwrap(), 10_800_000.0);
+  }
+
+  #[test]
+  fn finalized_capture_tolerates_encoder_padding_without_extending_the_ceiling() {
+    assert_eq!(capture_duration_ms(0.5).unwrap(), 500.0);
+    assert_eq!(capture_duration_ms(10_800.05).unwrap(), 10_800_000.0);
+    assert!(capture_duration_ms(10_800.2).is_err());
+    assert!(capture_duration_ms(f64::NAN).is_err());
+    assert!(capture_duration_ms(0.0).is_err());
   }
 
   #[test]

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<!-- Used by the macOS bundle and Tauri's development-binary metadata. -->
+<dict>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Apell records audio when you allow an applet to use the microphone.</string>
+</dict>
+</plist>

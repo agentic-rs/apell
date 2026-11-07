@@ -2,6 +2,7 @@
 pub mod audio;
 pub mod photos;
 pub mod picker;
+mod recording;
 
 use tauri::{AppHandle, Manager, RunEvent, Runtime, WebviewWindow, WindowEvent};
 
@@ -24,6 +25,10 @@ pub fn on_event<R: Runtime>(app: &AppHandle<R>, event: &RunEvent) {
       let _ = window.show();
       let _ = window.unminimize();
       let _ = window.set_focus();
+    }
+  } else if matches!(event, RunEvent::Exit) {
+    if let Some(main) = objc2::MainThreadMarker::new() {
+      recording::shutdown(main);
     }
   }
 }
