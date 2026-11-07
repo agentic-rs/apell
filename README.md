@@ -74,6 +74,8 @@ iOS build/dev commands automatically run `pnpm ios:prepare`. It prepares the gen
 
 ## Create and distribute an applet
 
+Use the [applet authoring prompts](docs/applet-authoring.md) when starting a new applet, adapting an existing app, or reviewing its mobile interaction.
+
 An applet can live in its own repository. Stage the built frontend and optional backend in one directory. Use relative asset URLs so the frontend loads correctly from its view-specific package URL.
 
 ```text
