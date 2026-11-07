@@ -23,7 +23,6 @@ const SALT_BYTES: usize = 16;
 const NONCE_BYTES: usize = 12;
 const TAG_BYTES: usize = 16;
 const HEADER_BYTES: usize = SALT_BYTES + NONCE_BYTES;
-const MIN_PASSPHRASE_CHARS: usize = 12;
 const MAX_PASSPHRASE_BYTES: usize = 256;
 const KDF_ITERATIONS: NonZeroU32 = NonZeroU32::new(600_000).unwrap();
 static TRANSFER_CRYPTO: Semaphore = Semaphore::const_new(1);
@@ -161,8 +160,11 @@ impl TransferConnection {
 }
 
 fn validate_passphrase(passphrase: &str) -> Result<(), String> {
-  if passphrase.len() > MAX_PASSPHRASE_BYTES || passphrase.chars().count() < MIN_PASSPHRASE_CHARS {
-    return Err("Use a passphrase with at least 12 characters and at most 256 UTF-8 bytes.".into());
+  if passphrase.is_empty() {
+    return Err("Enter a backup passphrase.".into());
+  }
+  if passphrase.len() > MAX_PASSPHRASE_BYTES {
+    return Err("Use a passphrase with at most 256 UTF-8 bytes.".into());
   }
   Ok(())
 }
@@ -435,7 +437,7 @@ pub async fn dispatch(
 mod tests {
   use super::*;
 
-  const PASSPHRASE: &str = "fixture passphrase 17";
+  const PASSPHRASE: &str = "口";
   const API_KEY: &str = "fixture-only-credential";
 
   fn connection(name: &str, api_key: Option<&str>) -> TransferConnection {
@@ -454,6 +456,7 @@ mod tests {
 
   #[test]
   fn encrypted_transfer_round_trips_and_rejects_tampering() {
+    assert!(validate_passphrase(PASSPHRASE).is_ok());
     let archive = archive(vec![connection("Fixture profile", Some(API_KEY))]);
     let payload = seal(&archive, PASSPHRASE).unwrap();
     assert!(payload.starts_with(TRANSFER_PREFIX));
@@ -490,7 +493,7 @@ mod tests {
     }
     let oversized = format!("{TRANSFER_PREFIX}{}", "A".repeat(MAX_PAYLOAD_BYTES));
     assert!(decode_envelope(&oversized).is_err());
-    assert!(validate_passphrase("short").is_err());
+    assert!(validate_passphrase("").is_err());
     assert!(validate_passphrase(&"a".repeat(MAX_PASSPHRASE_BYTES + 1)).is_err());
     assert!(validate_passphrase("模拟配置传输口令只用于验证").is_ok());
   }

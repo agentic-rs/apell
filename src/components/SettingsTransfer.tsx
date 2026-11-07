@@ -22,7 +22,6 @@ import { OperationScope, type Operation } from './providers/state';
 
 const MAX_BACKUP_BYTES = 256 * 1024;
 const MAX_PASSPHRASE_BYTES = 256;
-const MIN_PASSPHRASE_CHARACTERS = 12;
 
 const progress_text = {
   encrypt: 'Encrypting backup…',
@@ -52,10 +51,7 @@ interface TransferFormProps {
 }
 
 function validPassphrase(value: string): boolean {
-  return (
-    [...value].length >= MIN_PASSPHRASE_CHARACTERS &&
-    new TextEncoder().encode(value).length <= MAX_PASSPHRASE_BYTES
-  );
+  return value.length > 0 && new TextEncoder().encode(value).length <= MAX_PASSPHRASE_BYTES;
 }
 
 function PassphraseField({
@@ -205,9 +201,8 @@ function ExportForm({
           ))}
         </div>
         <p>
-          Choose a strong passphrase of at least 12 characters. Enter it separately on the receiving
-          device. The backup includes saved API keys. Connections that use account sign-in require a
-          new sign-in after import.
+          Enter a passphrase and use it again on the receiving device. The backup includes saved API
+          keys. Connections that use account sign-in require a new sign-in after import.
         </p>
         <PassphraseField label="Backup passphrase" value={passphrase} onChange={setPassphrase} />
         {passphrase && new TextEncoder().encode(passphrase).length > MAX_PASSPHRASE_BYTES && (
