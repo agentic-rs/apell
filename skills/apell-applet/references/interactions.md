@@ -1,0 +1,9 @@
+# Interaction and review
+
+Walk the main task from launch to a visible result on a phone. Give each screen a clear primary action and place secondary choices near the task that needs them. Use semantic controls with visible focus and accessible names for icon buttons. Aim for touch areas at least 48 CSS pixels wide and tall. Keep important actions available through taps and keyboard focus. Check contrast, larger text, and screen-reader order.
+
+Show the states that matter for the task. Keep drafts and selections through a failure and present a next action where the error occurs. Distinguish cancelled pickers, denied permission, unsupported capabilities, and retryable failures. Prevent duplicate submissions and expose Stop when the underlying work can be cancelled. Mark interrupted results clearly. For a live feed or streaming response, follow new content only while the user is already at the end. Let input method composition finish before treating Enter as Submit.
+
+Request permissions when the user starts the relevant action. Explain the action in the applet and let Apell present the permission prompt or picker. Direct users to **About this applet** for applet permission settings. Before sending private files to a model or other remote destination, show the selected items and where they will go. Offer undo for reversible deletion where practical and confirm irreversible actions.
+
+Choose checks that match the changed flow. For layout, test narrow width, keyboard, larger text, and landscape. For permission or async changes, test cancellation, denial, slow or offline requests, and repeated taps. For lifecycle changes, close or reload during work, reopen the view, and check the recovered state. Restart Apell when testing data that should survive process termination. Report any device checks still outstanding.

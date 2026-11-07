@@ -4,6 +4,8 @@ Apell is a personal Tauri shell for iOS and Android, with a macOS development ho
 
 The included **Companion** chatbot keeps conversations, SQL migrations, model targets, and in-flight replies in its Rust backend. The interface can close or reload while the backend completes a reply. Reopening the interface asks the backend for its current state. Saved chats survive an Apell restart.
 
+Building an applet? [View the Apell Applet skill](skills/apell-applet/SKILL.md) or [install it in Codex](#applet-authoring-skill).
+
 ## First run
 
 Install a current stable Rust toolchain, Node.js 24 or newer, pnpm, and the [Tauri platform prerequisites](https://v2.tauri.app/start/prerequisites/).
@@ -74,7 +76,19 @@ iOS build/dev commands automatically run `pnpm ios:prepare`. It prepares the gen
 
 ## Create and distribute an applet
 
-Use the [applet authoring prompts](docs/applet-authoring.md) when starting a new applet, adapting an existing app, or reviewing its mobile interaction.
+### Applet authoring skill
+
+The [Apell Applet skill](skills/apell-applet/SKILL.md) guides agents through packaging and APIs, mobile architecture, and interaction review. It loads the references that match the task.
+
+To install it, paste this into Codex.
+
+```text
+Use $skill-installer to install https://github.com/agentic-rs/apell/tree/main/skills/apell-applet
+```
+
+In a new turn in your applet repository, use `$apell-applet` with your task and the Apell revision you target. For a project-local installation, copy the whole [skill folder](skills/apell-applet) into `.agents/skills/` in the downstream repository.
+
+### Package and distribute
 
 An applet can live in its own repository. Stage the built frontend and optional backend in one directory. Use relative asset URLs so the frontend loads correctly from its view-specific package URL.
 
