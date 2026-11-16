@@ -16,7 +16,7 @@
     />
     <meta property="og:url" content="https://agentic-rs.github.io/apell/cn/" />
     <meta property="og:image" content="https://agentic-rs.github.io/apell/icon.png" />
-    <meta property="og:image:alt" content="由四块方形组成的 Apell 图标" />
+    <meta property="og:image:alt" content="青绿色与紫色拱门组成的 Apell 标志" />
     <link rel="canonical" href="https://agentic-rs.github.io/apell/cn/" />
     <link rel="alternate" hreflang="en" href="https://agentic-rs.github.io/apell/" />
     <link rel="alternate" hreflang="zh-CN" href="https://agentic-rs.github.io/apell/cn/" />
@@ -42,6 +42,7 @@
           <nav class="site-links" aria-label="主导航">
             <a href="https://tokn-ai.dev/cn/#tools">工具</a>
             <a href="https://tokn-ai.dev/cn/#workshop">工坊</a>
+            <a href="#applets">小程序</a>
             <a href="#developers">开发指南</a>
             <a href="https://github.com/agentic-rs/apell">GitHub</a>
           </nav>
@@ -53,6 +54,7 @@
             <nav aria-label="主导航">
               <a href="https://tokn-ai.dev/cn/#tools">工具</a>
               <a href="https://tokn-ai.dev/cn/#workshop">工坊</a>
+              <a href="#applets">小程序</a>
               <a href="#developers">开发指南</a>
               <a href="https://github.com/agentic-rs/apell">GitHub</a>
             </nav>
@@ -85,11 +87,23 @@
                 <div class="device-bar"><strong>Apell</strong><span>＋　⚙</span></div>
                 <div class="launcher-grid">
                   <div class="launcher-item">
-                    <div class="tile tile-companion">◒</div>
+                    <img
+                      class="tile"
+                      src="../applets/companion.svg"
+                      alt=""
+                      width="64"
+                      height="64"
+                    />
                     <span>Companion</span>
                   </div>
                   <div class="launcher-item">
-                    <div class="tile">¶</div>
+                    <img
+                      class="tile"
+                      src="../applets/paper-reader.svg"
+                      alt=""
+                      width="64"
+                      height="64"
+                    />
                     <span>论文阅读器</span>
                   </div>
                 </div>
@@ -100,8 +114,14 @@
                   <p class="chat-title">城里过周末</p>
                   <p class="message question">帮我安排一个轻松的周六。</p>
                   <p class="message answer">
-                    <span class="chat-avatar">◒</span
-                    ><span>上午逛逛书店，中午慢慢吃顿饭，下午留点时间散步。</span>
+                    <img
+                      class="chat-avatar"
+                      src="../applets/companion.svg"
+                      alt=""
+                      width="24"
+                      height="24"
+                    />
+                    <span>上午逛逛书店，中午慢慢吃顿饭，下午留点时间散步。</span>
                   </p>
                   <div class="composer">
                     <span>发消息给 Companion</span><span class="send">↑</span>
@@ -112,6 +132,119 @@
             <figcaption>Apell 启动器和内置 Companion 小程序的界面示意</figcaption>
           </figure>
         </div>
+      </section>
+      <section class="shell applets" id="applets" aria-labelledby="applets-title">
+        <div class="section-heading">
+          <h2 id="applets-title">小程序，各有所长。</h2>
+          <p>从这里开始，找到你的日常所需。</p>
+        </div>
+        <ul class="applet-gallery">
+          <li>
+            <a
+              class="applet-card"
+              href="https://github.com/agentic-rs/apell/tree/main/examples/chatbot"
+            >
+              <div class="applet-art applet-art-companion">
+                <img
+                  src="../applets/companion.svg"
+                  alt=""
+                  width="104"
+                  height="104"
+                  loading="lazy"
+                />
+              </div>
+              <div class="applet-heading">
+                <h3>Companion</h3>
+                <span class="applet-status">内置</span>
+              </div>
+              <p>与配置好的模型聊天，也可以带上图片和音频。</p>
+              <span class="applet-link">了解 Companion <span aria-hidden="true">↗</span></span>
+            </a>
+          </li>
+          <li>
+            <a class="applet-card" href="https://github.com/agentic-rs/doi/releases/tag/nightly">
+              <div class="applet-art applet-art-reader">
+                <img
+                  src="../applets/paper-reader.svg"
+                  alt=""
+                  width="104"
+                  height="104"
+                  loading="lazy"
+                />
+              </div>
+              <div class="applet-heading">
+                <h3>Paper Reader</h3>
+                <span class="applet-status">Nightly</span>
+              </div>
+              <p>阅读论文、讨论段落，把思考留下成为笔记。</p>
+              <span class="applet-link">查看版本 <span aria-hidden="true">↗</span></span>
+            </a>
+          </li>
+          <li>
+            <a
+              class="applet-card"
+              href="https://github.com/tokn-ai/tokn-session/releases/tag/nightly"
+            >
+              <div class="applet-art applet-art-sessions">
+                <img
+                  src="../applets/tokn-sessions.svg"
+                  alt=""
+                  width="104"
+                  height="104"
+                  loading="lazy"
+                />
+              </div>
+              <div class="applet-heading">
+                <h3>Tokn Sessions</h3>
+                <span class="applet-status">Nightly</span>
+              </div>
+              <p>浏览远程助手会话，并向支持交互的运行中会话发送消息。</p>
+              <span class="applet-link">查看版本 <span aria-hidden="true">↗</span></span>
+            </a>
+          </li>
+          <li>
+            <article class="applet-card">
+              <div class="applet-art applet-art-learning">
+                <img src="../applets/learning.svg" alt="" width="104" height="104" loading="lazy" />
+              </div>
+              <div class="applet-heading">
+                <h3>Learning</h3>
+                <span class="applet-status">本地小程序</span>
+              </div>
+              <p>跟随 AI 向导探索主题，记录所学与进度。</p>
+            </article>
+          </li>
+          <li>
+            <article class="applet-card">
+              <div class="applet-art applet-art-recorder">
+                <img src="../applets/recorder.svg" alt="" width="104" height="104" loading="lazy" />
+              </div>
+              <div class="applet-heading">
+                <h3>Recorder</h3>
+                <span class="applet-status">本地小程序</span>
+              </div>
+              <p>录制音频、整理语音笔记，并在设备上转写。</p>
+            </article>
+          </li>
+          <li>
+            <article class="applet-card">
+              <div class="applet-art applet-art-fieldnotes">
+                <img
+                  src="../applets/fieldnotes.svg"
+                  alt=""
+                  width="104"
+                  height="104"
+                  loading="lazy"
+                />
+              </div>
+              <div class="applet-heading">
+                <h3>Fieldnotes</h3>
+                <span class="applet-status">本地小程序</span>
+              </div>
+              <p>用旅行手记串起行程、照片和地点。</p>
+            </article>
+          </li>
+        </ul>
       </section>
       <section class="shell features" aria-labelledby="features-title">
         <h2 id="features-title">安装小程序，打开就能用。</h2>

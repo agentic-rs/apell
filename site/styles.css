@@ -395,18 +395,11 @@ html:lang(zh-CN) h1 em {
   text-align: center;
 }
 .tile {
-  display: grid;
-  place-content: center;
+  display: block;
   width: 8.8cqw;
   height: 8.8cqw;
-  border: 1px solid var(--apell-rule);
   border-radius: 2.6cqw;
-  background: var(--apell-subtle);
-  font-size: 4.2cqw;
-  line-height: 1;
-}
-.tile-companion {
-  background: var(--apell-teal);
+  object-fit: contain;
 }
 .companion {
   inset: 27% 8% 9% 39%;
@@ -455,6 +448,10 @@ html:lang(zh-CN) h1 em {
   color: var(--apell-ink);
   font-weight: 650;
 }
+.chat-avatar {
+  border-radius: 1.1cqw;
+  background: transparent;
+}
 .composer {
   display: flex;
   justify-content: space-between;
@@ -472,8 +469,103 @@ html:lang(zh-CN) h1 em {
   text-align: center;
 }
 
+.applets,
 .features {
   padding-block: clamp(45px, 7vw, 90px);
+}
+.applets {
+  scroll-margin-top: 28px;
+  border-bottom: 1px solid var(--apell-rule);
+}
+.section-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px 32px;
+}
+.section-heading > p {
+  max-width: 22rem;
+  color: var(--apell-muted-light);
+  text-wrap: pretty;
+}
+.applet-gallery {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 44px clamp(20px, 3vw, 36px);
+  margin: 36px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.applet-card {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  border-radius: 20px 20px 3px 3px;
+}
+.applet-art {
+  display: grid;
+  place-items: center;
+  min-height: 196px;
+  border: 1px solid var(--apell-rule);
+  border-radius: 20px;
+}
+.applet-art-companion,
+.applet-art-fieldnotes {
+  background: #e7f1ee;
+}
+.applet-art-reader,
+.applet-art-learning {
+  background: #f2eee7;
+}
+.applet-art-sessions,
+.applet-art-recorder {
+  background: #ece7f1;
+}
+.applet-art img {
+  display: block;
+  width: 104px;
+  height: 104px;
+  filter: drop-shadow(0 12px 14px #211c2b16);
+}
+a.applet-card:hover .applet-art {
+  border-color: var(--apell-violet);
+}
+.applet-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  margin-top: 22px;
+}
+.applet-heading h3 {
+  margin: 0;
+  font-size: 1.15rem;
+  font-weight: 650;
+  letter-spacing: -0.025em;
+}
+.applet-status {
+  color: var(--apell-muted-light);
+  font: 11px/1.5 var(--mono);
+}
+.applet-card > p {
+  margin-block: 8px 12px;
+  color: var(--apell-muted-light);
+  text-wrap: pretty;
+}
+.applet-link {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  margin-top: auto;
+  color: var(--apell-plum);
+  font-size: 13px;
+  font-weight: 650;
+}
+a.applet-card:hover .applet-link {
+  text-decoration: underline;
+  text-underline-offset: 4px;
 }
 h2 {
   font-size: clamp(2rem, 4vw, 3.35rem);
@@ -567,11 +659,49 @@ html:lang(zh-CN) h2 {
   .developer-inner {
     grid-template-columns: minmax(0, 1fr);
   }
+  .applet-gallery {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 32px;
+  }
+  .applet-card {
+    display: grid;
+    grid-template-columns: 112px minmax(0, 1fr);
+    column-gap: 24px;
+    align-content: start;
+    border-radius: 20px 3px 3px 20px;
+  }
+  .applet-art {
+    grid-row: 1 / 4;
+    align-self: start;
+    min-height: 112px;
+  }
+  .applet-art img {
+    width: 72px;
+    height: 72px;
+  }
+  .applet-heading {
+    margin-top: 0;
+  }
+  .applet-card > p {
+    margin-bottom: 0;
+  }
   .package {
     width: min(100%, 35rem);
   }
 }
 @media (max-width: 400px) {
+  .applet-card {
+    grid-template-columns: 88px minmax(0, 1fr);
+    column-gap: 18px;
+  }
+  .applet-art {
+    min-height: 88px;
+    border-radius: 16px;
+  }
+  .applet-art img {
+    width: 60px;
+    height: 60px;
+  }
   .actions {
     gap: 8px;
   }

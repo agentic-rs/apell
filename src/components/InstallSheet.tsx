@@ -3,6 +3,7 @@ import type { GitHubRelease, InstalledApplet } from '../lib/types';
 import { githubRelease, message } from '../lib/tauri';
 import { Icon } from './Icon';
 import { Sheet } from './Sheet';
+import companion_icon from '../../assets/companion.svg';
 
 interface InstallSheetProps {
   open: boolean;
@@ -42,7 +43,7 @@ export function InstallSheet(props: InstallSheetProps) {
     <Sheet open={props.open} title="Add an applet" onClose={props.onClose}>
       <button className="install-option" disabled={disabled} onClick={props.onSample}>
         <span className="option-icon">
-          <Icon name="chat" />
+          <img src={companion_icon} alt="" />
         </span>
         <span>
           <strong>{props.hasSample ? 'Update Companion' : 'Try Companion'}</strong>
