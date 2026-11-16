@@ -84,37 +84,97 @@ body {
   gap: 12px;
   min-height: 76px;
 }
-.site-name,
-.site-header nav,
-.site-header nav a {
+.header-inner {
+  position: relative;
+}
+.site-identity,
+.site-brand,
+.site-product,
+.header-actions,
+.site-links,
+.site-header nav a,
+.language,
+.site-menu summary {
   display: flex;
   align-items: center;
 }
-.site-name {
+.site-identity {
   gap: 8px;
+  flex: none;
+}
+.site-brand,
+.site-product {
   min-height: 44px;
-  font-weight: 650;
 }
-.site-name img {
+.site-brand {
+  min-width: 44px;
+}
+.site-brand img {
   display: block;
-  border-radius: 8px;
 }
-.site-header nav {
+.site-divider {
+  color: var(--apell-violet);
+}
+.site-product {
+  color: var(--apell-plum);
+  font: 650 13px/1 var(--mono);
+}
+.header-actions,
+.site-links {
   gap: 18px;
 }
-.site-header nav a {
+.site-header a,
+.site-menu summary {
   min-height: 44px;
   font-size: 13px;
   font-weight: 600;
 }
-.site-header nav a:hover {
+.site-header nav a:hover,
+.site-product:hover {
   color: var(--apell-plum);
+  text-decoration: underline;
+  text-underline-offset: 4px;
 }
-.site-header .language {
+.language {
   justify-content: center;
   min-width: 44px;
   border: 1px solid var(--apell-rule);
   border-radius: 8px;
+}
+.site-menu {
+  display: none;
+}
+.site-menu summary {
+  cursor: pointer;
+  gap: 8px;
+  list-style: none;
+  padding: 0 10px;
+  border: 1px solid var(--apell-rule);
+  border-radius: 8px;
+}
+.site-menu summary::-webkit-details-marker {
+  display: none;
+}
+.site-menu summary::after {
+  content: '';
+  width: 14px;
+  height: 8px;
+  border-block: 1px solid currentColor;
+}
+.site-menu nav {
+  position: absolute;
+  z-index: 1;
+  inset-inline-end: 0;
+  top: calc(100% - 2px);
+  width: min(260px, 100%);
+  padding: 6px 14px;
+  background: var(--apell-canvas);
+  border: 1px solid var(--apell-rule);
+  border-radius: 12px;
+  box-shadow: 0 12px 32px #211c2b2b;
+}
+.site-menu nav a + a {
+  border-top: 1px solid var(--apell-rule);
 }
 .button,
 .text-link {
@@ -153,6 +213,17 @@ body {
     width: calc(100% - 64px);
   }
 }
+@media (max-width: 760px) {
+  .header-actions {
+    gap: 8px;
+  }
+  .site-links {
+    display: none;
+  }
+  .site-menu {
+    display: block;
+  }
+}
 @media (max-width: 600px) {
   .shell {
     width: calc(100% - 40px);
@@ -161,11 +232,10 @@ body {
   .site-footer {
     min-height: 64px;
   }
-  .site-header nav {
-    gap: 10px;
-  }
-  .site-header nav a {
-    font-size: 12px;
+}
+@media (max-width: 480px) {
+  .site-brand img {
+    width: 32px;
   }
 }
 

@@ -28,16 +28,36 @@
     <a class="skip-link" href="#main">Skip to content</a>
     <header class="site-header">
       <div class="shell header-inner">
-        <a class="site-name" href="./" aria-current="page"
-          ><img src="./icon.png" alt="" width="28" height="28" />Apell</a
-        >
-        <nav aria-label="Main navigation">
-          <a href="#developers">For developers</a>
-          <a href="https://github.com/agentic-rs/apell">GitHub</a>
+        <div class="site-identity">
+          <a class="site-brand" href="https://tokn-ai.dev/" aria-label="Tokn AI home">
+            <picture>
+              <source media="(max-width: 480px)" srcset="./tokn-mark.svg" width="32" height="32" />
+              <img src="./tokn-logo.svg" alt="" width="118" height="32" />
+            </picture>
+          </a>
+          <span class="site-divider" aria-hidden="true">/</span>
+          <a class="site-product" href="./" aria-current="page">Apell</a>
+        </div>
+        <div class="header-actions">
+          <nav class="site-links" aria-label="Main navigation">
+            <a href="https://tokn-ai.dev/#tools">Tools</a>
+            <a href="https://tokn-ai.dev/#workshop">Workshop</a>
+            <a href="#developers">For developers</a>
+            <a href="https://github.com/agentic-rs/apell">GitHub</a>
+          </nav>
           <a class="language" href="./cn/" lang="zh-CN" hreflang="zh-CN" aria-label="切换到简体中文"
             >中文</a
           >
-        </nav>
+          <details class="site-menu">
+            <summary>Menu</summary>
+            <nav aria-label="Main navigation">
+              <a href="https://tokn-ai.dev/#tools">Tools</a>
+              <a href="https://tokn-ai.dev/#workshop">Workshop</a>
+              <a href="#developers">For developers</a>
+              <a href="https://github.com/agentic-rs/apell">GitHub</a>
+            </nav>
+          </details>
+        </div>
       </div>
     </header>
     <main class="apell" id="main" tabindex="-1">
