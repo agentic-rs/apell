@@ -1,5 +1,7 @@
 # Apell
 
+[Project website](https://tokn-ai.dev/appell/)
+
 Apell is a personal Tauri shell for iOS, Android, and macOS. Install a `.apel` package from a file or a public GitHub release. Its frontend runs in a sandboxed web view. An optional Rust WebAssembly backend runs in the native shell through the Wasmi interpreter. Applets use host APIs for SQLite, files, resources, HTTP, configuration, device information, and shared model access.
 
 The included **Companion** chatbot keeps conversations, SQL migrations, model targets, and in-flight replies in its Rust backend. The interface can close or reload while the backend completes a reply. Reopening the interface asks the backend for its current state. Saved chats survive an Apell restart.
@@ -160,7 +162,7 @@ Build with `cargo build --release --target wasm32-unknown-unknown` and copy the 
 apell pack stage --output artifacts/example.apel
 ```
 
-The output must be outside the input directory. The CLI writes a deterministic ZIP archive and prints its SHA-256. From the Apell checkout, `pnpm build:chatbot` produces `artifacts/chatbot.apel` and `artifacts/chatbot.sha256` for Companion 0.6.1.
+The output must be outside the input directory. The CLI writes a deterministic ZIP archive and prints its SHA-256. From the Apell checkout, `pnpm build:chatbot` produces Companion's `artifacts/chatbot.apel` and `artifacts/chatbot.sha256`.
 
 Install a local `.apel` file from the **+** sheet. For GitHub distribution, attach the `.apel` file to a published release in a public applet repository. Use the same asset name for later releases, such as `example.apel`. In Apell, choose **Install from GitHub**, enter `owner/repository` for the latest stable release, and choose its package if several are available. To install a nightly or another named release, enter `owner/repository@nightly` or paste its `https://github.com/owner/repository/releases/tag/nightly` URL. Explicit release selections accept published prereleases; repository-only lookup stays on stable releases. The package contains its own manifest. The host checks GitHub's asset digest when available and computes its own content hash. Only install packages from developers you trust. Publisher signatures are outside the current format.
 

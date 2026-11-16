@@ -1,13 +1,51 @@
 :root {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  color: #26392e;
-  background: #f7f8f3;
+  color-scheme: light dark;
+  color: var(--text);
+  background: var(--canvas);
   font-synthesis: none;
   -webkit-font-smoothing: antialiased;
   -webkit-text-size-adjust: 100%;
-  --line: #e0e5da;
-  --muted: #6d7b6b;
-  --accent: #335d43;
+  --canvas: #f8f7fa;
+  --surface: #fff;
+  --subtle: #f0edf4;
+  --text: #252030;
+  --muted: #61566d;
+  --line: #ddd5e5;
+  --control-line: #8c7d99;
+  --focus: #6a5a7d;
+  --accent: #61b6af;
+  --accent-hover: #78c4be;
+  --accent-ink: #252030;
+  --accent-line: #477c77;
+  --selection: #ede8f3;
+  --selection-line: #7d6b91;
+  --badge: #dcefed;
+  --badge-text: #245d58;
+  --danger: #9b493e;
+  --scrim: #211c2b75;
+  --shadow: #211c2b30;
+  --spinner-track: #25203040;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --canvas: #211c2b;
+    --surface: #30283b;
+    --subtle: #393044;
+    --text: #f7f3fa;
+    --muted: #cac0d2;
+    --line: #554962;
+    --control-line: #93829e;
+    --focus: #61b6af;
+    --accent-line: #61b6af;
+    --selection: #44354f;
+    --selection-line: #a895b9;
+    --badge: #284b49;
+    --badge-text: #b5e0da;
+    --danger: #ffa99a;
+    --scrim: #120e1bc0;
+    --shadow: #0006;
+  }
 }
 * {
   box-sizing: border-box;
@@ -34,7 +72,7 @@ button {
   color: inherit;
   border: 1px solid var(--line);
   border-radius: 12px;
-  background: #fff;
+  background: var(--surface);
   min-height: 44px;
   padding: 11px 16px;
   font-weight: 500;
@@ -48,7 +86,7 @@ summary:focus-visible,
 input:focus-visible,
 select:focus-visible,
 .file-option:focus-within {
-  outline: 3px solid #7b9b77;
+  outline: 3px solid var(--focus);
   outline-offset: 3px;
 }
 button,
@@ -61,9 +99,9 @@ input,
 select {
   width: 100%;
   min-height: 48px;
-  border: 1px solid #cfd8ca;
+  border: 1px solid var(--control-line);
   border-radius: 10px;
-  background: #fff;
+  background: var(--surface);
   color: inherit;
   padding: 12px;
   font-size: 16px;
@@ -87,8 +125,8 @@ svg {
 }
 .primary {
   background: var(--accent);
-  border-color: var(--accent);
-  color: #fff;
+  border-color: var(--accent-line);
+  color: var(--accent-ink);
 }
 .icon-button {
   width: 44px;
@@ -162,9 +200,9 @@ svg {
   width: 68px;
   height: 68px;
   border-radius: 20px;
-  background: #376448;
-  color: #f4f8ec;
-  box-shadow: 0 3px 7px #233c2410;
+  background: var(--accent);
+  color: var(--accent-ink);
+  box-shadow: 0 3px 7px var(--shadow);
 }
 .applet-icon svg {
   width: 32px;
@@ -206,12 +244,12 @@ svg {
   margin-top: 28px;
 }
 .error {
-  color: #984b35;
+  color: var(--danger);
 }
 .spinner {
   width: 24px;
   height: 24px;
-  border: 2px solid #ffffff60;
+  border: 2px solid var(--spinner-track);
   border-top-color: currentColor;
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
@@ -233,7 +271,7 @@ svg {
   align-items: center;
   padding: max(16px, env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-right, 0px))
     max(16px, env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-left, 0px));
-  background: #1e2b2540;
+  background: var(--scrim);
 }
 .sheet-panel {
   width: min(480px, 100%);
@@ -243,10 +281,10 @@ svg {
   border: 1px solid var(--line);
   border-radius: 24px;
   color: inherit;
-  background: #fff;
+  background: var(--surface);
   overflow: auto;
   overscroll-behavior: contain;
-  box-shadow: 0 20px 70px #1b302124;
+  box-shadow: 0 20px 70px var(--shadow);
 }
 .sheet-content {
   padding: 16px 20px 24px;
@@ -274,7 +312,7 @@ svg {
   padding: 14px;
   border: 1px solid var(--line);
   border-radius: 14px;
-  background: #fafbf7;
+  background: var(--subtle);
 }
 .install-option > span:nth-child(2) {
   flex: 1;
@@ -300,7 +338,7 @@ svg {
   width: 36px;
   height: 36px;
   flex: none;
-  color: var(--accent);
+  color: var(--focus);
 }
 .file-option {
   position: relative;
@@ -376,15 +414,15 @@ svg {
   height: 20px;
   min-height: 0;
   margin: 0;
-  accent-color: var(--accent);
+  accent-color: var(--focus);
 }
 .notice {
   font-size: 14px;
   line-height: 1.55;
   padding: 16px;
-  background: #edf1e6;
+  background: var(--subtle);
   border-radius: 12px;
-  color: #596c50;
+  color: var(--muted);
 }
 .settings .primary {
   justify-self: stretch;
@@ -413,7 +451,7 @@ svg {
 .transfer-preview {
   border: 1px solid var(--line);
   border-radius: 12px;
-  background: #fafbf7;
+  background: var(--subtle);
 }
 .transfer-selection > label,
 .transfer-preview > li {
@@ -491,11 +529,11 @@ svg {
   padding: 4px 14px 4px 0;
   border: 1px solid var(--line);
   border-radius: 16px;
-  background: #fff;
+  background: var(--surface);
 }
 .connection-row.active {
-  border-color: #91ad8c;
-  background: #f0f5ea;
+  border-color: var(--selection-line);
+  background: var(--selection);
 }
 .connection-detail {
   display: grid;
@@ -523,8 +561,8 @@ svg {
   padding: 6px 10px;
   font-size: 12px;
   font-weight: 600;
-  color: var(--accent);
-  background: #e0ebd9;
+  color: var(--badge-text);
+  background: var(--badge);
 }
 .connection-use {
   flex: none;
@@ -581,8 +619,8 @@ svg {
   padding: 12px;
 }
 .model-options button[aria-pressed='true'] {
-  border-color: #91ad8c;
-  background: #eaf1e4;
+  border-color: var(--selection-line);
+  background: var(--selection);
 }
 .model-options strong {
   font-weight: 500;
@@ -597,9 +635,9 @@ svg {
   gap: 14px;
   margin-top: 24px;
   padding: 20px;
-  border: 1px solid #91ad8c;
+  border: 1px solid var(--selection-line);
   border-radius: 16px;
-  background: #f0f5ea;
+  background: var(--selection);
 }
 .device-login p {
   margin: 0;
@@ -630,7 +668,7 @@ svg {
   font-size: 14px;
 }
 .danger {
-  color: #984b35;
+  color: var(--danger);
 }
 .button-row {
   display: flex;
@@ -684,9 +722,9 @@ svg {
   display: flex;
   align-items: center;
   flex: none;
-  border: 1px solid #26392e26;
+  border: 1px solid var(--line);
   border-radius: 24px;
-  background: #ffffffd9;
+  background: var(--surface);
 }
 .applet-controls .icon-button {
   width: 46px;
@@ -695,7 +733,7 @@ svg {
 .applet-control-divider {
   width: 1px;
   height: 20px;
-  background: #26392e26;
+  background: var(--line);
 }
 .applet-menu-actions {
   display: grid;
@@ -715,7 +753,7 @@ svg {
   min-height: 56px;
   padding: 14px 16px;
   text-align: left;
-  background: #fafbf7;
+  background: var(--subtle);
 }
 .applet-about h3 {
   margin: 0 0 6px;
@@ -775,7 +813,8 @@ svg {
   min-height: 0;
   border: 0;
   width: 100%;
-  background: #fbfaf7;
+  /* Transparent applets keep a readable canvas even with the host in dark mode. */
+  background: #fff;
 }
 .applet-loading {
   flex: none;
@@ -784,17 +823,17 @@ svg {
   color: var(--muted);
 }
 @media (hover: hover) {
-  .icon-button:hover {
-    background: #e8eee2;
+  .icon-button:not(:disabled):hover {
+    background: var(--subtle);
   }
-  .applet-icon-button:hover .applet-icon {
-    background: #477c58;
+  .applet-icon-button:not(:disabled):hover .applet-icon {
+    background: var(--accent-hover);
   }
-  .install-option:hover {
-    background: #f1f5eb;
+  .install-option:not(:disabled, .disabled):hover {
+    background: var(--selection);
   }
-  .primary:hover {
-    background: #406e4e;
+  .primary:not(:disabled):hover {
+    background: var(--accent-hover);
   }
 }
 @media (max-width: 600px) {

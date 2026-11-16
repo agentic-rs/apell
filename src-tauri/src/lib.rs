@@ -46,7 +46,7 @@ pub fn run() {
       let window =
         tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("index.html".into()))
           .title("Apell")
-          .background_color(tauri::window::Color(247, 248, 243, 255))
+          .background_color(tauri::window::Color(248, 247, 250, 255))
           .initialization_script(boot)
           // Sensor access belongs to the native applet services.
           .on_permission_request(|_, kind| match kind {
