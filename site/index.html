@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Run installable applets on iOS, Android, and macOS. Share model access across applets and keep each applet's local data private."
+    />
+    <meta name="theme-color" content="#f8f7fa" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="Apell — A home for your applets" />
+    <meta
+      property="og:description"
+      content="Run installable applets on iOS, Android, and macOS. Share model access across applets and keep each applet's local data private."
+    />
+    <meta property="og:url" content="https://agentic-rs.github.io/apell/" />
+    <meta property="og:image" content="https://agentic-rs.github.io/apell/icon.png" />
+    <meta property="og:image:alt" content="Apell's four-tile app icon" />
+    <link rel="canonical" href="https://agentic-rs.github.io/apell/" />
+    <link rel="alternate" hreflang="en" href="https://agentic-rs.github.io/apell/" />
+    <link rel="alternate" hreflang="zh-CN" href="https://agentic-rs.github.io/apell/cn/" />
+    <link rel="icon" href="./icon.png" type="image/png" />
+    <link rel="stylesheet" href="./styles.css" />
+    <title>Apell — A home for your applets</title>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <header class="site-header">
+      <div class="shell header-inner">
+        <a class="site-name" href="./" aria-current="page"
+          ><img src="./icon.png" alt="" width="28" height="28" />Apell</a
+        >
+        <nav aria-label="Main navigation">
+          <a href="#developers">For developers</a>
+          <a href="https://github.com/agentic-rs/apell">GitHub</a>
+          <a class="language" href="./cn/" lang="zh-CN" hreflang="zh-CN" aria-label="切换到简体中文"
+            >中文</a
+          >
+        </nav>
+      </div>
+    </header>
+    <main class="apell" id="main" tabindex="-1">
+      <section class="intro" aria-labelledby="intro-title">
+        <div class="shell hero">
+          <div class="hero-copy">
+            <p class="wordmark"><img src="./icon.png" alt="" width="42" height="42" />Apell</p>
+            <h1 id="intro-title">Your applets. <em>One place.</em></h1>
+            <p class="description">
+              Apell runs installable applets on iOS, Android, and macOS. Set up your model providers
+              once and keep each applet's local data private.
+            </p>
+            <div class="actions">
+              <a class="button build" href="https://github.com/agentic-rs/apell#first-run"
+                >Build Apell <span aria-hidden="true">↗</span></a
+              >
+              <a class="button write" href="#developers"
+                >Build an applet <span aria-hidden="true">↓</span></a
+              >
+            </div>
+          </div>
+          <figure class="preview">
+            <div class="scene" aria-hidden="true">
+              <div class="device launcher">
+                <div class="device-bar"><strong>Apell</strong><span>＋　⚙</span></div>
+                <div class="launcher-grid">
+                  <div class="launcher-item">
+                    <div class="tile tile-companion">◒</div>
+                    <span>Companion</span>
+                  </div>
+                  <div class="launcher-item">
+                    <div class="tile">¶</div>
+                    <span>Paper Reader</span>
+                  </div>
+                </div>
+              </div>
+              <div class="device companion">
+                <div class="device-bar"><strong>Companion</strong><span>···　×</span></div>
+                <div class="chat">
+                  <p class="chat-title">Weekend in the city</p>
+                  <p class="message question">Help me plan a quiet Saturday.</p>
+                  <p class="message answer">
+                    <span class="chat-avatar">◒</span
+                    ><span
+                      >Start with a bookshop, stop for a long lunch, and leave the afternoon open
+                      for a walk.</span
+                    >
+                  </p>
+                  <div class="composer">
+                    <span>Message Companion</span><span class="send">↑</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <figcaption>
+              Illustration of the Apell launcher and the included Companion applet
+            </figcaption>
+          </figure>
+        </div>
+      </section>
+      <section class="shell features" aria-labelledby="features-title">
+        <h2 id="features-title">Install an applet. Open it and get started.</h2>
+        <dl>
+          <div>
+            <dt>Install from a file or GitHub</dt>
+            <dd>
+              Open a local .apel package or install one from a public GitHub release. Applets appear
+              in the launcher as soon as they're installed.
+            </dd>
+          </div>
+          <div>
+            <dt>Share model connections</dt>
+            <dd>
+              Manage model providers and credentials in Apell. Applets can use the connections you
+              configure through the host API.
+            </dd>
+          </div>
+          <div>
+            <dt>Pick up where you left off</dt>
+            <dd>
+              Each applet has its own local files and SQLite data. Companion keeps saved chats and
+              can finish a reply while its view is closed.
+            </dd>
+          </div>
+        </dl>
+      </section>
+      <section class="developer" id="developers" aria-labelledby="developer-title">
+        <div class="shell developer-inner">
+          <div class="developer-copy">
+            <h2 id="developer-title">Ship an applet from your own repo.</h2>
+            <p>
+              Package a web frontend with a manifest and an optional Rust WebAssembly backend. Use
+              Apell's APIs for model access, storage, and device capabilities.
+            </p>
+            <div class="developer-links">
+              <a class="text-link" href="https://github.com/agentic-rs/apell#package-and-distribute"
+                >Read the applet guide <span aria-hidden="true">↗</span></a
+              >
+              <a
+                class="text-link"
+                href="https://github.com/agentic-rs/apell/blob/main/docs/architecture.md"
+                >Host API reference <span aria-hidden="true">↗</span></a
+              >
+            </div>
+          </div>
+          <figure class="package">
+            <figcaption>Inside a .apel package</figcaption>
+            <ul>
+              <li><code>manifest.json</code></li>
+              <li><code>index.html</code></li>
+              <li><code>assets/</code></li>
+              <li><code>lib/main.wasm</code><span>optional backend</span></li>
+            </ul>
+          </figure>
+        </div>
+      </section>
+    </main>
+    <footer class="shell site-footer">
+      <span>Apell</span>
+      <a class="text-link" href="https://github.com/agentic-rs/apell"
+        >Source on GitHub <span aria-hidden="true">↗</span></a
+      >
+    </footer>
+  </body>
+</html>

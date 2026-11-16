@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="在 iOS、Android 和 macOS 上运行可安装的小程序。共享模型连接，同时为每个小程序保留独立的本地数据。"
+    />
+    <meta name="theme-color" content="#f8f7fa" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="Apell — 你的小程序，都在这里" />
+    <meta
+      property="og:description"
+      content="在 iOS、Android 和 macOS 上运行可安装的小程序。共享模型连接，同时为每个小程序保留独立的本地数据。"
+    />
+    <meta property="og:url" content="https://agentic-rs.github.io/apell/cn/" />
+    <meta property="og:image" content="https://agentic-rs.github.io/apell/icon.png" />
+    <meta property="og:image:alt" content="由四块方形组成的 Apell 图标" />
+    <link rel="canonical" href="https://agentic-rs.github.io/apell/cn/" />
+    <link rel="alternate" hreflang="en" href="https://agentic-rs.github.io/apell/" />
+    <link rel="alternate" hreflang="zh-CN" href="https://agentic-rs.github.io/apell/cn/" />
+    <link rel="icon" href="../icon.png" type="image/png" />
+    <link rel="stylesheet" href="../styles.css" />
+    <title>Apell — 你的小程序，都在这里</title>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">跳转到正文</a>
+    <header class="site-header">
+      <div class="shell header-inner">
+        <a class="site-name" href="./" aria-current="page"
+          ><img src="../icon.png" alt="" width="28" height="28" />Apell</a
+        >
+        <nav aria-label="主导航">
+          <a href="#developers">开发指南</a>
+          <a href="https://github.com/agentic-rs/apell">GitHub</a>
+          <a class="language" href="../" lang="en" hreflang="en" aria-label="Switch to English"
+            >EN</a
+          >
+        </nav>
+      </div>
+    </header>
+    <main class="apell" id="main" tabindex="-1">
+      <section class="intro" aria-labelledby="intro-title">
+        <div class="shell hero">
+          <div class="hero-copy">
+            <p class="wordmark"><img src="../icon.png" alt="" width="42" height="42" />Apell</p>
+            <h1 id="intro-title">你的小程序， <em>都在这里。</em></h1>
+            <p class="description">
+              在 iOS、Android 和 macOS
+              上安装并运行小程序。模型服务配置一次即可共用，每个小程序仍有独立的本地数据。
+            </p>
+            <div class="actions">
+              <a class="button build" href="https://github.com/agentic-rs/apell#first-run"
+                >构建 Apell <span aria-hidden="true">↗</span></a
+              >
+              <a class="button write" href="#developers"
+                >开发小程序 <span aria-hidden="true">↓</span></a
+              >
+            </div>
+          </div>
+          <figure class="preview">
+            <div class="scene" aria-hidden="true">
+              <div class="device launcher">
+                <div class="device-bar"><strong>Apell</strong><span>＋　⚙</span></div>
+                <div class="launcher-grid">
+                  <div class="launcher-item">
+                    <div class="tile tile-companion">◒</div>
+                    <span>Companion</span>
+                  </div>
+                  <div class="launcher-item">
+                    <div class="tile">¶</div>
+                    <span>论文阅读器</span>
+                  </div>
+                </div>
+              </div>
+              <div class="device companion">
+                <div class="device-bar"><strong>Companion</strong><span>···　×</span></div>
+                <div class="chat">
+                  <p class="chat-title">城里过周末</p>
+                  <p class="message question">帮我安排一个轻松的周六。</p>
+                  <p class="message answer">
+                    <span class="chat-avatar">◒</span
+                    ><span>上午逛逛书店，中午慢慢吃顿饭，下午留点时间散步。</span>
+                  </p>
+                  <div class="composer">
+                    <span>发消息给 Companion</span><span class="send">↑</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <figcaption>Apell 启动器和内置 Companion 小程序的界面示意</figcaption>
+          </figure>
+        </div>
+      </section>
+      <section class="shell features" aria-labelledby="features-title">
+        <h2 id="features-title">安装小程序，打开就能用。</h2>
+        <dl>
+          <div>
+            <dt>从文件或 GitHub 安装</dt>
+            <dd>
+              打开本地 .apel 文件，或从公开的 GitHub Release 安装。安装后，小程序会出现在启动器中。
+            </dd>
+          </div>
+          <div>
+            <dt>共用模型连接</dt>
+            <dd>在 Apell 中管理模型服务和凭据。小程序通过宿主 API 使用你配置好的连接。</dd>
+          </div>
+          <div>
+            <dt>回来接着用</dt>
+            <dd>
+              每个小程序都有自己的本地文件和 SQLite 数据。Companion
+              会保存对话，关闭界面后也能完成正在生成的回复。
+            </dd>
+          </div>
+        </dl>
+      </section>
+      <section class="developer" id="developers" aria-labelledby="developer-title">
+        <div class="shell developer-inner">
+          <div class="developer-copy">
+            <h2 id="developer-title">在自己的仓库里发布小程序。</h2>
+            <p>
+              将网页前端和清单打包，也可以带上 Rust WebAssembly 后端。通过 Apell 的 API
+              使用模型、存储和设备能力。
+            </p>
+            <div class="developer-links">
+              <a class="text-link" href="https://github.com/agentic-rs/apell#package-and-distribute"
+                >阅读小程序开发指南 <span aria-hidden="true">↗</span></a
+              >
+              <a
+                class="text-link"
+                href="https://github.com/agentic-rs/apell/blob/main/docs/architecture.md"
+                >宿主 API 参考 <span aria-hidden="true">↗</span></a
+              >
+            </div>
+          </div>
+          <figure class="package">
+            <figcaption>.apel 包的文件结构</figcaption>
+            <ul>
+              <li><code>manifest.json</code></li>
+              <li><code>index.html</code></li>
+              <li><code>assets/</code></li>
+              <li><code>lib/main.wasm</code><span>可选后端</span></li>
+            </ul>
+          </figure>
+        </div>
+      </section>
+    </main>
+    <footer class="shell site-footer">
+      <span>Apell</span>
+      <a class="text-link" href="https://github.com/agentic-rs/apell"
+        >GitHub 源码 <span aria-hidden="true">↗</span></a
+      >
+    </footer>
+  </body>
+</html>

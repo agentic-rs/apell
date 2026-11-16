@@ -1,6 +1,6 @@
 # Apell
 
-[Project website](https://tokn-ai.dev/appell/)
+[Project website](https://agentic-rs.github.io/apell/)
 
 Apell is a personal Tauri shell for iOS, Android, and macOS. Install a `.apel` package from a file or a public GitHub release. Its frontend runs in a sandboxed web view. An optional Rust WebAssembly backend runs in the native shell through the Wasmi interpreter. Applets use host APIs for SQLite, files, resources, HTTP, configuration, device information, and shared model access.
 
