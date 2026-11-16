@@ -18,6 +18,9 @@
   --accent-hover: #78c4be;
   --accent-ink: #252030;
   --accent-line: #477c77;
+  --applet-icon-background: #6a5a7d;
+  --applet-icon-hover: #7d6b91;
+  --applet-icon-foreground: #f7f3fa;
   --selection: #ede8f3;
   --selection-line: #7d6b91;
   --badge: #dcefed;
@@ -195,13 +198,14 @@ svg {
   border-radius: 16px;
 }
 .applet-icon {
+  --spinner-track: #f7f3fa40;
   display: grid;
   place-items: center;
   width: 68px;
   height: 68px;
   border-radius: 20px;
-  background: var(--accent);
-  color: var(--accent-ink);
+  background: var(--applet-icon-background);
+  color: var(--applet-icon-foreground);
   box-shadow: 0 3px 7px var(--shadow);
 }
 .applet-icon img {
@@ -835,7 +839,7 @@ svg {
     background: var(--subtle);
   }
   .applet-icon-button:not(:disabled):hover .applet-icon {
-    background: var(--accent-hover);
+    background: var(--applet-icon-hover);
   }
   .install-option:not(:disabled, .disabled):hover {
     background: var(--selection);

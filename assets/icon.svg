@@ -2,11 +2,11 @@
   <rect width="256" height="256" fill="#30283b" />
   <path
     d="M53 190V121a75 75 0 0 1 150 0v69a17 17 0 0 1-34 0v-69a41 41 0 0 0-82 0v69a17 17 0 0 1-34 0Z"
-    fill="#61b6af"
+    fill="#7d6b91"
   />
   <path
     d="M128 46a75 75 0 0 1 75 75v69a17 17 0 0 1-34 0v-69a41 41 0 0 0-41-41Z"
-    fill="#7d6b91"
+    fill="#61b6af"
   />
   <rect x="110" y="137" width="36" height="36" rx="10" fill="#d77a36" transform="rotate(-12 128 155)" />
 </svg>
