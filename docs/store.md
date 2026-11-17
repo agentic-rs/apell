@@ -140,6 +140,12 @@ permissions. Point `/opt/apell-store/current` at a release directory containing
 `/healthz`, catalog browsing, unauthorized publishing rejection, and a package
 download with a matching SHA-256.
 
+Keep the HTTP ACME challenge route reachable for certificate renewal. Verify that
+the system's Certbot renewal timer is enabled, and configure a deploy hook that
+tests and reloads Nginx after a successful renewal. Run a renewal dry run for the
+store certificate before completing deployment. The proxy read timeout must
+exceed the server's 120-second upload deadline.
+
 Back up the entire data directory with the service stopped, or use SQLite's online
 backup API and copy the immutable content files. Preserve the token separately.
 Keep the previous binary and web directory for rollback; deployment must not
