@@ -6,7 +6,7 @@ mod keys;
 mod tests;
 mod tokens;
 
-use crate::{Result, StoreError};
+use crate::{Result, Store, StoreError};
 use axum::{
   body::to_bytes,
   extract::Request,
@@ -30,6 +30,7 @@ const MAX_JWT_BYTES: usize = 16 * 1024;
 #[derive(Clone)]
 pub(crate) struct Oidc {
   config: OidcConfig,
+  store: Store,
   keys: Arc<keys::Keys>,
   tokens: Arc<Mutex<Tokens>>,
   exchanges: Arc<Semaphore>,
@@ -43,13 +44,14 @@ struct ExchangeRequest {
 }
 
 impl Oidc {
-  pub fn new(config: OidcConfig) -> Result<Self> {
+  pub fn new(config: OidcConfig, store: Store) -> Result<Self> {
     config.validate().map_err(StoreError::invalid)?;
     if jsonwebtoken::crypto::CryptoProvider::try_get_default().is_none() {
       return Err(StoreError::internal());
     }
     Ok(Self {
       config,
+      store,
       keys: Arc::new(keys::Keys::new()?),
       tokens: Arc::new(Mutex::new(Tokens::default())),
       exchanges: Arc::new(Semaphore::new(2)),
@@ -102,14 +104,11 @@ impl Oidc {
       .map_err(|error| reject(diagnostics::decode_reason(error.kind())))?
       .claims;
     claims.validate(&self.config.audience, now())?;
+    let policies = self.publishers().await?;
+    let publishers: Vec<_> = policies.iter().map(|(policy, _)| policy.clone()).collect();
     // Verify a trusted identity before polling even the small exchange body.
-    if !self
-      .config
-      .publishers
-      .iter()
-      .any(|publisher| claims.matches(publisher))
-    {
-      return Err(reject(claims.policy_failure(&self.config.publishers, None)));
+    if !publishers.iter().any(|publisher| claims.matches(publisher)) {
+      return Err(reject(claims.policy_failure(&publishers, None)));
     }
     let content_type = request
       .headers()
@@ -142,21 +141,24 @@ impl Oidc {
         "Invalid applet identity or package checksum.",
       ));
     }
-    if !self
-      .config
-      .publishers
+    // Re-read after consuming the request; a policy may have changed meanwhile.
+    let policies = self.publishers().await?;
+    let (_, revision) = policies
       .iter()
-      .any(|publisher| publisher.applet_id == input.applet_id && claims.matches(publisher))
-    {
-      return Err(reject(
-        claims.policy_failure(&self.config.publishers, Some(&input.applet_id)),
-      ));
-    }
+      .find(|(publisher, _)| publisher.applet_id == input.applet_id && claims.matches(publisher))
+      .ok_or_else(|| reject(claims.policy_failure(&publishers, Some(&input.applet_id))))?;
     self
       .tokens
       .lock()
       .map_err(|_| StoreError::internal())?
-      .mint(&claims, input.applet_id, input.sha256, now())
+      .mint(&claims, input.applet_id, input.sha256, *revision, now())
+  }
+
+  async fn publishers(&self) -> Result<Vec<(TrustedPublisher, u64)>> {
+    let store = self.store.clone();
+    tokio::task::spawn_blocking(move || store.all_publishers())
+      .await
+      .map_err(|_| StoreError::internal())?
   }
 
   pub fn authenticate(&self, headers: &HeaderMap) -> Result<Grant> {

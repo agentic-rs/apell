@@ -1,8 +1,14 @@
+pub mod auth;
+mod config;
 mod error;
+mod management;
 mod model;
 mod oidc;
+pub mod packages;
 mod storage;
 
+use config::validate_token;
+pub use config::Config;
 pub use error::{Result, StoreError};
 pub use model::{Applet, AppletDetail, Catalog, PublishMetadata, PublishResult, Release};
 pub use oidc::{OidcConfig, TrustedPublisher};
@@ -20,7 +26,7 @@ use axum::{
 use futures_util::StreamExt;
 use model::{MAX_ICON_BYTES, MAX_METADATA_BYTES};
 use sha2::{Digest, Sha256};
-use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 use subtle::ConstantTimeEq;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_util::io::ReaderStream;
@@ -29,85 +35,54 @@ use tower_http::services::{ServeDir, ServeFile};
 const MAX_REQUEST_BYTES: usize =
   apell_package::MAX_BUNDLE_BYTES + MAX_ICON_BYTES + MAX_METADATA_BYTES + 64 * 1024;
 
-pub struct Config {
-  pub listen: SocketAddr,
-  pub data_dir: PathBuf,
-  pub web_dir: PathBuf,
-  pub publish_token: String,
-  pub oidc: Option<OidcConfig>,
-}
-
-impl Config {
-  pub fn from_env() -> std::result::Result<Self, String> {
-    let token_path = std::env::var_os("APELL_STORE_PUBLISH_TOKEN_FILE")
-      .ok_or("Set APELL_STORE_PUBLISH_TOKEN_FILE before starting the store.")?;
-    let file =
-      std::fs::File::open(token_path).map_err(|_| "Could not open the publishing token file.")?;
-    let metadata = file
-      .metadata()
-      .map_err(|_| "Could not inspect the publishing token file.")?;
-    if !metadata.is_file() || metadata.len() > 514 {
-      return Err("Publishing token must be a regular file of at most 514 bytes.".into());
-    }
-    let mut token = String::new();
-    use std::io::Read;
-    file
-      .take(515)
-      .read_to_string(&mut token)
-      .map_err(|_| "Could not read the publishing token file.")?;
-    if token.len() > 514 {
-      return Err("Publishing token file is too large.".into());
-    }
-    let token = token.trim_end_matches(['\n', '\r']).to_owned();
-    validate_token(&token)?;
-    let listen = std::env::var("APELL_STORE_LISTEN")
-      .unwrap_or_else(|_| "127.0.0.1:8788".into())
-      .parse()
-      .map_err(|_| "APELL_STORE_LISTEN must be an IP address and port.")?;
-    Ok(Self {
-      listen,
-      data_dir: std::env::var_os("APELL_STORE_DATA_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| "store-data".into()),
-      web_dir: std::env::var_os("APELL_STORE_WEB_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| "store/web/dist".into()),
-      publish_token: token,
-      oidc: OidcConfig::from_env()?,
-    })
-  }
-}
-
-fn validate_token(token: &str) -> std::result::Result<(), String> {
-  if !(32..=512).contains(&token.len()) || !token.bytes().all(|byte| byte.is_ascii_graphic()) {
-    return Err(
-      "Publishing token must contain 32–512 printable ASCII bytes without spaces.".into(),
-    );
-  }
-  Ok(())
-}
-
 #[derive(Clone)]
-struct AppState {
+pub(crate) struct AppState {
   store: Store,
   token_hash: [u8; 32],
   oidc: Option<oidc::Oidc>,
+  auth: Option<Arc<auth::Auth>>,
   uploads: Arc<Semaphore>,
   queries: Arc<Semaphore>,
   downloads: Arc<Semaphore>,
 }
 
 pub fn router(config: &Config) -> Result<Router> {
-  let oidc = config.oidc.clone().map(oidc::Oidc::new).transpose()?;
-  router_with_identity(config, oidc)
+  let store = initialized_store(config)?;
+  let oidc = config
+    .oidc
+    .clone()
+    .map(|policy| oidc::Oidc::new(policy, store.clone()))
+    .transpose()?;
+  router_with_store(config, store, oidc)
 }
 
+fn initialized_store(config: &Config) -> Result<Store> {
+  let store = Store::open(&config.data_dir)?;
+  let publishers = config
+    .oidc
+    .as_ref()
+    .map_or(&[][..], |oidc| oidc.publishers.as_slice());
+  store.bootstrap_packages(publishers, config.bootstrap_owner.as_ref())?;
+  Ok(store)
+}
+
+#[cfg(test)]
 fn router_with_identity(config: &Config, oidc: Option<oidc::Oidc>) -> Result<Router> {
+  router_with_store(config, initialized_store(config)?, oidc)
+}
+
+fn router_with_store(config: &Config, store: Store, oidc: Option<oidc::Oidc>) -> Result<Router> {
   validate_token(&config.publish_token).map_err(StoreError::invalid)?;
+  let auth = config
+    .oauth
+    .clone()
+    .map(|oauth| auth::Auth::new(oauth, store.clone()).map(Arc::new))
+    .transpose()?;
   let state = AppState {
-    store: Store::open(&config.data_dir)?,
+    store,
     token_hash: Sha256::digest(config.publish_token.as_bytes()).into(),
     oidc,
+    auth,
     uploads: Arc::new(Semaphore::new(1)),
     queries: Arc::new(Semaphore::new(4)),
     downloads: Arc::new(Semaphore::new(8)),
@@ -122,6 +97,8 @@ fn router_with_identity(config: &Config, oidc: Option<oidc::Oidc>) -> Result<Rou
     )
     .route("/v1/publish", post(publish))
     .route("/v1/auth/github-actions", post(exchange_identity))
+    .merge(auth::routes())
+    .merge(management::routes())
     .fallback(not_found);
   let media = Router::new()
     .route("/", any(not_found))
@@ -155,7 +132,8 @@ fn router_with_identity(config: &Config, oidc: Option<oidc::Oidc>) -> Result<Rou
 }
 
 async fn response_headers(request: Request, next: Next) -> Response {
-  let authentication = request.uri().path().starts_with("/api/v1/auth/");
+  let authentication = request.uri().path().starts_with("/api/v1/auth/")
+    || request.uri().path().starts_with("/api/v1/account/");
   let mut response = next.run(request).await;
   let headers = response.headers_mut();
   headers.insert(
@@ -257,16 +235,48 @@ async fn exchange_identity(State(state): State<AppState>, request: Request) -> R
 }
 
 async fn publish(State(state): State<AppState>, request: Request) -> Result<Response> {
-  let grant = match authenticate(request.headers(), &state.token_hash) {
-    Ok(()) => None,
-    Err(error) => Some(
-      state
-        .oidc
-        .as_ref()
-        .ok_or(error)?
-        .authenticate(request.headers())?,
-    ),
-  };
+  publish_request(state, request, None).await
+}
+
+async fn publish_request(
+  state: AppState,
+  request: Request,
+  expected_id: Option<String>,
+) -> Result<Response> {
+  use packages::PublishAuthority;
+  if expected_id.is_none()
+    && state.auth.is_none()
+    && !request.headers().contains_key(header::AUTHORIZATION)
+  {
+    authenticate(request.headers(), &state.token_hash)?;
+  }
+  let (grant, authority) =
+    if expected_id.is_some() || !request.headers().contains_key(header::AUTHORIZATION) {
+      let user = management::session_user(&state, request.headers(), true).await?;
+      if let Some(id) = expected_id.clone() {
+        let actor_id = user.github_id;
+        query(&state, move |store| store.package_details(&id, actor_id)).await?;
+      }
+      (None, PublishAuthority::User(user.github_id))
+    } else {
+      match authenticate(request.headers(), &state.token_hash) {
+        Ok(()) => (None, PublishAuthority::Administrator),
+        Err(error) => {
+          let grant = state
+            .oidc
+            .as_ref()
+            .ok_or(error)?
+            .authenticate(request.headers())?;
+          let authority = grant.authority();
+          (Some(grant), authority)
+        }
+      }
+    };
+  let check_authority = authority.clone();
+  query(&state, move |store| {
+    store.authorize_publish(&check_authority)
+  })
+  .await?;
   let permit = state
     .uploads
     .clone()
@@ -287,7 +297,15 @@ async fn publish(State(state): State<AppState>, request: Request) -> Result<Resp
     if let Some(grant) = grant {
       grant.validate_package(&parsed.package, oidc::now())?;
     }
-    store.publish(parsed.package, parsed.metadata, parsed.icon)
+    if let Some(id) = expected_id {
+      let package = apell_package::parse(&parsed.package).map_err(StoreError::invalid)?;
+      if package.manifest.applet_id != id {
+        return Err(StoreError::invalid(
+          "This archive belongs to a different package.",
+        ));
+      }
+    }
+    store.publish_authorized(parsed.package, parsed.metadata, parsed.icon, authority)
   })
   .await
   .map_err(|_| StoreError::internal())??;

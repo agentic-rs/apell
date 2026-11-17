@@ -70,6 +70,7 @@ select {
   top: 12px;
   left: 12px;
   transform: translateY(-200%);
+  opacity: 0;
   padding: 10px 16px;
   border-radius: 8px;
   background: #30283b;
@@ -77,6 +78,7 @@ select {
 }
 .skip-link:focus {
   transform: none;
+  opacity: 1;
 }
 .site-header {
   border-bottom: 1px solid var(--rule);
@@ -724,5 +726,350 @@ h1 {
 @media (prefers-reduced-motion: reduce) {
   * {
     transition: none !important;
+  }
+}
+
+/* Package management uses the same palette and touch targets as the catalog. */
+textarea {
+  font: inherit;
+  resize: vertical;
+}
+button:disabled,
+input:disabled,
+select:disabled,
+textarea:disabled {
+  cursor: default;
+  opacity: 0.65;
+}
+.account-nav {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.nav-button {
+  border: 0;
+  background: none;
+  color: var(--muted);
+  min-height: 44px;
+  padding: 6px 0;
+  font: inherit;
+}
+.account-welcome {
+  max-width: 720px;
+  padding-block: 72px;
+}
+.account-welcome > .button {
+  margin-block: 30px 20px;
+}
+.account-welcome > .muted {
+  max-width: 480px;
+}
+.manage-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding-block: 40px 28px;
+}
+.manage-heading h1 {
+  font-size: clamp(30px, 4vw, 44px);
+}
+.manage-heading .button {
+  flex-shrink: 0;
+}
+.manage-section {
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 18px;
+  padding: 28px;
+  margin-top: 24px;
+  max-width: 880px;
+}
+.manage-section h2 {
+  font-size: 22px;
+  line-height: 1.3;
+  margin-bottom: 10px;
+  letter-spacing: -0.02em;
+}
+.manage-section h3 {
+  font-size: 17px;
+  margin-bottom: 10px;
+}
+.managed-packages,
+.manage-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.managed-packages {
+  display: grid;
+  gap: 14px;
+}
+.managed-package {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 22px 24px;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 16px;
+}
+.managed-package > div {
+  flex: 1;
+  min-width: 0;
+}
+.managed-package h2 {
+  font-size: 20px;
+  overflow-wrap: anywhere;
+}
+.managed-package:hover {
+  border-color: var(--violet);
+}
+.manage-arrow {
+  color: var(--violet);
+  font-size: 22px;
+}
+.manage-tabs {
+  display: flex;
+  gap: 24px;
+  border-bottom: 1px solid var(--rule);
+}
+.manage-tabs a {
+  padding: 12px 4px;
+  min-height: 48px;
+  color: var(--muted);
+  font-size: 15px;
+  border-bottom: 3px solid transparent;
+}
+.manage-tabs a[aria-current='page'] {
+  color: var(--violet);
+  border-color: var(--violet);
+  font-weight: 650;
+}
+.manage-form {
+  margin-top: 26px;
+  max-width: 640px;
+}
+.form-field {
+  margin-bottom: 22px;
+}
+.form-field > label,
+.event-options legend {
+  display: block;
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+.form-field input,
+.form-field textarea,
+.form-field select {
+  width: 100%;
+  min-height: 48px;
+  border: 1px solid #bdb2c9;
+  border-radius: 10px;
+  background: white;
+  color: inherit;
+  padding: 11px 12px;
+}
+.form-field input[type='file'] {
+  overflow: hidden;
+  font-size: 14px;
+}
+.form-field input::file-selector-button {
+  border: 0;
+  background: #eeebf3;
+  color: var(--violet);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-right: 10px;
+  font: inherit;
+}
+.field-hint {
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 7px;
+  overflow-wrap: anywhere;
+}
+.event-options {
+  border: 0;
+  padding: 0;
+  margin: 0 0 22px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 22px;
+}
+.event-options label {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 44px;
+  font-size: 14px;
+}
+.event-options input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--violet);
+}
+.form-status:not(:empty),
+.notice {
+  margin-top: 16px;
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+.error {
+  color: #9b3a3a;
+}
+.notice {
+  padding: 16px;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  background: #eeebf3;
+}
+.release-summary {
+  margin-top: 24px;
+  color: var(--muted);
+  font-size: 14px;
+}
+.publisher-summary {
+  margin-top: 24px;
+  padding: 18px;
+  background: #f5f2f8;
+  border-radius: 12px;
+  overflow-wrap: anywhere;
+}
+.publisher-summary > strong {
+  display: block;
+  margin-top: 10px;
+}
+.badge.neutral {
+  background: #e8e5eb;
+  color: var(--muted);
+}
+.disconnect-row,
+.ownership-section,
+.pending-invitations,
+.workflow-guide {
+  margin-top: 30px;
+  padding-top: 24px;
+  border-top: 1px solid var(--rule);
+}
+.danger {
+  color: #9b3a3a;
+  background: white;
+  border-color: #dfbebe;
+}
+.workflow-guide summary {
+  min-height: 44px;
+  color: var(--violet);
+  font-weight: 600;
+  cursor: pointer;
+}
+.workflow-guide ol {
+  font-size: 14px;
+  color: var(--muted);
+  padding-left: 24px;
+}
+.workflow-guide li {
+  margin-bottom: 10px;
+  overflow-wrap: anywhere;
+}
+.workflow-guide pre {
+  overflow: auto;
+  background: #f5f2f8;
+  border-radius: 10px;
+  padding: 16px;
+  font-size: 12px;
+}
+.person-row,
+.invitation-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-block: 20px;
+  border-bottom: 1px solid var(--rule);
+}
+.member-copy {
+  min-width: 0;
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+.member-copy > .badge {
+  margin-left: 10px;
+}
+.person-row > .form-status,
+.invitation-row > .form-status {
+  flex-basis: 100%;
+  margin: 0;
+}
+.action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.compact-form {
+  max-width: 440px;
+}
+@media (max-width: 850px) {
+  .site-header nav {
+    gap: 16px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+  .site-header .tokn-link {
+    display: none;
+  }
+}
+@media (max-width: 700px) {
+  .header-inner {
+    flex-wrap: wrap;
+    gap: 0 16px;
+    padding-block: 16px 8px;
+  }
+  .site-header nav {
+    width: 100%;
+    justify-content: space-between;
+    gap: 6px 16px;
+  }
+  .account-nav {
+    gap: 16px;
+  }
+  .account-welcome {
+    padding-block: 40px;
+  }
+  .manage-heading {
+    align-items: flex-start;
+    flex-direction: column;
+    padding-block: 28px 22px;
+    gap: 18px;
+  }
+  .manage-section {
+    padding: 20px;
+    margin-top: 20px;
+  }
+  .manage-tabs {
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .manage-tabs a {
+    font-size: 14px;
+  }
+  .managed-package {
+    flex-wrap: wrap;
+    padding: 18px;
+    gap: 12px;
+  }
+  .managed-package h2 {
+    font-size: 18px;
+  }
+  .person-row > .member-copy,
+  .invitation-row > .member-copy {
+    flex-basis: 100%;
+  }
+  .form-field input,
+  .form-field textarea,
+  .form-field select {
+    font-size: 16px;
   }
 }

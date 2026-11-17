@@ -36,6 +36,7 @@ pub fn config() -> OidcConfig {
       applet_id: "sample".into(),
       repository_id: 123,
       repository_owner_id: 456,
+      repository: Some("example/project".into()),
       workflow: ".github/workflows/publish.yml".into(),
       allowed_refs: vec!["refs/heads/main".into()],
       event_names: vec!["workflow_dispatch".into()],
@@ -68,6 +69,7 @@ pub fn exchange_request(jwt: &str, applet_id: &str, sha256: String) -> HttpReque
 }
 
 pub struct JwksServer {
+  pub root: tempfile::TempDir,
   pub url: String,
   count: Arc<AtomicUsize>,
   response: Arc<Mutex<(StatusCode, Value)>>,
@@ -103,6 +105,7 @@ impl JwksServer {
       axum::serve(listener, router).await.unwrap();
     });
     Self {
+      root: tempfile::tempdir().unwrap(),
       url,
       count,
       response,

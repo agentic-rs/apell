@@ -109,6 +109,10 @@ For a self-hosted catalog with public downloads and private publishing, see
 `apell publish`; users can browse, install, and update directly in Apell's Store
 screen or install a downloaded `.apel` file.
 
+On the Store website, sign in with GitHub to register a package, publish files,
+and invite maintainers. Every maintainer can manage publishing connections and
+other maintainers. See [accounts and ownership](docs/store-accounts.md).
+
 GitHub Actions can use [trusted publishing](docs/store.md#trusted-publishing-from-github-actions)
 to publish without a saved store token. Register the applet's repository and
 publishing workflow once, then let `apell publish` obtain a scoped credential

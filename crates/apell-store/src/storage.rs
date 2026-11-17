@@ -1,6 +1,7 @@
 use crate::{
   error::{Result, StoreError},
   model::*,
+  packages::{self, PublishAuthority},
 };
 use apell_package::{digest, parse, valid_hash, valid_name, MAX_BUNDLE_BYTES};
 use chrono::{SecondsFormat, Utc};
@@ -56,14 +57,19 @@ impl Store {
       CREATE INDEX IF NOT EXISTS release_icons ON releases(icon_sha256);",
       )
       .map_err(|_| StoreError::internal())?;
+    crate::auth::migrate(&connection)?;
+    packages::migrate(&connection)?;
     Ok(store)
   }
 
-  fn connection(&self) -> Result<Connection> {
+  pub(crate) fn connection(&self) -> Result<Connection> {
     let connection =
       Connection::open(self.root.join("catalog.sqlite3")).map_err(|_| StoreError::internal())?;
     connection
       .busy_timeout(Duration::from_secs(5))
+      .map_err(|_| StoreError::internal())?;
+    connection
+      .pragma_update(None, "foreign_keys", true)
       .map_err(|_| StoreError::internal())?;
     Ok(connection)
   }
@@ -73,6 +79,16 @@ impl Store {
     bytes: Vec<u8>,
     metadata: PublishMetadata,
     icon: Option<Vec<u8>>,
+  ) -> Result<PublishResult> {
+    self.publish_authorized(bytes, metadata, icon, PublishAuthority::Administrator)
+  }
+
+  pub fn publish_authorized(
+    &self,
+    bytes: Vec<u8>,
+    metadata: PublishMetadata,
+    icon: Option<Vec<u8>>,
+    authority: PublishAuthority,
   ) -> Result<PublishResult> {
     metadata.validate()?;
     let bundle = parse(&bytes).map_err(|message| {
@@ -95,6 +111,7 @@ impl Store {
     let transaction = connection
       .transaction_with_behavior(TransactionBehavior::Immediate)
       .map_err(|_| StoreError::internal())?;
+    packages::authorize_transaction(&transaction, &manifest.applet_id, &authority)?;
     if let Some(existing) = read_release(&transaction, &manifest.applet_id, &manifest.version)? {
       if existing.release.sha256 != hash {
         return Err(StoreError::conflict(
@@ -200,6 +217,7 @@ impl Store {
     transaction.execute("INSERT INTO applets (applet_id,latest_version,stable_version) VALUES (?1,?2,?3)
       ON CONFLICT(applet_id) DO UPDATE SET latest_version=excluded.latest_version,stable_version=excluded.stable_version",
       params![manifest.applet_id, latest, stable]).map_err(|_| StoreError::internal())?;
+    packages::audit_publication(&transaction, &manifest.applet_id, &authority)?;
     transaction.commit().map_err(|_| StoreError::internal())?;
     Ok(PublishResult {
       applet_id: manifest.applet_id,

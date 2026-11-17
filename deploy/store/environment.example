@@ -1,2 +1,7 @@
 APELL_STORE_PUBLIC_URL=https://store.example.invalid
 APELL_STORE_TRUSTED_PUBLISHERS_FILE=/etc/apell-store/trusted-publishers.json
+# Optional GitHub website login. Contents: {"client_id":"...","client_secret":"..."}
+# APELL_STORE_GITHUB_OAUTH_FILE=/etc/apell-store/github-oauth.json
+# Migration only: explicitly assign reserved existing packages, then remove this setting.
+# Contents: {"github_id":123456789,"github_login":"example-owner"}
+# APELL_STORE_BOOTSTRAP_OWNER_FILE=/etc/apell-store/bootstrap-owner.json

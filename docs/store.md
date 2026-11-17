@@ -1,7 +1,7 @@
 # Apell Store
 
 The store serves a public applet catalog, version history, and `.apel` downloads.
-Publishing uses GitHub Actions trusted publishing or a private local token. Applets remain in their own repositories;
+Publishing uses a signed-in package maintainer, GitHub Actions trusted publishing, or an operator token. Applets remain in their own repositories;
 publishing a release does not require changing the shell or landing-page repository.
 
 The website supports search, stable and preview releases, declared permissions,
@@ -33,6 +33,10 @@ the package size, checksum, applet identity, version, and declared capabilities.
 The installation also checks that the installed package has not changed since
 review. Failed or stale updates leave the previous installation intact.
 
+## Accounts and package ownership
+
+Sign in with GitHub on the website, open **My packages**, and choose **Register package**. Any signed-in GitHub user can register an available applet ID. The creator owns the package; its public listing appears after the first release. Owners and maintainers can publish files, configure GitHub Actions, and invite or remove other maintainers. Invitations require acceptance. The owner is protected from removal, and ownership transfer requires the current owner and the recipient to agree. See [accounts and publishing access](store-accounts.md) for setup, migration, and the full lifecycle.
+
 ## Publish from an applet repository
 
 Install the CLI from an Apell checkout:
@@ -52,8 +56,10 @@ Build your applet and pack it with `apell pack` as described in the
 }
 ```
 
-For local publishing, keep the publishing token in a private file outside source
-control and set `APELL_STORE_PUBLISH_TOKEN_FILE` to that file. Then publish:
+Package maintainers can upload a release through the website without a CLI token.
+For operator-only local CLI publishing, keep the administrator token in a private
+file outside source control and set `APELL_STORE_PUBLISH_TOKEN_FILE` to that file.
+Then publish:
 
 ```sh
 apell publish artifacts/example.apel \
@@ -76,47 +82,34 @@ must use HTTPS without URL credentials.
 
 ## Trusted publishing from GitHub Actions
 
-The store operator registers a trusted workflow for each applet. The workflow
+A package owner or maintainer registers a trusted workflow in package settings. The workflow
 requests a GitHub OIDC identity token and `apell publish` exchanges it for a
 short-lived publishing credential restricted to that applet and package checksum.
 There is no long-lived publishing secret in the repository.
 
 ### Register a publisher
 
-On the store server, create a private configuration file following
-[trusted-publishers.example.json](../deploy/store/trusted-publishers.example.json):
+Open **My packages → your package → GitHub Actions**. Enter a public repository
+as `OWNER/REPO`, its workflow path, exact allowed refs/events, and an optional
+GitHub environment. The server resolves and stores the numeric repository and
+owner IDs. Repository names are display information; they do not establish trust.
+Save takes effect immediately.
 
-```json
-{
-  "publishers": [
-    {
-      "applet_id": "example",
-      "repository_id": 123456789,
-      "repository_owner_id": 987654321,
-      "workflow": ".github/workflows/publish.yml",
-      "allowed_refs": ["refs/heads/main"],
-      "event_names": ["push", "workflow_dispatch"],
-      "environment": null
-    }
-  ]
-}
-```
+Every maintainer can change or disconnect this connection. Both changes invalidate
+outstanding scoped credentials, including uploads still in progress. They do not
+remove existing releases or change the applet ID. A repository rename under the
+same owner continues to work; changing repositories or transferring repository
+ownership requires saving the connection again. Removing a maintainer does not
+automatically disconnect a separately trusted repository.
 
-Get the immutable repository and owner IDs using
-`gh api repos/OWNER/REPO --jq '{repository_id: .id, repository_owner_id: .owner.id}'`.
-Names alone do not establish trust. Set `APELL_STORE_PUBLIC_URL` to the store's
-canonical HTTPS origin and `APELL_STORE_TRUSTED_PUBLISHERS_FILE` to this file,
-then restart the service. The URL must have no path, query, fragment, or
-credentials. Keep actual deployment values out of source control.
-
-Each entry authorizes one applet ID, an exact workflow path, and explicitly listed
-Git refs and events. To require a protected GitHub environment, set `environment`
-and use the same name in the publishing job. Allowed refs are exact strings;
+Each package has one publishing connection. Allowed refs are exact strings;
 wildcards are not supported. Only GitHub-hosted runners are accepted. Pull-request
 events are rejected. A publishing job must be defined in the registered workflow;
-delegation to a different reusable workflow is not supported by this first adapter.
-Adding or changing a publisher requires a server configuration change; an
-unregistered repository cannot claim an applet by publishing first.
+delegation to a different reusable workflow is not supported by this adapter.
+
+Existing operator-managed JSON policies are imported once during migration; see
+[operator setup](store-accounts.md#operator-setup). Subsequent edits use the website
+and database, so a restart cannot restore a connection that was disconnected.
 
 ### Configure the workflow
 
@@ -237,7 +230,7 @@ The OIDC exchange takes `Authorization: Bearer <github-id-token>` and JSON
 `{"applet_id":"example","sha256":"<package-sha256>"}`. Its response contains
 `token` and `expires_at` (Unix seconds) and uses `Cache-Control: no-store`. Use
 that token as the bearer credential on `/api/v1/publish`. The exchange is disabled
-unless trusted-publisher configuration is present.
+unless the public Store URL is configured. Only workflows registered in the package database can exchange an identity.
 
 ## Run locally
 
@@ -253,15 +246,17 @@ Open `http://127.0.0.1:8788`. Generated credentials, data, and web build output 
 ignored by Git. The token must contain 32–512 printable ASCII bytes without spaces.
 Restart the service after changing it.
 
-| Environment variable                  | Default                                 |
-| ------------------------------------- | --------------------------------------- |
-| `APELL_STORE_LISTEN`                  | `127.0.0.1:8788`                        |
-| `APELL_STORE_DATA_DIR`                | `store-data`                            |
-| `APELL_STORE_WEB_DIR`                 | `store/web/dist`                        |
-| `APELL_STORE_PUBLISH_TOKEN_FILE`      | Required                                |
-| `APELL_STORE_PUBLIC_URL`              | Unset; required with trusted publishers |
-| `APELL_STORE_TRUSTED_PUBLISHERS_FILE` | Unset; OIDC disabled                    |
-| `APELL_STORE_OIDC_DIAGNOSTICS`        | Unset; failure diagnostics disabled     |
+| Environment variable                  | Default                                           |
+| ------------------------------------- | ------------------------------------------------- |
+| `APELL_STORE_LISTEN`                  | `127.0.0.1:8788`                                  |
+| `APELL_STORE_DATA_DIR`                | `store-data`                                      |
+| `APELL_STORE_WEB_DIR`                 | `store/web/dist`                                  |
+| `APELL_STORE_PUBLISH_TOKEN_FILE`      | Required                                          |
+| `APELL_STORE_PUBLIC_URL`              | Unset; enables OIDC and supplies the login origin |
+| `APELL_STORE_TRUSTED_PUBLISHERS_FILE` | Optional one-time legacy policy import            |
+| `APELL_STORE_GITHUB_OAUTH_FILE`       | Optional private OAuth client JSON file           |
+| `APELL_STORE_BOOTSTRAP_OWNER_FILE`    | Optional migration-only owner identity JSON file  |
+| `APELL_STORE_OIDC_DIAGNOSTICS`        | Unset; failure diagnostics disabled               |
 
 ## Deploy
 
@@ -276,10 +271,10 @@ example domain and certificate paths in a local copy. Keep actual host names,
 addresses, and credentials out of Git. The systemd template uses a dedicated
 service account, a persistent data directory, and a 384 MiB memory limit.
 
-For trusted publishing, put the two OIDC settings in
+For trusted publishing, set the public Store URL in
 `/etc/apell-store/environment`, using the
 [environment example](../deploy/store/environment.example). The systemd unit
-reads this optional file. Keep it and the trusted-publishers JSON readable only by
+reads this optional file. Keep it and any OAuth/import files readable only by
 the administrator and service account. The server needs outbound HTTPS access to
 GitHub's OIDC key endpoint. No new inbound port is required.
 

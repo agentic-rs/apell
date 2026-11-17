@@ -14,9 +14,17 @@ pub(crate) struct Grant {
   pub applet_id: String,
   pub sha256: String,
   pub expires_at: u64,
+  pub policy_revision: u64,
 }
 
 impl Grant {
+  pub fn authority(&self) -> crate::packages::PublishAuthority {
+    crate::packages::PublishAuthority::Oidc {
+      applet_id: self.applet_id.clone(),
+      policy_revision: self.policy_revision,
+    }
+  }
+
   pub fn validate_package(&self, bytes: &[u8], now: u64) -> Result<()> {
     if self.expires_at <= now {
       return Err(reject(Rejection::CredentialExpired));
@@ -56,6 +64,7 @@ impl Tokens {
     claims: &Claims,
     applet_id: String,
     sha256: String,
+    policy_revision: u64,
     now: u64,
   ) -> Result<TokenResponse> {
     self.prune(now);
@@ -85,6 +94,7 @@ impl Tokens {
         applet_id,
         sha256,
         expires_at,
+        policy_revision,
       },
     );
     self.used_ids.insert(identity, claims.exp);

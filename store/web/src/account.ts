@@ -1,0 +1,213 @@
+import { mutate, packagePath, perform, type Actions } from './actions';
+import {
+  button,
+  element,
+  inputField,
+  link,
+  routeLink,
+  section,
+  statusMessage,
+  submitButton,
+} from './dom';
+import type { AccountPackages, Invitation, PackageDetails, Session } from './types';
+
+export function renderAccountHeader(session: Session | undefined, onLogout: () => void): void {
+  const nav = document.querySelector<HTMLElement>('.site-header nav');
+  if (!nav) return;
+  nav.querySelector('[data-account-nav]')?.remove();
+  const group = element('span', 'account-nav');
+  group.dataset.accountNav = '';
+  if (session?.user) {
+    const account = routeLink('My packages', '/account');
+    account.title = `Signed in as ${session.user.github_login}`;
+    group.append(account, button('Sign out', onLogout, 'nav-button'));
+  } else {
+    group.append(
+      routeLink(session?.login_available === false ? 'Publishing' : 'Sign in', '/account'),
+    );
+  }
+  nav.append(group);
+}
+
+export function renderSignedOut(session: Session): HTMLElement {
+  document.title = 'Sign in · Apell Store';
+  const root = element('section', 'account-welcome');
+  root.append(
+    element('p', 'eyebrow', 'Publish with Apell'),
+    element('h1', '', 'A home for your applets.'),
+    element(
+      'p',
+      'lead',
+      'Sign in with GitHub to register packages, invite maintainers, and connect your publishing workflow.',
+    ),
+  );
+  if (new URL(location.href).searchParams.get('auth_error')) {
+    const error = element(
+      'p',
+      'notice error',
+      'GitHub sign-in could not be completed. Please try again.',
+    );
+    error.setAttribute('role', 'alert');
+    root.append(error);
+  }
+  if (session.login_available) {
+    root.append(link('Continue with GitHub', '/api/v1/auth/github/login', 'button primary'));
+    root.append(
+      element(
+        'p',
+        'muted',
+        'Browsing and downloading applets is always available without an account.',
+      ),
+    );
+  } else {
+    root.append(
+      element(
+        'p',
+        'notice',
+        'Sign-in is currently unavailable on this Store. You can still browse and download applets.',
+      ),
+    );
+  }
+  root.append(routeLink('Browse applets →', '/', 'text-link'));
+  return root;
+}
+
+export function renderAccount(data: AccountPackages, actions: Actions): HTMLElement {
+  document.title = 'My packages · Apell Store';
+  const root = element('div', 'account-page');
+  const heading = element('header', 'manage-heading');
+  const copy = element('div');
+  copy.append(
+    element('p', 'eyebrow', `GitHub · ${actions.session.user!.github_login}`),
+    element('h1', '', 'My packages'),
+  );
+  heading.append(copy, routeLink('Register package', '/account/new', 'button primary'));
+  root.append(heading);
+  if (data.invitations.length) {
+    const invitations = section('Invitations');
+    const list = element('ul', 'manage-list');
+    data.invitations.forEach((invitation) => list.append(renderInvitation(invitation, actions)));
+    invitations.append(list);
+    root.append(invitations);
+  }
+  if (!data.packages.length) {
+    const empty = section(
+      'Your first applet starts here.',
+      'Register its package ID, then publish an .apel file or connect GitHub Actions.',
+    );
+    root.append(empty);
+  } else {
+    const list = element('ul', 'managed-packages');
+    for (const pkg of data.packages) {
+      const item = element('li');
+      const card = routeLink('', packagePath(pkg.applet_id), 'managed-package');
+      const identity = element('div');
+      identity.append(
+        element('h2', '', pkg.applet_id),
+        element('p', 'muted', pkg.published ? 'Published' : 'Awaiting first release'),
+      );
+      card.append(
+        identity,
+        element('span', 'badge', pkg.role === 'owner' ? 'Owner' : 'Maintainer'),
+        element('span', 'manage-arrow', '→'),
+      );
+      item.append(card);
+      list.append(item);
+    }
+    root.append(list);
+  }
+  return root;
+}
+
+function renderInvitation(invitation: Invitation, actions: Actions): HTMLLIElement {
+  const row = element('li', 'invitation-row');
+  const copy = element('div', 'member-copy');
+  copy.append(
+    element('strong', '', invitation.applet_id),
+    element(
+      'p',
+      'muted',
+      `${invitation.invited_by.github_login} invited you to ${invitation.kind === 'ownership' ? 'become the owner' : 'join as a maintainer'}.`,
+    ),
+  );
+  const expiration = new Date(invitation.expires_at * 1000);
+  copy.append(element('p', 'field-hint', `Expires ${expiration.toLocaleDateString()}`));
+  const controls = element('div', 'action-row');
+  const status = statusMessage();
+  const endpoint = `/api/v1/account/invitations/${encodeURIComponent(invitation.id)}`;
+  controls.append(
+    button(
+      invitation.kind === 'ownership' ? 'Accept ownership' : 'Accept invitation',
+      () => {
+        void perform(
+          row,
+          status,
+          () => mutate(actions, `${endpoint}/accept`, 'POST'),
+          () => actions.refresh(),
+        );
+      },
+      'button primary',
+    ),
+    button(
+      'Decline',
+      () => {
+        void perform(
+          row,
+          status,
+          () => mutate(actions, endpoint, 'DELETE'),
+          () => actions.refresh(),
+        );
+      },
+      'button secondary',
+    ),
+  );
+  row.append(copy, controls, status);
+  return row;
+}
+
+export function renderRegistration(actions: Actions): HTMLElement {
+  document.title = 'Register package · Apell Store';
+  const root = element('div', 'account-page');
+  root.append(routeLink('← My packages', '/account', 'back-link'));
+  const heading = element('header', 'manage-heading');
+  heading.append(element('h1', '', 'Register a package'));
+  const panel = section(
+    'Choose its identity',
+    'You will own the package and can invite other people to maintain it.',
+  );
+  const form = element('form', 'manage-form');
+  const id = inputField(form, 'applet_id', 'Package ID', {
+    required: true,
+    placeholder: 'my-applet',
+    hint: 'Use the same applet_id in manifest.json. This ID is permanent: 1–80 lowercase letters, numbers, hyphens, or underscores.',
+  }) as HTMLInputElement;
+  id.pattern = '[a-z0-9_-]{1,80}';
+  id.maxLength = 80;
+  id.autocomplete = 'off';
+  id.autocapitalize = 'none';
+  id.spellcheck = false;
+  const status = statusMessage();
+  form.append(submitButton('Register package'), status);
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    void perform(
+      form,
+      status,
+      () =>
+        mutate<PackageDetails>(actions, '/api/v1/account/packages', 'POST', {
+          applet_id: id.value.trim(),
+        }),
+      (pkg) => actions.navigate(packagePath(pkg.applet_id)),
+    );
+  });
+  panel.append(
+    form,
+    element(
+      'p',
+      'field-hint',
+      'Your package appears in the public catalog after its first release.',
+    ),
+  );
+  root.append(heading, panel);
+  return root;
+}

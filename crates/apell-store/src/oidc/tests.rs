@@ -52,7 +52,11 @@ fn diagnostic_categories_never_include_rejected_claim_values() {
 
 async fn service() -> (Oidc, JwksServer) {
   let server = JwksServer::new(key().jwks.clone()).await;
-  let mut service = Oidc::new(config()).unwrap();
+  let store = Store::open(server.root.path().join("data")).unwrap();
+  store
+    .bootstrap_packages(&config().publishers, None)
+    .unwrap();
+  let mut service = Oidc::new(config(), store).unwrap();
   service.keys = Arc::new(keys::Keys::fixture(&server.url));
   (service, server)
 }
@@ -88,7 +92,7 @@ fn policy_files_are_bounded_and_explicit_without_name_based_identity() {
     |p| p["publishers"][0]["allowed_refs"] = json!([]),
     |p| p["publishers"][0]["event_names"] = json!(["pull_request_target"]),
     |p| p["publishers"][0]["environment"] = json!(""),
-    |p| p["publishers"][0]["repository"] = json!("example/project"),
+    |p| p["publishers"][0]["unknown_field"] = json!("example/project"),
   ];
   for mutate in mutations {
     let mut data = valid.clone();
@@ -372,7 +376,7 @@ fn expired_credentials_and_replay_ids_cannot_bypass_capacity_limits() {
   let mut identity: Claims = serde_json::from_value(claims("expiry")).unwrap();
   identity.exp = stamp + 600;
   let minted = tokens
-    .mint(&identity, "sample".into(), "a".repeat(64), stamp)
+    .mint(&identity, "sample".into(), "a".repeat(64), 1, stamp)
     .unwrap();
   assert!(tokens
     .authenticate(&minted.token, minted.expires_at)
@@ -382,6 +386,7 @@ fn expired_credentials_and_replay_ids_cannot_bypass_capacity_limits() {
       &identity,
       "sample".into(),
       "a".repeat(64),
+      1,
       minted.expires_at
     )
     .is_err());
@@ -389,7 +394,7 @@ fn expired_credentials_and_replay_ids_cannot_bypass_capacity_limits() {
     let mut identity: Claims =
       serde_json::from_value(claims(&format!("capacity-{index}"))).unwrap();
     identity.exp = stamp + 600;
-    let result = tokens.mint(&identity, "sample".into(), "a".repeat(64), stamp);
+    let result = tokens.mint(&identity, "sample".into(), "a".repeat(64), 1, stamp);
     if index == 1023 {
       assert!(result.is_err());
     } else {
@@ -415,10 +420,12 @@ async fn scoped_uploads_check_actual_package_identity_and_keep_admin_publishing(
   let root = tempfile::tempdir().unwrap();
   let config = crate::Config {
     listen: "127.0.0.1:0".parse().unwrap(),
-    data_dir: root.path().join("data"),
+    data_dir: _server.root.path().join("data"),
     web_dir: root.path().join("web"),
     publish_token: "fixture-administrator-token-12345678".into(),
     oidc: None,
+    oauth: None,
+    bootstrap_owner: None,
   };
   let app = crate::router_with_identity(&config, Some(service.clone())).unwrap();
   let package = fixture::package("sample", "1.0.0");
@@ -497,10 +504,12 @@ async fn credential_expiration_during_upload_prevents_publication() {
   let root = tempfile::tempdir().unwrap();
   let config = crate::Config {
     listen: "127.0.0.1:0".parse().unwrap(),
-    data_dir: root.path().join("data"),
+    data_dir: _server.root.path().join("data"),
     web_dir: root.path().join("web"),
     publish_token: "fixture-administrator-token-12345678".into(),
     oidc: None,
+    oauth: None,
+    bootstrap_owner: None,
   };
   let app = crate::router_with_identity(&config, Some(service.clone())).unwrap();
   let package = fixture::package("sample", "1.0.0");
@@ -531,4 +540,98 @@ async fn credential_expiration_during_upload_prevents_publication() {
       .count(),
     0
   );
+}
+
+#[tokio::test]
+async fn database_policy_revocation_rejects_issued_tokens_and_in_flight_uploads() {
+  let (service, server) = service().await;
+  let owner = crate::auth::User {
+    github_id: 1,
+    github_login: "example-owner".into(),
+  };
+  service.store.bootstrap_packages(&[], Some(&owner)).unwrap();
+  let settings = crate::Config {
+    listen: "127.0.0.1:0".parse().unwrap(),
+    data_dir: server.root.path().join("data"),
+    web_dir: server.root.path().join("web"),
+    publish_token: "fixture-administrator-token-12345678".into(),
+    oidc: None,
+    oauth: None,
+    bootstrap_owner: None,
+  };
+  let app = crate::router_with_identity(&settings, Some(service.clone())).unwrap();
+  let package = fixture::package("sample", "1.0.0");
+  let token = service
+    .exchange(exchange_request(
+      &signed(&claims("before-disconnect")),
+      "sample",
+      apell_package::digest(&package),
+    ))
+    .await
+    .unwrap();
+  service
+    .store
+    .disconnect_publisher("sample", owner.github_id)
+    .unwrap();
+  let (parts, _) = fixture::upload(&token.token, &package).into_parts();
+  let never_read = Body::from_stream(futures_util::stream::poll_fn(|_| {
+    panic!("A revoked workflow must be rejected before reading an upload");
+    #[allow(unreachable_code)]
+    std::task::Poll::Ready(None::<std::result::Result<Vec<u8>, std::io::Error>>)
+  }));
+  let denied = app
+    .clone()
+    .oneshot(HttpRequest::from_parts(parts, never_read))
+    .await
+    .unwrap();
+  assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+  assert!(service
+    .exchange(exchange_request(
+      &signed(&claims("disconnected")),
+      "sample",
+      apell_package::digest(&package),
+    ))
+    .await
+    .is_err());
+
+  service
+    .store
+    .set_publisher("sample", owner.github_id, config().publishers.remove(0))
+    .unwrap();
+  // Reconnecting the same workflow must never reactivate a previously issued token.
+  assert_eq!(
+    app
+      .clone()
+      .oneshot(fixture::upload(&token.token, &package))
+      .await
+      .unwrap()
+      .status(),
+    StatusCode::FORBIDDEN
+  );
+  let token = service
+    .exchange(exchange_request(
+      &signed(&claims("new-connection")),
+      "sample",
+      apell_package::digest(&package),
+    ))
+    .await
+    .unwrap();
+  let (parts, body) = fixture::upload(&token.token, &package).into_parts();
+  let bytes = body.collect().await.unwrap().to_bytes();
+  let store = service.store.clone();
+  let body = Body::from_stream(futures_util::stream::once(async move {
+    store
+      .disconnect_publisher("sample", owner.github_id)
+      .unwrap();
+    Ok::<_, std::io::Error>(bytes)
+  }));
+  assert_eq!(
+    app
+      .oneshot(HttpRequest::from_parts(parts, body))
+      .await
+      .unwrap()
+      .status(),
+    StatusCode::FORBIDDEN
+  );
+  assert!(service.store.catalog().unwrap().applets.is_empty());
 }

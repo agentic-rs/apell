@@ -1,14 +1,17 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, io::Read, path::Path};
 use url::Url;
 
 /// Server-managed authorizations. Repository names and token subjects are not identities.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct TrustedPublisher {
   pub applet_id: String,
   pub repository_id: u64,
   pub repository_owner_id: u64,
+  /// Display only. Signed numeric IDs remain the authorization identity.
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub repository: Option<String>,
   pub workflow: String,
   pub allowed_refs: Vec<String>,
   pub event_names: Vec<String>,
@@ -34,12 +37,16 @@ impl OidcConfig {
     let policy_file = std::env::var_os("APELL_STORE_TRUSTED_PUBLISHERS_FILE");
     match (public_url, policy_file) {
       (None, None) => Ok(None),
+      (Some(url), None) => Ok(Some(Self {
+        audience: canonical_audience(url.to_str().ok_or("Invalid store public URL.")?)?,
+        publishers: Vec::new(),
+      })),
       (Some(url), Some(file)) => Self::load(
         url.to_str().ok_or("Invalid store public URL.")?,
         Path::new(&file),
       )
       .map(Some),
-      _ => Err("Configure both APELL_STORE_PUBLIC_URL and APELL_STORE_TRUSTED_PUBLISHERS_FILE to enable trusted publishing.".into()),
+      _ => Err("Configure APELL_STORE_PUBLIC_URL when importing trusted publishers.".into()),
     }
   }
 
@@ -70,7 +77,7 @@ impl OidcConfig {
     Ok(config)
   }
 
-  pub(super) fn validate(&self) -> Result<(), String> {
+  pub(crate) fn validate(&self) -> Result<(), String> {
     if canonical_audience(&self.audience)? != self.audience || self.publishers.len() > 256 {
       return Err("Invalid trusted publishing configuration.".into());
     }
@@ -83,6 +90,22 @@ impl OidcConfig {
         || !applets.insert(&policy.applet_id)
         || policy.repository_id == 0
         || policy.repository_owner_id == 0
+        || policy.repository.as_ref().is_some_and(|value| {
+          let Some((owner, name)) = value.split_once('/') else {
+            return true;
+          };
+          owner.is_empty()
+            || owner.len() > 100
+            || name.is_empty()
+            || name.len() > 100
+            || !owner
+              .bytes()
+              .all(|c| c.is_ascii_alphanumeric() || c == b'-')
+            || !name
+              .bytes()
+              .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'_' | b'-'))
+            || matches!(name, "." | "..")
+        })
         || file.len() > 128
         || !(file.ends_with(".yml") || file.ends_with(".yaml"))
         || file.starts_with('.')
