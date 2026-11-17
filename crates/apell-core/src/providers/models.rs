@@ -1,5 +1,6 @@
 use super::{
-  auth::validate_credential, default_base_url, driver_id, is_device_provider, AccountConfig, Client,
+  auth::validate_credential, default_base_url, driver_id, is_device_provider, zai, AccountConfig,
+  Client,
 };
 use crate::llm::LlmConfig;
 use serde::Serialize;
@@ -13,6 +14,7 @@ use tokn_core::{
 };
 
 const MAX_MODEL_BYTES: usize = 4 * 1024 * 1024;
+const MAX_MODEL_ERROR_BYTES: usize = 64 * 1024;
 const MAX_MODELS: usize = 4096;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -55,13 +57,24 @@ pub async fn discover_models(
   for (name, value) in headers.iter() {
     request = request.header(name.as_str(), value.as_str());
   }
-  let mut response = request
+  let response = request
     .send()
     .await
     .map_err(|_| "Could not reach the model list endpoint. Try again.".to_owned())?;
   if !response.status().is_success() {
+    let status = response.status().as_u16();
+    if status == 429 && zai::is_zai(&config.provider_id) {
+      let limit = read_model_body(response, MAX_MODEL_ERROR_BYTES)
+        .await
+        .ok()
+        .and_then(|body| serde_json::from_slice(&body).ok())
+        .and_then(|error| zai::rate_limit(&config.provider_id, &error));
+      if let Some(limit) = limit {
+        return Err(limit.message);
+      }
+    }
     return Err(
-      match response.status().as_u16() {
+      match status {
         401 | 403 => "The provider rejected the credentials. Update the API key or sign in again.",
         404 | 405 | 501 => {
           "This connection does not provide a model list. Enter the model ID manually."
@@ -75,9 +88,19 @@ pub async fn discover_models(
       .into(),
     );
   }
+  let body = read_model_body(response, MAX_MODEL_BYTES).await?;
+  let value = serde_json::from_slice(&body)
+    .map_err(|_| "The provider returned an invalid model list.".to_owned())?;
+  Ok(ModelList {
+    models: parse_models(&config.provider_id, &value)?,
+    source: ModelSource::Provider,
+  })
+}
+
+async fn read_model_body(mut response: reqwest::Response, limit: usize) -> Result<Vec<u8>, String> {
   if response
     .content_length()
-    .is_some_and(|length| length > MAX_MODEL_BYTES as u64)
+    .is_some_and(|length| length > limit as u64)
   {
     return Err("The provider model list is too large.".into());
   }
@@ -87,17 +110,12 @@ pub async fn discover_models(
     .await
     .map_err(|_| "Could not read the provider model list.".to_owned())?
   {
-    if body.len().saturating_add(chunk.len()) > MAX_MODEL_BYTES {
+    if body.len().saturating_add(chunk.len()) > limit {
       return Err("The provider model list is too large.".into());
     }
     body.extend_from_slice(&chunk);
   }
-  let value = serde_json::from_slice(&body)
-    .map_err(|_| "The provider returned an invalid model list.".to_owned())?;
-  Ok(ModelList {
-    models: parse_models(&config.provider_id, &value)?,
-    source: ModelSource::Provider,
-  })
+  Ok(body)
 }
 
 fn model_request(

@@ -2,6 +2,7 @@
 
 mod auth;
 mod models;
+pub(crate) mod zai;
 
 pub use auth::{begin_login, device_account, poll_login, refresh_account, static_account};
 pub use models::{discover_models, ModelList, ModelSource, ProviderModel};

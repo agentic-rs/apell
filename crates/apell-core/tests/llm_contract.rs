@@ -624,7 +624,7 @@ async fn tokn_does_not_retry_rate_limits_or_server_errors() {
   let server = Server::start(vec![
     Reply::HttpError(
       429,
-      json!({ "error": { "message": "private-rate-detail" } }),
+      json!({ "error": { "code": "1302", "message": "private-rate-detail" } }),
     ),
     Reply::HttpError(
       503,
@@ -651,6 +651,61 @@ async fn tokn_does_not_retry_rate_limits_or_server_errors() {
       format!("The LLM provider returned HTTP {status}.")
     );
     assert_eq!(server.requests().len(), index + 1);
+  }
+}
+
+#[tokio::test]
+async fn zai_coding_plan_distinguishes_upstream_429_causes() {
+  let cases = [
+    (json!("1113"), "balance", false),
+    (json!(1302), "rate limit", true),
+    (json!("1310"), "quota", false),
+    (json!(1311), "model", false),
+    (json!("9999"), "", true),
+  ];
+  let replies = cases
+    .iter()
+    .map(|(code, _, _)| {
+      Reply::HttpError(
+        429,
+        json!({ "error": { "code": code, "message": "private-upstream-detail" } }),
+      )
+    })
+    .collect();
+  let mut server = Server::start(replies).await;
+  server.config.provider_id = "zai-coding-plan".into();
+  server.config.base_url = server.config.base_url.replace("/v1", "/api/coding/paas/v4");
+  server.config.model_id = "glm-5.2".into();
+  let service = LlmService::new().unwrap();
+  service.register_session("session").unwrap();
+  for (index, (code, expected, retryable)) in cases.into_iter().enumerate() {
+    let (result, _) = generate(
+      &service,
+      "session",
+      input(&format!("zai_error_{index}")),
+      &server.config,
+    )
+    .await;
+    assert_eq!(result.status, LlmStatus::Failed);
+    let error = result.error.unwrap();
+    assert_eq!(error.code, "provider_error");
+    assert_eq!(error.retryable, retryable, "{code}: {error:?}");
+    if expected.is_empty() {
+      assert_eq!(error.message, "The LLM provider returned HTTP 429.");
+    } else {
+      let code = code
+        .as_str()
+        .map_or_else(|| code.to_string(), str::to_owned);
+      assert!(error.message.contains(&format!("(429 / {code})")));
+      assert!(error.message.to_ascii_lowercase().contains(expected));
+    }
+    assert!(!error.message.contains("private-upstream-detail"));
+    let sent = server.requests();
+    assert_eq!(sent.len(), index + 1);
+    assert!(sent[index]
+      .headers
+      .starts_with("POST /api/coding/paas/v4/chat/completions "));
+    assert_eq!(sent[index].body["model"], server.config.model_id);
   }
 }
 

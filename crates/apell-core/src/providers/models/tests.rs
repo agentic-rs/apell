@@ -292,6 +292,30 @@ async fn discovery_rejects_redirects_and_never_echoes_upstream_errors() {
 }
 
 #[tokio::test]
+async fn zai_coding_plan_discovery_explains_an_expired_plan() {
+  let server = Server::start(
+    "429 Too Many Requests",
+    "Content-Type: application/json\r\n",
+    r#"{"error":{"code":"1309","message":"private-upstream-detail"}}"#,
+  );
+  let provider = "zai-coding-plan";
+  let account = static_account(provider, "test-connection", Some("test-secret")).unwrap();
+  let result = discover_models(
+    &http_client().unwrap(),
+    &config(provider, &server.url),
+    Some(account),
+  )
+  .await
+  .unwrap_err();
+  assert!(result.contains("(429 / 1309)"));
+  assert!(result.contains("expired"));
+  assert!(!result.contains("private-upstream-detail"));
+  let request = server.finish();
+  assert!(request.starts_with("GET /prefix/v1/models HTTP/1.1\r\n"));
+  assert!(request.contains("authorization: Bearer test-secret\r\n"));
+}
+
+#[tokio::test]
 async fn discovery_bounds_response_size_before_reading_payload() {
   let server = Server::with_length("200 OK", "", "", MAX_MODEL_BYTES + 1);
   let result = discover_models(
@@ -302,5 +326,29 @@ async fn discovery_bounds_response_size_before_reading_payload() {
   .await
   .unwrap_err();
   assert!(result.contains("too large"));
+  server.finish();
+}
+
+#[tokio::test]
+async fn zai_coding_plan_discovery_keeps_generic_error_for_oversized_429() {
+  let body = json!({"error": {"code": "1309", "message": "x".repeat(MAX_MODEL_ERROR_BYTES)}});
+  let server = Server::start(
+    "429 Too Many Requests",
+    "Content-Type: application/json\r\n",
+    &body.to_string(),
+  );
+  let provider = "zai-coding-plan";
+  let account = static_account(provider, "test-connection", Some("test-secret")).unwrap();
+  let result = discover_models(
+    &http_client().unwrap(),
+    &config(provider, &server.url),
+    Some(account),
+  )
+  .await
+  .unwrap_err();
+  assert_eq!(
+    result,
+    "The provider is rate limiting model lookup. Try again later."
+  );
   server.finish();
 }

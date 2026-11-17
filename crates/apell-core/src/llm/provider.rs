@@ -726,14 +726,20 @@ pub(super) async fn remote(
         bytes
       }
     };
-    return Err(provider_error(
-      &if bytes.len() <= MAX_ERROR_BYTES {
-        serde_json::from_slice(&bytes).unwrap_or(Value::Null)
-      } else {
-        Value::Null
-      },
-      Some(status),
-    ));
+    let error = if bytes.len() <= MAX_ERROR_BYTES {
+      serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+    } else {
+      Value::Null
+    };
+    if status == 429 {
+      if let Some(limit) = crate::providers::zai::rate_limit(&config.provider_id, &error) {
+        return Err(Failure {
+          retryable: limit.retryable,
+          ..Failure::new("provider_error", &limit.message)
+        });
+      }
+    }
+    return Err(provider_error(&error, Some(status)));
   }
   match response_body {
     ApellBody::Buffered(bytes) if content_type.starts_with("application/json") => {

@@ -307,6 +307,11 @@ export function ConnectionEditor(props: EditorProps) {
                   </label>
                 </details>
               )}
+              {draft.provider_id === 'zai-coding-plan' && (
+                <p className="status">
+                  If you’re creating a new key, use a Personal or Team Coding Plan key from Z.ai.
+                </p>
+              )}
               {accepts_key && (
                 <ApiKeyField
                   credential_status={credential_status}
