@@ -22,7 +22,12 @@ account APIs. The proxy admission limit rejected excess sign-in attempts even
 when forwarding headers changed. Companion's existing OIDC workflow succeeded
 with the unchanged release checksum; current and previous downloads, package
 contents, and the listing icon passed integrity checks. The CLI was installed
-locally; interactive account verification is recorded separately when completed.
+locally. The user completed real browser approval, and separate CLI processes
+verified the Keychain-backed credential, remembered Store, identity, package
+access, members, and invitations. Companion's migrated repository name was
+resolved against its existing numeric repository and owner IDs. The CLI saved
+and read back its OIDC settings with those IDs and all authorization rules
+unchanged. The approved CLI login remains available locally.
 
 GitHub accounts and package ownership passed 49 Store tests, 14 CLI tests, all 76 frontend/SDK tests, strict Store/CLI Clippy, the Store production build, formatting, and privacy checks. Coverage includes a complete mock GitHub OAuth/PKCE exchange, browser-bound state and replay rejection, secure sessions and CSRF, public registration races, reserved legacy IDs, invitation acceptance, protected ownership and accepted transfers, and membership/OIDC revocation during uploads. The policy migration preserves existing releases and cannot resurrect disconnected publishers on restart. Firefox fixture checks passed at 320, 390, 768, and 1,200 pixels for registration, invitations, publishing, people management, OIDC changes, and session recovery; keyboard and scrolling checks verified skip-link behavior. The Linux release was deployed with its binary checksum matching the tested build. Production checks verified the OAuth redirect and configured client, PKCE, secure cookies, anonymous session state, protected management endpoints, and invalid callback rejection. Existing package ownership and CI policy were migrated, callback request logging was suppressed, and one-time migration settings were removed. Existing downloads retained their checksums. Companion’s GitHub Actions workflow successfully republished its identical release through the database-backed OIDC policy. The user confirmed successful interactive GitHub sign-in and Companion appearing under My packages.
 
