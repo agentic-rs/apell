@@ -1,11 +1,13 @@
+mod source;
 mod store;
 
 pub use apell_package::{
   digest, pack_directory, parse, valid_hash, validate_manifest, Bundle, Manifest, API_VERSION,
   MAX_BUNDLE_BYTES, MAX_ENTRIES, MAX_EXPANDED_BYTES,
 };
+pub use source::{GitHubSource, PackageSource, StoreChannel, StoreSource};
 use std::{io::Read, path::Path};
-pub use store::{AppletListReport, BundleStore, GitHubSource, InstalledApplet, UnavailableApplet};
+pub use store::{AppletListReport, BundleStore, InstalledApplet, UnavailableApplet};
 
 fn read_version(path: &Path, expected_hash: &str) -> Result<Vec<u8>, String> {
   let file = std::fs::File::open(path).map_err(|_| "Could not read installed bundle.")?;

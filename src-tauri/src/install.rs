@@ -1,6 +1,6 @@
 use crate::host::{string, Host};
 use apell_core::{
-  bundles::{GitHubSource, InstalledApplet, MAX_BUNDLE_BYTES},
+  bundles::{GitHubSource, InstalledApplet, PackageSource, MAX_BUNDLE_BYTES},
   github::{GitHubClient, GitHubTarget},
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -82,6 +82,9 @@ pub async fn update(app: AppHandle, host: &Host, applet_id: &str) -> Result<Valu
   let source = installed
     .source
     .ok_or("This applet was installed from a file. Choose a new .apel file to update it.")?;
+  let PackageSource::Github(source) = source else {
+    return Err("Open Store to review and install this applet's updates.".into());
+  };
   install_inner(
     app,
     host,
@@ -147,10 +150,10 @@ async fn install_inner(
         &id,
         &bytes,
         expected.as_deref(),
-        source.ok_or("GitHub source is missing.")?,
+        source.ok_or("GitHub source is missing.")?.into(),
       )
     } else {
-      store.install_with_source(&bytes, expected.as_deref(), source)
+      store.install_with_source(&bytes, expected.as_deref(), source.map(Into::into))
     }
   })
   .await

@@ -5,9 +5,33 @@ Publishing requires a private bearer token. Applets remain in their own reposito
 publishing a release does not require changing the shell or landing-page repository.
 
 The website supports search, stable and preview releases, declared permissions,
-release notes, and SHA-256 checksums. Download a package, then use **+ → Install an
-.apel file** in Apell. Store browsing and automatic store updates inside the native
-shell are not included yet. Existing file and GitHub installation still work.
+release notes, and SHA-256 checksums. Applets can also be browsed, installed, and
+updated from **Store** inside Apell. Website downloads remain installable through
+**+ → Install an .apel file**. Existing file and GitHub installation still work.
+
+## Browse and install inside Apell
+
+Open **Store** from the library and save the store's HTTPS address. The address
+stays in the device's local settings; browsing and installation never require a
+publishing token. Search the catalog, open an applet, and review its version,
+release notes, and declared access before choosing **Install**.
+
+Stable releases are recommended when available. Preview releases can be selected
+explicitly. **Updates** shows newer releases for applets installed from the
+selected store. Review an update's permissions, including newly declared access,
+then choose **Update**. Updates are manual, and existing applet data is retained.
+A running applet keeps its current backend and assets until Apell restarts.
+
+Each store installation records the store address, applet ID, and stable or preview
+channel. Changing the configured store does not change installed applets' update
+sources. Existing file or GitHub installations with the same applet ID remain on
+their original source; use their existing update flow. Source migration and
+automatic background updates are not included.
+
+The native host rechecks the reviewed release before downloading, then verifies
+the package size, checksum, applet identity, version, and declared capabilities.
+The installation also checks that the installed package has not changed since
+review. Failed or stale updates leave the previous installation intact.
 
 ## Publish from an applet repository
 

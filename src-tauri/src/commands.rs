@@ -65,6 +65,8 @@ pub async fn shell_command(
 ) -> Result<Value, String> {
   host.authorize(&host_key)?;
   match method.as_str() {
+    "store.config" | "store.set_url" | "store.catalog" | "store.detail" | "store.icon"
+    | "store.install" => crate::store_commands::dispatch(app, &host, &method, params).await,
     "applets.list" => {
       let store = host.bundles.clone();
       blocking(move || {

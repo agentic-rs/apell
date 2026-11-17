@@ -1,52 +1,17 @@
 use super::{
   atomic_write, digest, parse, read_version, valid_hash, validate_manifest, write_version, Bundle,
-  Manifest, MAX_BUNDLE_BYTES,
+  Manifest, PackageSource, StoreSource, MAX_BUNDLE_BYTES,
 };
 use crate::valid_name;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, io::Read, path::PathBuf};
-
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct GitHubSource {
-  pub repository_id: u64,
-  pub repository: String,
-  pub asset_name: String,
-  #[serde(default, skip_serializing_if = "Option::is_none")]
-  pub release_tag: Option<String>,
-  #[serde(default)]
-  pub prerelease: bool,
-}
-
-impl GitHubSource {
-  pub(crate) fn validate(&self) -> Result<(), String> {
-    if self.repository_id == 0
-      || !crate::github::valid_repository(&self.repository)
-      || !crate::github::valid_asset_name(&self.asset_name)
-      || self
-        .release_tag
-        .as_ref()
-        .is_some_and(|tag| !crate::github::valid_release_tag(tag))
-      || (self.prerelease && self.release_tag.is_none())
-    {
-      return Err("Invalid GitHub package source.".into());
-    }
-    Ok(())
-  }
-
-  fn same_release_asset(&self, other: &Self) -> bool {
-    self.repository_id == other.repository_id
-      && self.asset_name == other.asset_name
-      && self.release_tag == other.release_tag
-  }
-}
 
 #[derive(Clone, Debug, Serialize)]
 pub struct InstalledApplet {
   #[serde(flatten)]
   pub manifest: Manifest,
   pub sha256: String,
-  pub source: Option<GitHubSource>,
+  pub source: Option<PackageSource>,
 }
 
 /// A failed installed package remains on disk and is reported independently.
@@ -67,7 +32,7 @@ pub struct AppletListReport {
 struct Active {
   applet_id: String,
   sha256: String,
-  source: Option<GitHubSource>,
+  source: Option<PackageSource>,
   #[serde(skip)]
   legacy: bool,
 }
@@ -80,6 +45,13 @@ impl Active {
       source: self.source.clone(),
     }
   }
+}
+
+#[derive(Clone, Copy)]
+enum InstallGuard<'a> {
+  Any,
+  Update(&'a str),
+  StoreSnapshot(Option<&'a str>),
 }
 
 pub struct BundleStore {
@@ -99,9 +71,9 @@ impl BundleStore {
     &self,
     bytes: &[u8],
     expected_hash: Option<&str>,
-    source: Option<GitHubSource>,
+    source: Option<PackageSource>,
   ) -> Result<InstalledApplet, String> {
-    self.publish(bytes, expected_hash, source, None)
+    self.publish(bytes, expected_hash, source, InstallGuard::Any)
   }
 
   pub fn update_from_source(
@@ -109,17 +81,42 @@ impl BundleStore {
     applet_id: &str,
     bytes: &[u8],
     expected_hash: Option<&str>,
-    source: GitHubSource,
+    source: PackageSource,
   ) -> Result<InstalledApplet, String> {
-    self.publish(bytes, expected_hash, Some(source), Some(applet_id))
+    self.publish(
+      bytes,
+      expected_hash,
+      Some(source),
+      InstallGuard::Update(applet_id),
+    )
+  }
+
+  /// Apply only the installed package snapshot that the user reviewed.
+  /// The check shares the installation lock with publication and ownership checks.
+  pub fn install_store_release(
+    &self,
+    bytes: &[u8],
+    expected_hash: &str,
+    source: StoreSource,
+    expected_installed_sha256: Option<&str>,
+  ) -> Result<InstalledApplet, String> {
+    if expected_installed_sha256.is_some_and(|hash| !valid_hash(hash)) {
+      return Err("Invalid installed package snapshot.".into());
+    }
+    self.publish(
+      bytes,
+      Some(expected_hash),
+      Some(source.into()),
+      InstallGuard::StoreSnapshot(expected_installed_sha256),
+    )
   }
 
   fn publish(
     &self,
     bytes: &[u8],
     expected_hash: Option<&str>,
-    source: Option<GitHubSource>,
-    update_id: Option<&str>,
+    source: Option<PackageSource>,
+    guard: InstallGuard<'_>,
   ) -> Result<InstalledApplet, String> {
     if bytes.len() > MAX_BUNDLE_BYTES {
       return Err("Package exceeds the 24 MiB archive limit.".into());
@@ -133,7 +130,9 @@ impl BundleStore {
     }
     let manifest = parse(bytes)?.manifest;
     let id = &manifest.applet_id;
-    if update_id.is_some_and(|expected| expected != id) {
+    if matches!(guard, InstallGuard::Update(expected) if expected != id)
+      || matches!(&source, Some(PackageSource::Store(source)) if source.applet_id != *id)
+    {
       return Err("The release package has a different applet ID.".into());
     }
     std::fs::create_dir_all(&self.root).map_err(|_| "Could not create package storage.")?;
@@ -149,23 +148,44 @@ impl BundleStore {
     lock.lock().map_err(|_| "Could not lock package storage.")?;
     let directory = self.root.join(id);
     let previous = self.active(id)?;
-    if update_id.is_some()
+    if matches!(guard, InstallGuard::Update(_))
       && !previous
         .as_ref()
         .and_then(|record| record.source.as_ref())
         .zip(source.as_ref())
-        .is_some_and(|(old, new)| old.same_release_asset(new))
+        .is_some_and(|(old, new)| old.same_identity(new))
     {
       return Err("The applet's installation source changed. Reopen its update.".into());
     }
+    if let InstallGuard::StoreSnapshot(expected) = guard {
+      let matches = match (expected, previous.as_ref()) {
+        (None, None) => true,
+        (Some(hash), Some(active)) => {
+          active.sha256 == hash
+            && active
+              .source
+              .as_ref()
+              .zip(source.as_ref())
+              .is_some_and(|(old, new)| old.same_identity(new))
+        }
+        _ => false,
+      };
+      if !matches {
+        return Err(
+          "The installed applet changed. Reopen its store page before installing.".into(),
+        );
+      }
+    }
     let mut source = source;
-    if let Some(incoming) = &source {
+    // Store ownership includes the manifest applet ID, so only GitHub assets
+    // need a cross-ID check. Unrelated damaged pointers must not block stores.
+    if let Some(incoming @ PackageSource::Github(_)) = &source {
       for candidate in self.ids()? {
         if &candidate != id
           && self
             .active(&candidate)?
             .and_then(|record| record.source)
-            .is_some_and(|bound| bound.same_release_asset(incoming))
+            .is_some_and(|bound| bound.same_identity(incoming))
         {
           return Err("This release asset is already bound to a different applet ID.".into());
         }
@@ -176,7 +196,7 @@ impl BundleStore {
         if old
           .source
           .as_ref()
-          .is_none_or(|prior| !prior.same_release_asset(incoming))
+          .is_none_or(|prior| !prior.same_identity(incoming))
         {
           return Err("This applet ID belongs to a different installation source.".into());
         }
@@ -197,21 +217,7 @@ impl BundleStore {
                 .source
                 .as_ref()
                 .ok_or("Invalid installed package source.")?;
-              // A metadata-only promotion must not make a previously stable
-              // version replaceable by a second update with different bytes.
-              if !prior.prerelease && incoming.prerelease {
-                return Err(
-                  "A stable release cannot become a prerelease without increasing its version."
-                    .into(),
-                );
-              }
-              let rolling_prerelease = prior.prerelease
-                && incoming.prerelease
-                && prior.release_tag.is_some()
-                && prior.same_release_asset(incoming);
-              if hash != old.sha256 && !rolling_prerelease {
-                return Err("This release changed content without increasing its version.".into());
-              }
+              prior.validate_equal_version(incoming, hash != old.sha256)?;
             }
           }
           _ => {}
@@ -363,6 +369,9 @@ impl BundleStore {
     }
     if let Some(source) = &record.source {
       source.validate()?;
+    }
+    if matches!(&record.source, Some(PackageSource::Store(source)) if source.applet_id != id) {
+      return Err("Installed package source identity mismatch.".into());
     }
     Ok(Some(record))
   }

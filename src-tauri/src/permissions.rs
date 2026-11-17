@@ -1,5 +1,8 @@
 use crate::host::Host;
-use apell_core::{bundles::InstalledApplet, config::ConfigStore};
+use apell_core::{
+  bundles::{InstalledApplet, PackageSource},
+  config::ConfigStore,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -54,6 +57,10 @@ pub enum GrantSource {
     asset_name: String,
     release_tag: Option<String>,
   },
+  Store {
+    store_url: String,
+    applet_id: String,
+  },
   File {
     sha256: String,
   },
@@ -62,10 +69,14 @@ pub enum GrantSource {
 impl From<&InstalledApplet> for GrantSource {
   fn from(applet: &InstalledApplet) -> Self {
     match &applet.source {
-      Some(source) => Self::Github {
+      Some(PackageSource::Github(source)) => Self::Github {
         repository_id: source.repository_id,
         asset_name: source.asset_name.clone(),
         release_tag: source.release_tag.clone(),
+      },
+      Some(PackageSource::Store(source)) => Self::Store {
+        store_url: source.store_url.clone(),
+        applet_id: source.applet_id.clone(),
       },
       None => Self::File {
         sha256: applet.sha256.clone(),
@@ -227,6 +238,19 @@ pub async fn list(host: &Host) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use apell_core::bundles::{Manifest, StoreChannel, StoreSource};
+
+  fn installed(source: PackageSource) -> InstalledApplet {
+    InstalledApplet {
+      manifest: serde_json::from_value::<Manifest>(json!({
+        "schema_version": 1, "api_version": 2, "applet_id": "recorder", "name": "Recorder",
+        "version": "1.0.0", "permissions": ["audio"]
+      }))
+      .unwrap(),
+      sha256: "a".repeat(64),
+      source: Some(source),
+    }
+  }
 
   #[test]
   fn remembered_grant_persists_for_the_applet_and_verified_source() {
@@ -245,7 +269,9 @@ mod tests {
       .dispatch(
         "recorder",
         "config.set",
-        json!({"key":"microphone","value":source}),
+        json!({"key":"microphone","value":{
+          "kind":"github", "repository_id":7, "asset_name":"recordings.apel", "release_tag":null
+        }}),
       )
       .unwrap();
     let reopened = PermissionGrants::new(dir.path().into());
@@ -269,6 +295,87 @@ mod tests {
       .unwrap());
     reopened.forget(microphone, "recorder").unwrap();
     assert!(!reopened.remembered(microphone, "recorder", &local).unwrap());
+  }
+
+  #[test]
+  fn legacy_github_package_sources_keep_existing_grants_after_tagged_migration() {
+    let dir = tempfile::tempdir().unwrap();
+    let old_source = json!({
+      "repository_id":7, "repository":"example/recordings", "asset_name":"recordings.apel"
+    });
+    let applet = installed(serde_json::from_value(old_source).unwrap());
+    let source = GrantSource::from(&applet);
+    let old_grant = json!({
+      "kind":"github", "repository_id":7, "asset_name":"recordings.apel", "release_tag":null
+    });
+    assert_eq!(json!(source), old_grant);
+    ConfigStore::new(dir.path().into())
+      .dispatch(
+        "recorder",
+        "config.set",
+        json!({"key":"microphone", "value":old_grant}),
+      )
+      .unwrap();
+    let tagged: PackageSource = serde_json::from_value(json!(applet.source.unwrap())).unwrap();
+    let migrated = GrantSource::from(&installed(tagged));
+    assert!(PermissionGrants::new(dir.path().into())
+      .remembered(ManagedPermission::Microphone, "recorder", &migrated)
+      .unwrap());
+  }
+
+  #[test]
+  fn store_grants_survive_version_and_channel_changes_but_not_other_origins() {
+    let dir = tempfile::tempdir().unwrap();
+    let stable = StoreSource {
+      store_url: "https://store.example".into(),
+      applet_id: "recorder".into(),
+      channel: StoreChannel::Stable,
+    };
+    let applet = installed(stable.clone().into());
+    let source = GrantSource::from(&applet);
+    let permission = ManagedPermission::Microphone;
+    PermissionGrants::new(dir.path().into())
+      .remember(permission, "recorder", &source)
+      .unwrap();
+    let mut update = installed(
+      StoreSource {
+        channel: StoreChannel::Preview,
+        ..stable.clone()
+      }
+      .into(),
+    );
+    update.manifest.version = "2.0.0".into();
+    update.sha256 = "b".repeat(64);
+    let reopened = PermissionGrants::new(dir.path().into());
+    assert!(reopened
+      .remembered(permission, "recorder", &GrantSource::from(&update))
+      .unwrap());
+    assert_eq!(
+      json!(source),
+      json!({"kind":"store", "store_url":"https://store.example", "applet_id":"recorder"})
+    );
+    for changed in [
+      StoreSource {
+        store_url: "https://another.example".into(),
+        ..stable.clone()
+      },
+      StoreSource {
+        applet_id: "another".into(),
+        ..stable
+      },
+    ] {
+      assert!(!reopened
+        .remembered(
+          permission,
+          "recorder",
+          &GrantSource::from(&installed(changed.into()))
+        )
+        .unwrap());
+    }
+    update.source = None;
+    assert!(!reopened
+      .remembered(permission, "recorder", &GrantSource::from(&update))
+      .unwrap());
   }
 
   #[test]

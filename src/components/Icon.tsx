@@ -1,5 +1,15 @@
 type IconName =
-  'add' | 'settings' | 'back' | 'close' | 'chat' | 'file' | 'more' | 'exit' | 'reload' | 'info';
+  | 'add'
+  | 'settings'
+  | 'back'
+  | 'close'
+  | 'chat'
+  | 'file'
+  | 'more'
+  | 'exit'
+  | 'reload'
+  | 'info'
+  | 'store';
 
 export function Icon({ name }: { name: IconName }) {
   return (
@@ -15,6 +25,7 @@ export function Icon({ name }: { name: IconName }) {
       aria-hidden="true"
     >
       {name === 'add' && <path d="M12 5v14M5 12h14" />}
+      {name === 'store' && <path d="M4 8h16l-1 13H5L4 8Zm4 1V6a4 4 0 0 1 8 0v3" />}
       {name === 'back' && <path d="m14 5-7 7 7 7" />}
       {name === 'close' && <path d="m6 6 12 12M18 6 6 18" />}
       {name === 'more' && (

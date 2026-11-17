@@ -1,0 +1,244 @@
+import { useEffect, useRef, useState } from 'react';
+import {
+  getStoreCatalog,
+  getStoreConfig,
+  getStoreDetail,
+  installStoreRelease,
+  launchApplet,
+  message,
+  onInstallProgress,
+  setStoreUrl,
+} from '../../lib/tauri';
+import type {
+  AppletSession,
+  InstallProgress,
+  StoreCatalog,
+  StoreConfig,
+  StoreDetail,
+  StoreReleaseOption,
+} from '../../lib/types';
+import { recommendedStoreRelease } from '../../lib/storeState';
+
+export function useStore(
+  onLaunch: (session: AppletSession) => void,
+  onBusyChange: (busy: boolean) => void,
+) {
+  const [config, setConfig] = useState<StoreConfig>();
+  const [catalog, setCatalog] = useState<StoreCatalog>();
+  const [detail, setDetail] = useState<StoreDetail>();
+  const [selected_id, setSelectedId] = useState<string>();
+  const [selected_version, setSelectedVersion] = useState('');
+  const [address_open, setAddressOpen] = useState(false);
+  const [initial_loading, setInitialLoading] = useState(true);
+  const [catalog_loading, setCatalogLoading] = useState(false);
+  const [detail_loading, setDetailLoading] = useState(false);
+  const [config_error, setConfigError] = useState('');
+  const [catalog_error, setCatalogError] = useState('');
+  const [detail_error, setDetailError] = useState('');
+  const [status, setStatus] = useState('');
+  const [action_error, setActionError] = useState('');
+  const [operation, setOperation] = useState<'save' | 'install' | 'open'>();
+  const [progress, setProgress] = useState<InstallProgress>();
+  const scope = useRef({ alive: false, config: 0, catalog: 0, detail: 0, operation: '' });
+  const current_url = useRef<string | null>(null);
+
+  const loadCatalog = async (store_url: string) => {
+    const request = ++scope.current.catalog;
+    setCatalogLoading(true);
+    setCatalogError('');
+    try {
+      const result = await getStoreCatalog(store_url);
+      if (
+        scope.current.alive &&
+        scope.current.catalog === request &&
+        current_url.current === store_url
+      )
+        setCatalog(result);
+    } catch (error) {
+      if (scope.current.alive && scope.current.catalog === request) setCatalogError(message(error));
+    } finally {
+      if (scope.current.alive && scope.current.catalog === request) setCatalogLoading(false);
+    }
+  };
+
+  const loadDetail = async (store_url: string, applet_id: string, version?: string) => {
+    const request = ++scope.current.detail;
+    setSelectedId(applet_id);
+    setDetail(undefined);
+    setDetailLoading(true);
+    setDetailError('');
+    try {
+      const result = await getStoreDetail(store_url, applet_id);
+      if (
+        scope.current.alive &&
+        scope.current.detail === request &&
+        current_url.current === store_url
+      ) {
+        setDetail(result);
+        setSelectedVersion(
+          version && result.releases.some((release) => release.version === version)
+            ? version
+            : recommendedStoreRelease(result).version,
+        );
+      }
+    } catch (error) {
+      if (scope.current.alive && scope.current.detail === request) setDetailError(message(error));
+    } finally {
+      if (scope.current.alive && scope.current.detail === request) setDetailLoading(false);
+    }
+  };
+
+  const loadConfig = async () => {
+    const request = ++scope.current.config;
+    setInitialLoading(true);
+    setConfigError('');
+    try {
+      const result = await getStoreConfig();
+      if (!scope.current.alive || scope.current.config !== request) return;
+      current_url.current = result.store_url;
+      setConfig(result);
+      if (result.store_url) void loadCatalog(result.store_url);
+    } catch (error) {
+      if (scope.current.alive && scope.current.config === request) setConfigError(message(error));
+    } finally {
+      if (scope.current.alive && scope.current.config === request) setInitialLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    scope.current.alive = true;
+    void loadConfig();
+    return () => {
+      scope.current.alive = false;
+      scope.current.config++;
+      scope.current.catalog++;
+      scope.current.detail++;
+      onBusyChange(false);
+    };
+  }, []);
+
+  const run = async (kind: 'save' | 'install' | 'open', action: (id: string) => Promise<void>) => {
+    if (scope.current.operation) return;
+    const id = crypto.randomUUID();
+    scope.current.operation = id;
+    setOperation(kind);
+    setActionError('');
+    setStatus('');
+    onBusyChange(true);
+    try {
+      await action(id);
+    } catch (error) {
+      if (scope.current.alive) setActionError(message(error));
+    } finally {
+      if (scope.current.operation === id) scope.current.operation = '';
+      onBusyChange(false);
+      if (scope.current.alive) setOperation(undefined);
+    }
+  };
+
+  const closeDetail = () => {
+    if (scope.current.operation) return;
+    scope.current.detail++;
+    setSelectedId(undefined);
+    setDetail(undefined);
+    setDetailError('');
+    setDetailLoading(false);
+    setActionError('');
+  };
+
+  const saveAddress = (value: string) =>
+    void run('save', async () => {
+      const result = await setStoreUrl(value.trim());
+      if (!scope.current.alive) return;
+      current_url.current = result.store_url;
+      scope.current.catalog++;
+      scope.current.detail++;
+      setConfig(result);
+      setCatalog(undefined);
+      setCatalogError('');
+      setCatalogLoading(false);
+      setSelectedId(undefined);
+      setDetail(undefined);
+      setAddressOpen(false);
+      if (result.store_url) void loadCatalog(result.store_url);
+    });
+
+  const install = (release: StoreReleaseOption) => {
+    if (!detail || !current_url.current || !['install', 'update'].includes(release.action)) return;
+    const snapshot = detail;
+    void run('install', async (operation_id) => {
+      setProgress(undefined);
+      const stop = await onInstallProgress((event) => {
+        if (
+          scope.current.alive &&
+          scope.current.operation === operation_id &&
+          event.operation_id === operation_id
+        )
+          setProgress(event);
+      }).catch(() => () => {});
+      try {
+        if (!scope.current.alive) return;
+        await installStoreRelease({
+          store_url: snapshot.store_url,
+          applet_id: snapshot.applet.applet_id,
+          release,
+          expected_installed_sha256: snapshot.installed?.sha256 ?? null,
+          operation_id,
+        });
+        if (!scope.current.alive) return;
+        setStatus('Installed. Restart Apell to use this version if the applet is already running.');
+        await Promise.all([
+          loadDetail(snapshot.store_url, snapshot.applet.applet_id, release.version),
+          loadCatalog(snapshot.store_url),
+        ]);
+      } finally {
+        stop();
+      }
+    });
+  };
+
+  return {
+    config,
+    catalog,
+    detail,
+    selected_id,
+    selected_version,
+    setSelectedVersion,
+    address_open,
+    setAddressOpen,
+    initial_loading,
+    catalog_loading,
+    detail_loading,
+    config_error,
+    catalog_error,
+    detail_error,
+    status,
+    action_error,
+    operation,
+    progress,
+    loadConfig,
+    saveAddress,
+    closeDetail,
+    install,
+    openDetail: (applet_id: string) => {
+      setStatus('');
+      setActionError('');
+      if (current_url.current && !scope.current.operation)
+        void loadDetail(current_url.current, applet_id);
+    },
+    refreshCatalog: () => {
+      if (current_url.current && !scope.current.operation) void loadCatalog(current_url.current);
+    },
+    retryDetail: () => {
+      if (current_url.current && selected_id && !scope.current.operation)
+        void loadDetail(current_url.current, selected_id);
+    },
+    openApplet: () => {
+      if (detail?.installed)
+        void run('open', async () => {
+          const session = await launchApplet(detail.applet.applet_id);
+          if (scope.current.alive) onLaunch(session);
+        });
+    },
+  };
+}

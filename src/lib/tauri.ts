@@ -25,6 +25,10 @@ import type {
   SettingsTransferInput,
   SettingsTransferPreview,
   SettingsTransferResult,
+  StoreConfig,
+  StoreCatalog,
+  StoreDetail,
+  StoreInstallRequest,
 } from './types';
 
 declare global {
@@ -43,6 +47,17 @@ export function shellCall<T>(method: string, params: unknown = {}): Promise<T> {
   return invoke<T>('shell_command', { host_key: hostKey(), method, params });
 }
 export const listApplets = () => shellCall<AppletListReport>('applets.list');
+export const getStoreConfig = () => shellCall<StoreConfig>('store.config');
+export const setStoreUrl = (store_url: string) =>
+  shellCall<StoreConfig>('store.set_url', { store_url });
+export const getStoreCatalog = (store_url: string) =>
+  shellCall<StoreCatalog>('store.catalog', { store_url });
+export const getStoreDetail = (store_url: string, applet_id: string) =>
+  shellCall<StoreDetail>('store.detail', { store_url, applet_id });
+export const getStoreIcon = (store_url: string, icon_url: string) =>
+  shellCall<string>('store.icon', { store_url, icon_url });
+export const installStoreRelease = (request: StoreInstallRequest) =>
+  shellCall<InstalledApplet>('store.install', request);
 export const installBundle = (
   params:
     | { bundle_base64: string }

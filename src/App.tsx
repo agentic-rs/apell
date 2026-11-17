@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Library } from './pages/Library';
 import { Settings } from './pages/Settings';
+import { Store } from './pages/Store';
 import { AppletView } from './pages/AppletView';
 import { closeApplet, reloadApplet, currentApplet, nativeAvailable } from './lib/tauri';
 import type { AppletSession } from './lib/types';
@@ -9,7 +10,7 @@ import { useViewportHeight } from './lib/useViewportHeight';
 
 export default function App() {
   useViewportHeight();
-  const [tab, setTab] = useState<'library' | 'settings'>('library');
+  const [tab, setTab] = useState<'library' | 'store' | 'settings'>('library');
   const [install_open, setInstallOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [session, setSession] = useState<AppletSession | null>(null);
@@ -48,19 +49,29 @@ export default function App() {
     <div className="shell">
       <header className="shell-header">
         <div className="header-title">
-          {tab === 'settings' && (
+          {tab !== 'library' && (
             <button
               className="icon-button"
               aria-label="Back to applets"
+              disabled={busy}
               onClick={() => setTab('library')}
             >
               <Icon name="back" />
             </button>
           )}
-          <h1>{tab === 'library' ? 'Apell' : 'Settings'}</h1>
+          <h1>{tab === 'library' ? 'Apell' : tab === 'store' ? 'Store' : 'Settings'}</h1>
         </div>
         {tab === 'library' && (
           <nav aria-label="Library actions">
+            <button
+              className="icon-button"
+              aria-label="Browse store"
+              title="Browse store"
+              disabled={!nativeAvailable() || busy}
+              onClick={() => setTab('store')}
+            >
+              <Icon name="store" />
+            </button>
             <button
               className="icon-button"
               aria-label="Add applet"
@@ -96,6 +107,8 @@ export default function App() {
             onInstallOpen={() => setInstallOpen(true)}
             onInstallClose={() => setInstallOpen(false)}
           />
+        ) : tab === 'store' ? (
+          <Store onLaunch={setSession} onBusyChange={setBusy} />
         ) : (
           <Settings />
         )}

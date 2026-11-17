@@ -8,6 +8,7 @@ pub mod llm;
 pub mod providers;
 pub mod resources;
 pub mod sqlite;
+pub mod store_client;
 pub mod websocket;
 
 pub use apell_package::valid_name;

@@ -28,6 +28,11 @@ The development and production builds compile Companion's Rust guest for `wasm32
 2. Tap **+ → Try Companion** and open its icon. Use Companion's model button to choose the provider and model for a chat. Provider credentials stay in Apell's native credential store.
 3. Send a message. Use **… → Reload applet** during a reply, or close Companion and reopen its icon. Both actions attach a fresh interface to the same running backend. **About this applet** shows the version and declared permissions.
 
+Open **Store** from the library to browse a configured applet store, install
+applets, and review available updates. Enter the store's HTTPS address once; it is
+saved locally. Store updates retain applet data and take effect for an already
+running applet after Apell restarts. See [using the store](docs/store.md#browse-and-install-inside-apell).
+
 `pnpm dev` serves the shell frontend for development. Launch the native Tauri application to install and run applets.
 
 ## Build and test
@@ -101,7 +106,8 @@ iOS build/dev commands automatically run `pnpm ios:prepare`. It prepares the gen
 
 For a self-hosted catalog with public downloads and private publishing, see
 [Apell Store](docs/store.md). Publish directly from an applet repository using
-`apell publish`; the native shell can install the downloaded `.apel` file.
+`apell publish`; users can browse, install, and update directly in Apell's Store
+screen or install a downloaded `.apel` file.
 
 ### Applet authoring skill
 
@@ -170,7 +176,7 @@ The output must be outside the input directory. The CLI writes a deterministic Z
 
 Install a local `.apel` file from the **+** sheet. For GitHub distribution, attach the `.apel` file to a published release in a public applet repository. Use the same asset name for later releases, such as `example.apel`. In Apell, choose **Install from GitHub**, enter `owner/repository` for the latest stable release, and choose its package if several are available. To install a nightly or another named release, enter `owner/repository@nightly` or paste its `https://github.com/owner/repository/releases/tag/nightly` URL. Explicit release selections accept published prereleases; repository-only lookup stays on stable releases. The package contains its own manifest. The host checks GitHub's asset digest when available and computes its own content hash. Only install packages from developers you trust. Publisher signatures are outside the current format.
 
-A GitHub install records the numeric repository ID, repository name, stable asset name, applet ID, and explicit tag when selected. **+ → GitHub updates → Update** follows that saved tag or latest stable selection and checks its binding before switching versions. A file install accepts updates from a file. Installing changed local content over a GitHub applet clears its GitHub update source. Versions cannot decrease. Stable releases with changed bytes must advance the applet version; an already installed tagged prerelease can accept rebuilt content at the same version while it remains a prerelease. An identical reinstall keeps the existing source.
+A GitHub install records the numeric repository ID, repository name, stable asset name, applet ID, and explicit tag when selected. **+ → GitHub updates → Update** follows that saved tag or latest stable selection and checks its binding before switching versions. A file install accepts updates from a file. Installing changed local content over a GitHub or Store applet clears its remote update source. Versions cannot decrease. Stable releases with changed bytes must advance the applet version; an already installed tagged prerelease can accept rebuilt content at the same version while it remains a prerelease. An identical reinstall keeps the existing source.
 
 An update makes the new package available for the next run. If the applet already has a run in this Apell process, it keeps its current code and assets across close, reopen, and reload. Restart Apell to start that applet with the updated package. Previously installed API-1 JSON applets can still load from their existing cache. New installs require `.apel` packages.
 

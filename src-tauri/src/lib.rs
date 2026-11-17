@@ -16,6 +16,7 @@ mod sensors;
 mod settings;
 mod settings_transfer;
 mod speech;
+mod store_commands;
 mod transfer_ui;
 
 use tauri::{

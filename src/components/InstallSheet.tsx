@@ -153,31 +153,34 @@ export function InstallSheet(props: InstallSheetProps) {
           </p>
         )}
       </details>
-      {props.applets.some((applet) => applet.source) && (
+      {props.applets.some((applet) => applet.source?.kind === 'github') && (
         <div className="connection-list">
           <h3>GitHub updates</h3>
           {props.applets
-            .filter((applet) => applet.source)
-            .map((applet) => (
-              <div className="connection-row" key={applet.applet_id}>
-                <span>
-                  <strong>{applet.name}</strong>
-                  <small>
-                    {applet.version} · {applet.source!.repository}
-                    {applet.source!.release_tag
-                      ? ` · ${applet.source!.release_tag}`
-                      : ' · Latest stable'}
-                  </small>
-                </span>
-                <button
-                  type="button"
-                  disabled={disabled}
-                  onClick={() => props.onUpdate(applet.applet_id)}
-                >
-                  Update
-                </button>
-              </div>
-            ))}
+            .filter((applet) => applet.source?.kind === 'github')
+            .map(
+              (applet) =>
+                applet.source?.kind === 'github' && (
+                  <div className="connection-row" key={applet.applet_id}>
+                    <span>
+                      <strong>{applet.name}</strong>
+                      <small>
+                        {applet.version} · {applet.source.repository}
+                        {applet.source.release_tag
+                          ? ` · ${applet.source.release_tag}`
+                          : ' · Latest stable'}
+                      </small>
+                    </span>
+                    <button
+                      type="button"
+                      disabled={disabled}
+                      onClick={() => props.onUpdate(applet.applet_id)}
+                    >
+                      Update
+                    </button>
+                  </div>
+                ),
+            )}
         </div>
       )}
       {props.status && (

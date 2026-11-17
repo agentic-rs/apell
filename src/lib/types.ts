@@ -10,14 +10,23 @@ export interface Manifest {
 }
 export interface InstalledApplet extends Manifest {
   sha256: string;
-  source?: {
-    repository_id: number;
-    repository: string;
-    asset_name: string;
-    release_tag?: string | null;
-    prerelease?: boolean;
-  } | null;
+  source?: PackageSource | null;
 }
+export type PackageSource =
+  | {
+      kind: 'github';
+      repository_id: number;
+      repository: string;
+      asset_name: string;
+      release_tag?: string | null;
+      prerelease?: boolean;
+    }
+  | {
+      kind: 'store';
+      store_url: string;
+      applet_id: string;
+      channel: 'stable' | 'preview';
+    };
 export interface UnavailableApplet {
   applet_id: string;
   error: string;
@@ -52,6 +61,58 @@ export interface GitHubRelease {
   release_tag: string | null;
   prerelease: boolean;
   assets: { asset_id: number; name: string; size_bytes: number; sha256: string | null }[];
+}
+export interface StoreConfig {
+  store_url: string | null;
+}
+export interface StoreRelease {
+  version: string;
+  sha256: string;
+  size_bytes: number;
+  published_at: string;
+  release_notes: string;
+  api_version: number;
+  permissions: string[];
+  network: boolean;
+  has_backend: boolean;
+  download_url: string;
+  prerelease: boolean;
+}
+export interface StoreApplet {
+  applet_id: string;
+  name: string;
+  description: string;
+  project_url: string | null;
+  icon_url: string | null;
+  latest_release: StoreRelease;
+  latest_stable_release: StoreRelease | null;
+}
+export interface StoreCatalogEntry extends StoreApplet {
+  installed: InstalledApplet | null;
+  update_available: boolean;
+  source_conflict: boolean;
+}
+export interface StoreCatalog {
+  store_url: string;
+  applets: StoreCatalogEntry[];
+}
+export type StoreReleaseAction = 'install' | 'update' | 'installed' | 'older' | 'conflict';
+export interface StoreReleaseOption extends StoreRelease {
+  action: StoreReleaseAction;
+  action_reason?: string;
+}
+export interface StoreDetail {
+  store_url: string;
+  applet: StoreApplet;
+  releases: StoreReleaseOption[];
+  installed: InstalledApplet | null;
+}
+export interface StoreInstallRequest {
+  store_url: string;
+  applet_id: string;
+  release: StoreRelease;
+  expected_installed_sha256: string | null;
+  operation_id: string;
 }
 export interface BackendEvent {
   session_id: string;
@@ -157,4 +218,5 @@ export interface BridgeRequest {
 export interface InstallProgress {
   received_bytes: number;
   total_bytes?: number;
+  operation_id?: string;
 }
