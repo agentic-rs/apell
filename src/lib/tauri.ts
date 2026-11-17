@@ -73,6 +73,7 @@ export const githubRelease = (repository: string) =>
   shellCall<GitHubRelease>('applets.github_release', { repository });
 export const updateApplet = (applet_id: string) =>
   shellCall<InstalledApplet>('applets.update', { applet_id });
+export const removeApplet = (applet_id: string) => shellCall<void>('applets.remove', { applet_id });
 export const launchApplet = (applet_id: string) =>
   shellCall<AppletSession>('applets.launch', { applet_id });
 export const closeApplet = (session_id: string, view_id: string) =>

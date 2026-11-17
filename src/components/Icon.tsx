@@ -9,6 +9,7 @@ type IconName =
   | 'exit'
   | 'reload'
   | 'info'
+  | 'trash'
   | 'store';
 
 export function Icon({ name }: { name: IconName }) {
@@ -28,6 +29,7 @@ export function Icon({ name }: { name: IconName }) {
       {name === 'store' && <path d="M4 8h16l-1 13H5L4 8Zm4 1V6a4 4 0 0 1 8 0v3" />}
       {name === 'back' && <path d="m14 5-7 7 7 7" />}
       {name === 'close' && <path d="m6 6 12 12M18 6 6 18" />}
+      {name === 'trash' && <path d="M3 6h18M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7m4-7v7" />}
       {name === 'more' && (
         <g fill="currentColor" stroke="none">
           <circle cx="5" cy="12" r="1.6" />

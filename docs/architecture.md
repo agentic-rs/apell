@@ -77,7 +77,14 @@ A developer may explicitly reinstall a local build at the same version. No sourc
 
 The shell-only `store.config`, `store.set_url`, `store.catalog`, `store.detail`, `store.icon`, and `store.install` commands provide store access. They are not exposed to applets. The store address is saved in host-local settings, separate from applet preferences. Store networking requires HTTPS except for numeric loopback or localhost development. Requests never follow redirects or send publishing credentials. Package and icon paths are constrained to the selected store; icons are fetched and validated natively before the shell receives a PNG data URI. The shell's content policy does not gain access to arbitrary remote images or scripts. Installation progress includes an `operation_id` so the interface can ignore events from earlier operations.
 
-Old API-1 JSON bundles are read only from installed caches, with their HTML served as `index.html`. Fresh installations require the ZIP package and API revision 2. Updates keep databases, resources, files, and config under the existing applet ID. Version files are retained; the UI has no rollback or uninstall control.
+Old API-1 JSON bundles are read only from installed caches, with their HTML served as `index.html`. Fresh installations require the ZIP package and API revision 2. Updates keep databases, resources, files, and config under the existing applet ID.
+
+Removing an applet from the library stops its run, removes its installed packages,
+and resets its remembered device permissions. Its databases, files, config,
+downloaded resources, and secure storage stay on the device. The shell remembers
+the installation source so the same applet can use its data after reinstall.
+For file installations, the user selects another local package with the same
+applet ID. GitHub and Store reinstalls use their existing source identity rules.
 
 ## Applet isolation and bridge
 

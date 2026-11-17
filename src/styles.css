@@ -186,6 +186,20 @@ svg {
   row-gap: 28px;
   align-items: start;
 }
+.applet-tile {
+  position: relative;
+  min-width: 0;
+}
+.applet-actions-button {
+  position: absolute;
+  top: 0;
+  right: 0;
+  background: var(--surface);
+}
+.applet-actions-button:not(:focus-visible) {
+  clip-path: inset(50%);
+  pointer-events: none;
+}
 .applet-icon-button {
   display: flex;
   align-items: center;
@@ -196,6 +210,9 @@ svg {
   background: transparent;
   border: 0;
   border-radius: 16px;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
 }
 .applet-icon {
   --spinner-track: #f7f3fa40;
@@ -213,6 +230,14 @@ svg {
   width: 100%;
   height: 100%;
   border-radius: inherit;
+  pointer-events: none;
+}
+.unavailable-applet {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
 }
 .applet-initial {
   font-size: 30px;

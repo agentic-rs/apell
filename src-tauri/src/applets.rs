@@ -25,6 +25,16 @@ pub struct RunningApplets {
   view: Option<(String, String)>,
 }
 
+impl RunningApplets {
+  fn session_for(&self, applet_id: &str) -> Option<String> {
+    self
+      .runs
+      .iter()
+      .find(|(_, run)| run.bundle.manifest.applet_id == applet_id)
+      .map(|(id, _)| id.clone())
+  }
+}
+
 #[derive(Clone, Serialize)]
 pub struct Attachment {
   pub session_id: String,
@@ -161,7 +171,7 @@ impl Host {
     Ok(())
   }
 
-  fn retire_run(&self, session_id: &str) -> Result<bool, String> {
+  fn retire_run(&self, session_id: &str) -> Result<Option<RunningApplet>, String> {
     let _gate = self
       .view_gate
       .lock()
@@ -170,9 +180,9 @@ impl Host {
       .running
       .lock()
       .map_err(|_| "Applet state is unavailable.")?;
-    if running.runs.remove(session_id).is_none() {
-      return Ok(false);
-    }
+    let Some(run) = running.runs.remove(session_id) else {
+      return Ok(None);
+    };
     if running.foreground.as_deref() == Some(session_id) {
       running.foreground = None;
     }
@@ -184,7 +194,35 @@ impl Host {
     let view_closed = view.map(|id| self.close(&id)).transpose();
     self.close(session_id)?;
     view_closed?;
-    Ok(true)
+    Ok(Some(run))
+  }
+
+  pub async fn remove_applet(
+    &self,
+    applet_id: &str,
+    on_stopped: impl FnOnce(&str),
+  ) -> Result<(), String> {
+    // An earlier download must finish publishing before removal. Prevent
+    // launch from attaching to the retiring run or starting a replacement.
+    let _install = self.store_gate.lock().await;
+    let _launch = self.run_gate.lock().await;
+    let session_id = self
+      .running
+      .lock()
+      .map_err(|_| "Applet state is unavailable.")?
+      .session_for(applet_id);
+    if let Some(id) = session_id {
+      if let Some(run) = self.retire_run(&id)? {
+        on_stopped(&id);
+        if let Some(backend) = run.backend {
+          backend.stop().await;
+        }
+      }
+    }
+    let grants = self.grants.clone();
+    let store = self.bundles.clone();
+    let id = applet_id.to_owned();
+    crate::commands::blocking(move || store.remove(&id, || grants.forget_all(&id))).await
   }
 
   pub fn view_bundle(&self, view_id: &str) -> Result<Arc<Bundle>, String> {
@@ -309,16 +347,20 @@ impl Host {
   }
 }
 
+pub fn notify_stopped(app: &AppHandle, session_id: &str) {
+  let _ = app.emit_to(
+    "main",
+    "backend-event",
+    json!({
+      "session_id":session_id,
+      "event":{"name":BACKEND_STOPPED,"payload":{"message":"The applet backend stopped. Reopen the applet."}}
+    }),
+  );
+}
+
 fn retire_backend(app: &AppHandle, host: &Host, session_id: &str) -> Result<(), String> {
-  if host.retire_run(session_id)? {
-    let _ = app.emit_to(
-      "main",
-      "backend-event",
-      json!({
-        "session_id":session_id,
-        "event":{"name":BACKEND_STOPPED,"payload":{"message":"The applet backend stopped. Reopen the applet."}}
-      }),
-    );
+  if host.retire_run(session_id)?.is_some() {
+    notify_stopped(app, session_id);
   }
   Ok(())
 }
@@ -362,12 +404,7 @@ pub async fn launch(app: AppHandle, applet_id: &str) -> Result<Attachment, Strin
       .running
       .lock()
       .map_err(|_| "Applet state is unavailable.")?;
-    let existing = running
-      .runs
-      .iter()
-      .find(|(_, run)| run.bundle.manifest.applet_id == applet_id)
-      .map(|(id, _)| id.clone());
-    if let Some(id) = existing {
+    if let Some(id) = running.session_for(applet_id) {
       drop(running);
       return host.attach_run(&id);
     }
@@ -551,6 +588,52 @@ mod tests {
     install(&host, APPLET, "1.0.0");
     seed_run(&host, RUN, APPLET);
     (directory, host)
+  }
+
+  #[tokio::test]
+  async fn removal_retires_a_background_run_and_resets_only_its_grants() {
+    let (_directory, host) = fixture();
+    let old_view = host.attach_run(RUN).unwrap();
+    let run = host.session(RUN, "sqlite.open").unwrap();
+    let source = host.view_grant_source(&old_view.view_id).unwrap();
+    host.detach_view(RUN, &old_view.view_id).unwrap();
+    host.grants.remember(Microphone, APPLET, &source).unwrap();
+    host
+      .config
+      .dispatch(APPLET, "config.set", json!({"key":"theme","value":"dark"}))
+      .unwrap();
+
+    install(&host, "neighbor", "1.0.0");
+    seed_run(&host, "neighbor-run", "neighbor");
+    let current = host.attach_run("neighbor-run").unwrap();
+    let neighbor = host.view_grant_source(&current.view_id).unwrap();
+    host.grants.remember(Camera, "neighbor", &neighbor).unwrap();
+
+    let mut stopped = None;
+    host
+      .remove_applet(APPLET, |id| stopped = Some(id.to_owned()))
+      .await
+      .unwrap();
+    assert_eq!(stopped.as_deref(), Some(RUN));
+    assert!(*run.cancellation.borrow());
+    assert!(host.session(RUN, "sqlite.open").is_err());
+    assert!(host.attach_run(RUN).is_err());
+    assert!(host.bundles.installed(APPLET).is_err());
+    assert!(!host.grants.remembered(Microphone, APPLET, &source).unwrap());
+    assert!(host
+      .grants
+      .remembered(Camera, "neighbor", &neighbor)
+      .unwrap());
+    host.require_view("neighbor-run", &current.view_id).unwrap();
+
+    install(&host, APPLET, "1.0.0");
+    assert_eq!(
+      host
+        .config
+        .dispatch(APPLET, "config.get", json!({"key":"theme"}))
+        .unwrap(),
+      json!({"found":true,"value":"dark"})
+    );
   }
 
   #[test]
@@ -823,7 +906,7 @@ mod tests {
     install(&host, "neighbor", "2.0.0");
     install(&host, APPLET, "2.0.0");
 
-    assert!(host.retire_run(RUN).unwrap());
+    assert!(host.retire_run(RUN).unwrap().is_some());
     assert!(*run_session.cancellation.borrow() && *view_session.cancellation.borrow());
     assert!(host.view_bundle(&old.view_id).is_err());
     assert!(host.resume_view().unwrap().is_none());
@@ -844,8 +927,8 @@ mod tests {
     seed_run(&host, "reopened", APPLET);
     let reopened = host.attach_run("reopened").unwrap();
     assert_eq!(reopened.manifest.version, "2.0.0");
-    assert!(!host.retire_run(RUN).unwrap());
-    assert!(host.retire_run("neighbor-run").unwrap());
+    assert!(host.retire_run(RUN).unwrap().is_none());
+    assert!(host.retire_run("neighbor-run").unwrap().is_some());
     host.require_view("reopened", &reopened.view_id).unwrap();
     assert_eq!(host.running.lock().unwrap().runs.len(), 1);
     assert_eq!(host.sessions.lock().unwrap().len(), 2);

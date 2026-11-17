@@ -86,16 +86,38 @@ impl ConfigStore {
     }
   }
 
-  fn load(&self, path: &std::path::Path) -> Result<Map<String, Value>, String> {
+  /// Remove this applet's entire configuration in this store, including an
+  /// unreadable file. This operation is reserved for the native host.
+  pub fn clear(&self, applet_id: &str) -> Result<(), String> {
+    if !valid_name(applet_id) {
+      return Err("Invalid applet identifier.".into());
+    }
+    let _guard = self
+      .gate
+      .lock()
+      .map_err(|_| "Configuration storage is unavailable.")?;
+    self.check_root()?;
+    match std::fs::remove_file(self.root.join(format!("{applet_id}.json"))) {
+      Ok(()) => crate::bundles::sync_directory(&self.root),
+      Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+      Err(_) => Err("Could not remove saved configuration.".into()),
+    }
+  }
+
+  fn check_root(&self) -> Result<(), String> {
     match std::fs::symlink_metadata(&self.root) {
       Ok(metadata) if !metadata.is_dir() || metadata.file_type().is_symlink() => {
-        return Err("Invalid configuration storage directory.".into())
+        Err("Invalid configuration storage directory.".into())
       }
       Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
-        return Err("Could not access configuration storage.".into())
+        Err("Could not access configuration storage.".into())
       }
-      _ => {}
+      _ => Ok(()),
     }
+  }
+
+  fn load(&self, path: &std::path::Path) -> Result<Map<String, Value>, String> {
+    self.check_root()?;
     match std::fs::symlink_metadata(path) {
       Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Map::new()),
       Ok(metadata)
@@ -310,12 +332,15 @@ mod tests {
       };
       assert!(store.dispatch("one", method, params).is_err());
     }
+    assert!(store.clear("one").is_err());
     std::fs::remove_file(&root).unwrap();
     std::fs::create_dir(&root).unwrap();
     symlink(outside.join("one.json"), root.join("one.json")).unwrap();
     assert!(store
       .dispatch("one", "config.set", json!({"key":"saved","value":0}))
       .is_err());
+    store.clear("one").unwrap();
+    assert!(std::fs::symlink_metadata(root.join("one.json")).is_err());
     assert_eq!(
       std::fs::read(outside.join("one.json")).unwrap(),
       br#"{"saved":42}"#

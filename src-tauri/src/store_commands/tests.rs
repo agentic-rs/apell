@@ -38,7 +38,20 @@ fn installed(version: &str) -> InstalledApplet {
   }
 }
 fn action(release: &StoreRelease, saved: Option<&InstalledApplet>) -> ReleaseAction {
-  release_action("https://store.example", "sample", release, saved, false).0
+  release_action("https://store.example", "sample", release, saved, None).0
+}
+
+#[test]
+fn reinstall_is_offered_only_by_the_store_that_owns_the_saved_data() {
+  let mut report = AppletListReport {
+    applets: vec![],
+    unavailable: vec![],
+    retained_sources: [("sample".into(), installed("1.0.0").source)].into(),
+  };
+  assert!(blocked_install_reason(&report, "https://store.example", "sample").is_none());
+  assert!(blocked_install_reason(&report, "https://other.example", "sample").is_some());
+  report.retained_sources.insert("sample".into(), None);
+  assert!(blocked_install_reason(&report, "https://store.example", "sample").is_some());
 }
 
 #[test]
@@ -58,7 +71,14 @@ fn release_choices_preserve_source_ownership_and_never_offer_downgrades() {
     ReleaseAction::Older
   );
   assert_eq!(
-    release_action("https://store.example", "sample", &selected, None, true).0,
+    release_action(
+      "https://store.example",
+      "sample",
+      &selected,
+      None,
+      Some("Unavailable")
+    )
+    .0,
     ReleaseAction::Conflict
   );
   let mut saved = installed("1.0.0");

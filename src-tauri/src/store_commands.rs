@@ -150,11 +150,8 @@ pub async fn dispatch(
             .iter()
             .find(|saved| saved.manifest.applet_id == applet.applet_id)
             .cloned();
-          let unavailable = installed
-            .unavailable
-            .iter()
-            .any(|saved| saved.applet_id == applet.applet_id);
-          let source_conflict = unavailable
+          let source_conflict = blocked_install_reason(&installed, &store_url, &applet.applet_id)
+            .is_some()
             || saved
               .as_ref()
               .is_some_and(|saved| !same_store(saved, &store_url, &applet.applet_id));
@@ -179,14 +176,11 @@ pub async fn dispatch(
         .detail(&request.applet_id)
         .await?;
       let installed = installed(host).await?;
+      let blocked = blocked_install_reason(&installed, &store_url, &request.applet_id);
       let saved = installed
         .applets
         .into_iter()
         .find(|saved| saved.manifest.applet_id == request.applet_id);
-      let unavailable = installed
-        .unavailable
-        .iter()
-        .any(|saved| saved.applet_id == request.applet_id);
       let releases = detail
         .releases
         .into_iter()
@@ -196,7 +190,7 @@ pub async fn dispatch(
             &request.applet_id,
             &release,
             saved.as_ref(),
-            unavailable,
+            blocked,
           );
           ReleaseOption {
             release,
@@ -232,7 +226,28 @@ pub async fn dispatch(
 }
 
 fn same_store(installed: &InstalledApplet, store_url: &str, applet_id: &str) -> bool {
-  matches!(installed.source.as_ref(), Some(PackageSource::Store(source)) if source.store_url == store_url && source.applet_id == applet_id)
+  is_store_source(installed.source.as_ref(), store_url, applet_id)
+}
+
+fn is_store_source(source: Option<&PackageSource>, store_url: &str, applet_id: &str) -> bool {
+  matches!(source, Some(PackageSource::Store(source)) if source.store_url == store_url && source.applet_id == applet_id)
+}
+
+fn blocked_install_reason(
+  report: &AppletListReport,
+  store_url: &str,
+  id: &str,
+) -> Option<&'static str> {
+  if report.unavailable.iter().any(|saved| saved.applet_id == id) {
+    return Some("An unavailable package already uses this applet identity. Its files and data were preserved.");
+  }
+  report
+    .retained_sources
+    .get(id)
+    .filter(|source| !is_store_source(source.as_ref(), store_url, id))
+    .map(|_| {
+      "This applet has saved data from a different source. Reinstall it from its original source."
+    })
 }
 
 fn has_update(applet: &StoreApplet, installed: &InstalledApplet) -> bool {
@@ -255,10 +270,10 @@ fn release_action(
   applet_id: &str,
   release: &StoreRelease,
   installed: Option<&InstalledApplet>,
-  unavailable: bool,
+  blocked: Option<&str>,
 ) -> (ReleaseAction, Option<String>) {
-  if unavailable {
-    return (ReleaseAction::Conflict, Some("An unavailable package already uses this applet identity. Its files and data were preserved.".into()));
+  if let Some(reason) = blocked {
+    return (ReleaseAction::Conflict, Some(reason.into()));
   }
   let Some(installed) = installed else {
     return (ReleaseAction::Install, None);
@@ -297,16 +312,12 @@ async fn install(app: AppHandle, host: &Host, request: InstallQuery) -> Result<V
     .applets
     .iter()
     .find(|saved| saved.manifest.applet_id == request.applet_id);
-  let unavailable = report
-    .unavailable
-    .iter()
-    .any(|saved| saved.applet_id == request.applet_id);
   let (action, reason) = release_action(
     &store_url,
     &request.applet_id,
     &request.release,
     saved,
-    unavailable,
+    blocked_install_reason(&report, &store_url, &request.applet_id),
   );
   if !matches!(
     action,

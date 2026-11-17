@@ -6,10 +6,19 @@ import {
   listApplets,
   message,
   onInstallProgress,
+  removeApplet,
 } from '../lib/tauri';
 import type { AppletSession, InstalledApplet, UnavailableApplet } from '../lib/types';
 import { InstallSheet } from '../components/InstallSheet';
-import { AppletIcon } from '../components/AppletIcon';
+import { AppletTile } from '../components/AppletTile';
+import { Icon } from '../components/Icon';
+import { Sheet } from '../components/Sheet';
+
+interface Removal {
+  applet_id: string;
+  name: string;
+  confirm: boolean;
+}
 
 interface LibraryProps {
   onLaunch: (session: AppletSession) => void;
@@ -33,7 +42,16 @@ export function Library({
   const [failed, setFailed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [launching_id, setLaunchingId] = useState('');
+  const [removal, setRemoval] = useState<Removal>();
   const pending = useRef(false);
+  const library = useRef<HTMLElement>(null);
+  const restore_library_focus = useRef(false);
+
+  useEffect(() => {
+    if (busy || !restore_library_focus.current) return;
+    restore_library_focus.current = false;
+    library.current?.querySelector('button')?.focus({ preventScroll: true });
+  }, [busy, removal]);
 
   useEffect(() => {
     let disposed = false;
@@ -96,15 +114,43 @@ export function Library({
       setLaunchingId('');
     }
   };
-  const installed = async () => {
+  const refresh = async () => {
     const report = await listApplets();
     setApplets(report.applets);
     setUnavailable(report.unavailable);
+  };
+  const installed = async () => {
+    await refresh();
     setStatus('Package installed. Running applets use updates after Apell restarts.');
     onInstallClose();
   };
+  const showRemoval = (target: Removal) => {
+    if (removal || installOpen || pending.current) return;
+    setStatus('');
+    setFailed(false);
+    setRemoval(target);
+  };
+  const remove = (target: Removal) =>
+    void run(async () => {
+      await removeApplet(target.applet_id);
+      setApplets((current) => current.filter((item) => item.applet_id !== target.applet_id));
+      setUnavailable((current) => current.filter((item) => item.applet_id !== target.applet_id));
+      restore_library_focus.current = true;
+      setRemoval(undefined);
+      try {
+        await refresh();
+      } catch (error) {
+        throw new Error(`${target.name} removed. Could not refresh the library. ${message(error)}`);
+      }
+      setStatus(`${target.name} removed.`);
+    }, `Removing ${target.name}…`);
   return (
-    <section className="library" aria-label="Your applets" aria-busy={loading || busy}>
+    <section
+      ref={library}
+      className="library"
+      aria-label="Your applets"
+      aria-busy={loading || busy}
+    >
       {loading && (
         <p className="status" role="status">
           Loading applets…
@@ -112,38 +158,49 @@ export function Library({
       )}
       <div className="applet-grid">
         {applets.map((applet) => (
-          <button
-            className="applet-icon-button"
+          <AppletTile
             key={applet.applet_id}
+            applet={applet}
+            launching={launching_id === applet.applet_id}
             disabled={busy}
-            aria-label={`Open ${applet.name}`}
-            onClick={() => {
-              if (pending.current) return;
+            onActions={() =>
+              showRemoval({ applet_id: applet.applet_id, name: applet.name, confirm: false })
+            }
+            onOpen={() => {
+              if (removal || installOpen || pending.current) return;
               setLaunchingId(applet.applet_id);
               void run(
                 async () => onLaunch(await launchApplet(applet.applet_id)),
                 `Opening ${applet.name}…`,
               );
             }}
-          >
-            <span className="applet-icon" aria-hidden="true">
-              {launching_id === applet.applet_id ? (
-                <span className="spinner" />
-              ) : (
-                <AppletIcon applet={applet} />
-              )}
-            </span>
-            <span className="applet-name">{applet.name}</span>
-          </button>
+          />
         ))}
       </div>
       {unavailable.length > 0 && (
         <aside aria-label="Unavailable applets">
           <h2>Unavailable applets</h2>
           {unavailable.map((applet) => (
-            <p className="status error" key={applet.applet_id}>
-              <strong>{applet.applet_id}</strong>: {applet.error}
-            </p>
+            <div className="unavailable-applet" key={applet.applet_id}>
+              <p className="status error">
+                <strong>{applet.applet_id}</strong>: {applet.error}
+              </p>
+              <button
+                className="danger"
+                disabled={busy}
+                aria-label={`Remove ${applet.applet_id}`}
+                onClick={(event) => {
+                  event.currentTarget.focus({ preventScroll: true });
+                  showRemoval({
+                    applet_id: applet.applet_id,
+                    name: applet.applet_id,
+                    confirm: true,
+                  });
+                }}
+              >
+                Remove
+              </button>
+            </div>
           ))}
           <p className="status">
             These applets cannot run in this version of Apell. Their packages and saved data are
@@ -154,18 +211,58 @@ export function Library({
       {!loading && !applets.length && (
         <div className="empty-library">
           <p>{unavailable.length ? 'Add another applet.' : 'Add your first applet.'}</p>
-          <button className="primary" onClick={onInstallOpen}>
+          <button className="primary" disabled={busy} onClick={onInstallOpen}>
             Add applet
           </button>
         </div>
       )}
-      {!installOpen && status && (
+      {!installOpen && !removal && status && (
         <p
           className={`status library-status${failed ? ' error' : ''}`}
           role={failed ? 'alert' : 'status'}
         >
           {status}
         </p>
+      )}
+      {removal && (
+        <Sheet
+          key={removal.confirm ? 'confirm' : 'actions'}
+          open
+          title={removal.confirm ? `Remove ${removal.name}?` : removal.name}
+          dismissible={!busy}
+          onClose={() => setRemoval(undefined)}
+        >
+          {removal.confirm ? (
+            <>
+              <p>
+                Its saved data stays on this device. Reinstall from the same source to use it again.
+              </p>
+              <div className="button-row">
+                <button disabled={busy} onClick={() => setRemoval(undefined)}>
+                  Cancel
+                </button>
+                <button className="danger" disabled={busy} onClick={() => remove(removal)}>
+                  {busy ? 'Removing…' : 'Remove'}
+                </button>
+              </div>
+              {failed && (
+                <p className="status error" role="alert">
+                  {status}
+                </p>
+              )}
+            </>
+          ) : (
+            <div className="applet-menu-actions">
+              <button
+                className="applet-menu-action danger"
+                onClick={() => setRemoval({ ...removal, confirm: true })}
+              >
+                <Icon name="trash" />
+                Remove applet
+              </button>
+            </div>
+          )}
+        </Sheet>
       )}
       <InstallSheet
         open={installOpen}

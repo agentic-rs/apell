@@ -4,7 +4,12 @@ use super::{
 };
 use crate::valid_name;
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, io::Read, path::PathBuf};
+use std::{
+  collections::BTreeMap,
+  fs,
+  io::Read,
+  path::{Path, PathBuf},
+};
 
 #[derive(Clone, Debug, Serialize)]
 pub struct InstalledApplet {
@@ -27,19 +32,39 @@ pub struct UnavailableApplet {
 pub struct AppletListReport {
   pub applets: Vec<InstalledApplet>,
   pub unavailable: Vec<UnavailableApplet>,
+  #[serde(skip)]
+  pub retained_sources: BTreeMap<String, Option<PackageSource>>,
 }
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Active {
+struct PackageRecord {
   applet_id: String,
   sha256: String,
+  // An explicit null identifies a file install. A missing source cannot
+  // establish ownership of retained data.
+  #[serde(deserialize_with = "Option::deserialize")]
   source: Option<PackageSource>,
+  #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+  removed: bool,
   #[serde(skip)]
   legacy: bool,
 }
 
-impl Active {
+impl PackageRecord {
+  fn write(&self, directory: &Path) -> Result<(), String> {
+    let pointer = serde_json::to_vec(self).map_err(|_| "Could not encode package source.")?;
+    let path = directory.join("active");
+    if let Err(error) = atomic_write(&path, &pointer) {
+      // Directory sync can fail after rename. The visible pointer still owns
+      // the installation if it contains the complete record we wrote.
+      if !fs::read(path).is_ok_and(|visible| visible == pointer) {
+        return Err(error);
+      }
+    }
+    Ok(())
+  }
+
   fn installed(&self, bundle: &Bundle) -> InstalledApplet {
     InstalledApplet {
       manifest: bundle.manifest.clone(),
@@ -70,6 +95,45 @@ impl BundleStore {
 
   pub fn install(&self, bytes: &[u8], expected_hash: &str) -> Result<InstalledApplet, String> {
     self.install_with_source(bytes, Some(expected_hash), None)
+  }
+
+  // The file lock serializes all changes of installation state, even between
+  // distinct BundleStore instances or processes sharing a directory.
+  fn lock_storage(&self) -> Result<fs::File, String> {
+    fs::create_dir_all(&self.root).map_err(|_| "Could not create package storage.")?;
+    if !fs::symlink_metadata(&self.root)
+      .map_err(|_| "Could not inspect package storage.")?
+      .is_dir()
+    {
+      return Err("Invalid package storage directory.".into());
+    }
+    let lock = fs::OpenOptions::new()
+      .create(true)
+      .truncate(false)
+      .read(true)
+      .write(true)
+      .open(self.root.join(".install-lock"))
+      .map_err(|_| "Could not open package installation lock.")?;
+    lock.lock().map_err(|_| "Could not lock package storage.")?;
+    Ok(lock)
+  }
+
+  /// Keep the source binding with the applet's saved data. An unreadable
+  /// package can be removed as long as its source record is still intact.
+  pub fn remove(
+    &self,
+    applet_id: &str,
+    before_remove: impl FnOnce() -> Result<(), String>,
+  ) -> Result<(), String> {
+    let _lock = self.lock_storage()?;
+    let mut record = self.record(applet_id)?.ok_or("Applet is not installed.")?;
+    let directory = self.root.join(applet_id);
+    if !record.removed {
+      before_remove()?;
+      record.removed = true;
+      record.write(&directory)?;
+    }
+    remove_versions(&directory)
   }
 
   pub fn install_with_source(
@@ -141,22 +205,23 @@ impl BundleStore {
     {
       return Err("The release package has a different applet ID.".into());
     }
-    std::fs::create_dir_all(&self.root).map_err(|_| "Could not create package storage.")?;
-    // Cover the source checks and pointer replacement with the same file lock,
-    // including distinct store instances or processes opening this directory.
-    let lock = std::fs::OpenOptions::new()
-      .create(true)
-      .truncate(false)
-      .read(true)
-      .write(true)
-      .open(self.root.join(".install-lock"))
-      .map_err(|_| "Could not open package installation lock.")?;
-    lock.lock().map_err(|_| "Could not lock package storage.")?;
+    let _lock = self.lock_storage()?;
     let directory = self.root.join(id);
-    let previous = self.active(id)?;
+    let record = self.record(id)?;
+    let retained = record.as_ref().filter(|record| record.removed);
+    if let Some(retained) = retained {
+      let same_source = match (&retained.source, &source) {
+        (None, None) => true,
+        (Some(old), Some(new)) => old.same_identity(new),
+        _ => false,
+      };
+      if !same_source {
+        return Err("This applet has saved data. Reinstall it from its original source.".into());
+      }
+    }
+    let previous = record.as_ref().filter(|record| !record.removed);
     if matches!(guard, InstallGuard::Update(_))
       && !previous
-        .as_ref()
         .and_then(|record| record.source.as_ref())
         .zip(source.as_ref())
         .is_some_and(|(old, new)| old.same_identity(new))
@@ -164,7 +229,7 @@ impl BundleStore {
       return Err("The applet's installation source changed. Reopen its update.".into());
     }
     if let InstallGuard::StoreSnapshot(expected) = guard {
-      let matches = match (expected, previous.as_ref()) {
+      let matches = match (expected, previous) {
         (None, None) => true,
         (Some(hash), Some(active)) => {
           active.sha256 == hash
@@ -189,7 +254,7 @@ impl BundleStore {
       for candidate in self.ids()? {
         if &candidate != id
           && self
-            .active(&candidate)?
+            .record(&candidate)?
             .and_then(|record| record.source)
             .is_some_and(|bound| bound.same_identity(incoming))
         {
@@ -197,7 +262,7 @@ impl BundleStore {
         }
       }
     }
-    if let Some(old) = &previous {
+    if let Some(old) = previous {
       if let Some(incoming) = &source {
         if old
           .source
@@ -230,27 +295,24 @@ impl BundleStore {
         }
       }
     }
-    let active = Active {
+    let active = PackageRecord {
       applet_id: id.clone(),
       sha256: hash,
       source,
+      removed: false,
       legacy: false,
     };
+    // Retry a removal interrupted after the source reservation was persisted.
+    if retained.is_some() {
+      remove_versions(&directory)?;
+    }
     std::fs::create_dir_all(&directory).map_err(|_| "Could not create applet storage.")?;
     write_version(
       &directory.join(format!("{}.apel", active.sha256)),
       bytes,
       &active.sha256,
     )?;
-    let pointer = serde_json::to_vec(&active).map_err(|_| "Could not encode package source.")?;
-    let path = directory.join("active");
-    if let Err(error) = atomic_write(&path, &pointer) {
-      // Directory sync can fail after rename. The visible pointer already
-      // selects this immutable version if its complete bytes match.
-      if !std::fs::read(path).is_ok_and(|visible| visible == pointer) {
-        return Err(error);
-      }
-    }
+    active.write(&directory)?;
     Ok(active.installed(&bundle))
   }
 
@@ -291,16 +353,18 @@ impl BundleStore {
     let mut report = AppletListReport {
       applets: Vec::new(),
       unavailable: Vec::new(),
+      retained_sources: BTreeMap::new(),
     };
     for id in self.ids()? {
-      let result = self.active(&id).and_then(|record| {
-        record
-          .map(|active| {
-            self
-              .read_active(&active)
-              .map(|bundle| active.installed(&bundle))
-          })
-          .transpose()
+      let result = self.record(&id).and_then(|record| match record {
+        Some(active) if !active.removed => self
+          .read_active(&active)
+          .map(|bundle| Some(active.installed(&bundle))),
+        Some(retained) => {
+          report.retained_sources.insert(id.clone(), retained.source);
+          Ok(None)
+        }
+        None => Ok(None),
       });
       match result {
         Ok(Some(applet)) => report.applets.push(applet),
@@ -340,15 +404,29 @@ impl BundleStore {
     Ok(ids)
   }
 
-  fn active(&self, id: &str) -> Result<Option<Active>, String> {
+  fn active(&self, id: &str) -> Result<Option<PackageRecord>, String> {
+    Ok(self.record(id)?.filter(|record| !record.removed))
+  }
+
+  fn record(&self, id: &str) -> Result<Option<PackageRecord>, String> {
     if !valid_name(id) {
       return Err("Invalid applet identifier.".into());
     }
-    let file = match std::fs::File::open(self.root.join(id).join("active")) {
-      Ok(file) => file,
+    let directory = self.root.join(id);
+    match fs::symlink_metadata(&directory) {
+      Ok(meta) if meta.is_dir() => {}
+      Ok(_) => return Err("Invalid package storage directory.".into()),
+      Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+      Err(_) => return Err("Could not inspect package storage directory.".into()),
+    }
+    let pointer = directory.join("active");
+    match fs::symlink_metadata(&pointer) {
+      Ok(meta) if meta.is_file() => {}
+      Ok(_) => return Err("Installed package pointer is invalid.".into()),
       Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
       Err(_) => return Err("Could not read installed package pointer.".into()),
-    };
+    }
+    let file = fs::File::open(pointer).map_err(|_| "Could not read installed package pointer.")?;
     let mut bytes = Vec::new();
     file
       .take(4097)
@@ -361,14 +439,15 @@ impl BundleStore {
       .ok()
       .filter(|value| valid_hash(value))
     {
-      return Ok(Some(Active {
+      return Ok(Some(PackageRecord {
         applet_id: id.to_owned(),
         sha256: hash.to_owned(),
         source: None,
+        removed: false,
         legacy: true,
       }));
     }
-    let record: Active =
+    let record: PackageRecord =
       serde_json::from_slice(&bytes).map_err(|_| "Installed package pointer is invalid.")?;
     if record.applet_id != id || !valid_hash(&record.sha256) {
       return Err("Installed package pointer is invalid.".into());
@@ -382,7 +461,7 @@ impl BundleStore {
     Ok(Some(record))
   }
 
-  fn read_active(&self, active: &Active) -> Result<Bundle, String> {
+  fn read_active(&self, active: &PackageRecord) -> Result<Bundle, String> {
     let extension = if active.legacy { "json" } else { "apel" };
     let path = self
       .root
@@ -399,6 +478,18 @@ impl BundleStore {
     }
     Ok(bundle)
   }
+}
+
+fn remove_versions(directory: &Path) -> Result<(), String> {
+  // The directory contains only immutable package versions, the active/source
+  // record, and any staging files left by interrupted publications.
+  for entry in fs::read_dir(directory).map_err(|_| "Could not list package files.")? {
+    let entry = entry.map_err(|_| "Could not inspect package file.")?;
+    if entry.file_name() != "active" {
+      fs::remove_file(entry.path()).map_err(|_| "Could not remove package files.")?;
+    }
+  }
+  super::sync_directory(directory)
 }
 
 fn sort_installed(applets: &mut [InstalledApplet]) {

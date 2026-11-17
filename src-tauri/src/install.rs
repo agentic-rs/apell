@@ -70,10 +70,12 @@ fn check_release_snapshot(params: &Value, release_id: u64, asset_id: u64) -> Res
 }
 
 pub async fn install(app: AppHandle, host: &Host, params: Value) -> Result<Value, String> {
+  let _gate = host.store_gate.lock().await;
   install_inner(app, host, params, None).await
 }
 
 pub async fn update(app: AppHandle, host: &Host, applet_id: &str) -> Result<Value, String> {
+  let _gate = host.store_gate.lock().await;
   let store = host.bundles.clone();
   let id = applet_id.to_owned();
   let installed = tauri::async_runtime::spawn_blocking(move || store.installed(&id))

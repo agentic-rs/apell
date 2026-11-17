@@ -76,6 +76,14 @@ pub async fn shell_command(
     }
     "applets.install" => crate::install::install(app, &host, params).await,
     "applets.update" => crate::install::update(app, &host, string(&params, "applet_id")?).await,
+    "applets.remove" => {
+      host
+        .remove_applet(string(&params, "applet_id")?, |id| {
+          crate::applets::notify_stopped(&app, id)
+        })
+        .await?;
+      Ok(Value::Null)
+    }
     "applets.github_release" => crate::install::release(string(&params, "repository")?).await,
     "applets.current" => {
       let _gate = host.run_gate.lock().await;

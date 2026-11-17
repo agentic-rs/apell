@@ -51,7 +51,7 @@ fn write_version(path: &Path, bytes: &[u8], hash: &str) -> Result<(), String> {
   result
 }
 
-fn sync_directory(path: &Path) -> Result<(), String> {
+pub(crate) fn sync_directory(path: &Path) -> Result<(), String> {
   #[cfg(unix)]
   std::fs::File::open(path)
     .and_then(|directory| directory.sync_all())

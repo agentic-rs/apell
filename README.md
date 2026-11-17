@@ -33,6 +33,11 @@ applets, and review available updates. Enter the store's HTTPS address once; it 
 saved locally. Store updates retain applet data and take effect for an already
 running applet after Apell restarts. See [using the store](docs/store.md#browse-and-install-inside-apell).
 
+To remove an applet, press and hold its library icon, choose **Remove applet**,
+and confirm. On desktop, right-click the icon to open the same menu. Removal
+stops the applet and keeps its local data. Reinstall it from the same source
+to use its saved files and settings again.
+
 `pnpm dev` serves the shell frontend for development. Launch the native Tauri application to install and run applets.
 
 ## Build and test
@@ -228,7 +233,7 @@ An update makes the new package available for the next run. If the applet alread
 
 ## Current scope
 
-Apell supports one attached view and up to eight applet runs per process. Backends can continue work without a view while the host process runs. A mobile OS may suspend or terminate the process. Persist state that must survive termination in the host's SQLite, file, or config service. Cloud synchronization, automatic resource eviction, an uninstall flow, and a rollback selector are deferred.
+Apell supports one attached view and up to eight applet runs per process. Backends can continue work without a view while the host process runs. A mobile OS may suspend or terminate the process. Persist state that must survive termination in the host's SQLite, file, or config service. Cloud synchronization, automatic resource eviction, and a rollback selector are deferred.
 
 Applets own their SQLite schema and migrations and issue asynchronous SQL calls through the native service. Each applet has a private file area, downloadable resources, and non-secret JSON preferences. Rust backends can additionally declare generic binary WebSocket, applet-scoped secure-secret, secure-randomness and timer permissions; see [backend services](docs/architecture.md#backend-networking-and-secure-state). Shared provider credentials and provider settings remain managed by the shell.
 

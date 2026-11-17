@@ -173,6 +173,10 @@ impl PermissionGrants {
     Ok(())
   }
 
+  pub fn forget_all(&self, applet_id: &str) -> Result<(), String> {
+    self.0.clear(applet_id)
+  }
+
   fn summary(
     &self,
     applet_id: &str,
