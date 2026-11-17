@@ -56,17 +56,22 @@ Build your applet and pack it with `apell pack` as described in the
 }
 ```
 
-Package maintainers can upload a release through the website without a CLI token.
-For operator-only local CLI publishing, keep the administrator token in a private
-file outside source control and set `APELL_STORE_PUBLISH_TOKEN_FILE` to that file.
-Then publish:
+Package maintainers can upload a release through the website or sign in from the
+CLI using browser approval:
 
 ```sh
+apell login --store https://store.example.invalid
 apell publish artifacts/example.apel \
   --store https://store.example.invalid \
   --metadata listing.json \
-  --icon icon.png
+  --icon icon.png \
+  --auth account
 ```
+
+See the [CLI guide](store-cli.md) for package registration, GitHub publishing
+connections, and maintainer commands. For operator recovery, keep the
+administrator token in a private file outside source control, set
+`APELL_STORE_PUBLISH_TOKEN_FILE` to that file, and explicitly use `--auth token`.
 
 Replace the example URL with your store. The optional icon is a still PNG, at most
 256 KiB and 1,024 × 1,024 pixels. The CLI validates the package before sending it,
@@ -93,7 +98,8 @@ Open **My packages → your package → GitHub Actions**. Enter a public reposit
 as `OWNER/REPO`, its workflow path, exact allowed refs/events, and an optional
 GitHub environment. The server resolves and stores the numeric repository and
 owner IDs. Repository names are display information; they do not establish trust.
-Save takes effect immediately.
+Save takes effect immediately. The CLI equivalent is `apell package oidc set`;
+see the [CLI connection commands](store-cli.md#connect-github-actions).
 
 Every maintainer can change or disconnect this connection. Both changes invalidate
 outstanding scoped credentials, including uploads still in progress. They do not

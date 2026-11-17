@@ -15,6 +15,8 @@ use std::io::{Cursor, Write};
 use tower::ServiceExt;
 use zip::{write::SimpleFileOptions, ZipWriter};
 
+mod cli;
+
 fn fixture() -> (tempfile::TempDir, Store, Router, String) {
   let directory = tempfile::tempdir().unwrap();
   let configuration = Config {
@@ -339,6 +341,15 @@ async fn removing_a_maintainer_during_upload_prevents_publication() {
 
 #[tokio::test]
 async fn oauth_http_callback_binds_pkce_creates_session_and_rejects_replay() {
+  oauth_callback(false).await;
+}
+
+#[tokio::test]
+async fn oauth_http_callback_resumes_cli_approval_without_approving_it() {
+  oauth_callback(true).await;
+}
+
+async fn oauth_callback(resume_cli: bool) {
   use crate::auth::{github, Auth};
   use axum::{
     extract::Form,
@@ -381,13 +392,14 @@ async fn oauth_http_callback_binds_pkce_creates_session_and_rejects_replay() {
   }));
   let directory = tempfile::tempdir().unwrap();
   let store = Store::open(directory.path()).unwrap();
+  let cli = resume_cli.then(|| store.start_cli_authorization(now()).unwrap());
   let mut auth = Auth::new(config(), store.clone()).unwrap();
   auth.github = github::GitHub::fixture(
     base.parse().unwrap(),
     format!("{base}token").parse().unwrap(),
   );
   let state = crate::AppState {
-    store,
+    store: store.clone(),
     token_hash: [0; 32],
     oidc: None,
     auth: Some(Arc::new(auth)),
@@ -402,9 +414,14 @@ async fn oauth_http_callback_binds_pkce_creates_session_and_rejects_replay() {
   let login = app
     .clone()
     .oneshot(
-      Request::get("/api/v1/auth/github/login")
-        .body(Body::empty())
-        .unwrap(),
+      Request::get(
+        cli
+          .as_ref()
+          .map(|flow| format!("/api/v1/auth/github/login?cli_code={}", flow.user_code))
+          .unwrap_or_else(|| "/api/v1/auth/github/login".into()),
+      )
+      .body(Body::empty())
+      .unwrap(),
     )
     .await
     .unwrap();
@@ -438,7 +455,22 @@ async fn oauth_http_callback_binds_pkce_creates_session_and_rejects_replay() {
     .await
     .unwrap();
   assert_eq!(response.status(), StatusCode::SEE_OTHER);
-  assert_eq!(response.headers()["location"], "/account");
+  assert_eq!(
+    response.headers()["location"],
+    cli
+      .as_ref()
+      .map(|flow| format!("/account/cli?code={}", flow.user_code))
+      .unwrap_or_else(|| "/account".into())
+  );
+  if let Some(flow) = &cli {
+    assert_eq!(
+      store
+        .cli_authorization(&flow.user_code, now())
+        .unwrap()
+        .status,
+      "pending"
+    );
+  }
   assert_eq!(response.headers()["cache-control"], "no-store");
   let session_cookie = response
     .headers()

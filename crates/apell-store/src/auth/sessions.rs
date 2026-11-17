@@ -1,14 +1,16 @@
 use super::{github::valid_login, hash, random_secret, unauthorized, User};
 use crate::{Result, Store, StoreError};
 use axum::http::HeaderMap;
-use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
+use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 
 pub(super) const SESSION_COOKIE: &str = "__Host-apell_session";
 pub(super) const FLOW_COOKIE: &str = "__Host-apell_oauth";
 pub(super) const SESSION_SECONDS: i64 = 7 * 24 * 60 * 60;
 
 pub(crate) fn migrate(connection: &Connection) -> Result<()> {
-  connection
+  let transaction = Transaction::new_unchecked(connection, TransactionBehavior::Immediate)
+    .map_err(|_| StoreError::internal())?;
+  transaction
     .execute_batch(
       "CREATE TABLE IF NOT EXISTS users (
       github_id INTEGER PRIMARY KEY CHECK(github_id > 0),
@@ -27,9 +29,15 @@ pub(crate) fn migrate(connection: &Connection) -> Result<()> {
       verifier TEXT NOT NULL,
       expires_at INTEGER NOT NULL
     );
-    CREATE INDEX IF NOT EXISTS auth_flow_expiry ON auth_flows(expires_at);",
+    CREATE INDEX IF NOT EXISTS auth_flow_expiry ON auth_flows(expires_at);
+    CREATE TABLE IF NOT EXISTS auth_cli_resumes (
+      state_hash BLOB PRIMARY KEY REFERENCES auth_flows(state_hash) ON DELETE CASCADE,
+      user_code TEXT NOT NULL
+    );",
     )
-    .map_err(|_| StoreError::internal())
+    .map_err(|_| StoreError::internal())?;
+  super::cli::migrate(&transaction)?;
+  transaction.commit().map_err(|_| StoreError::internal())
 }
 
 impl Store {
@@ -138,6 +146,7 @@ impl Store {
     Ok(())
   }
 
+  #[cfg(test)]
   pub(super) fn create_flow(
     &self,
     state: &str,
@@ -145,6 +154,18 @@ impl Store {
     verifier: &str,
     now: i64,
   ) -> Result<()> {
+    self.create_flow_for_cli(state, browser, verifier, None, now)
+  }
+
+  pub(super) fn create_flow_for_cli(
+    &self,
+    state: &str,
+    browser: &str,
+    verifier: &str,
+    cli_code: Option<&str>,
+    now: i64,
+  ) -> Result<()> {
+    let cli_code = cli_code.map(super::cli::user_code).transpose()?;
     let mut connection = self.connection()?;
     let transaction = connection
       .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -160,32 +181,56 @@ impl Store {
     }
     transaction
       .execute(
-        "INSERT INTO auth_flows VALUES (?1,?2,?3,?4)",
+        "INSERT INTO auth_flows(state_hash,browser_hash,verifier,expires_at) VALUES (?1,?2,?3,?4)",
         params![hash(state), hash(browser), verifier, now + 600],
       )
       .map_err(|_| StoreError::internal())?;
+    if let Some(cli_code) = cli_code {
+      transaction
+        .execute(
+          "INSERT INTO auth_cli_resumes(state_hash,user_code) VALUES (?1,?2)",
+          params![hash(state), cli_code],
+        )
+        .map_err(|_| StoreError::internal())?;
+    }
     transaction.commit().map_err(|_| StoreError::internal())
   }
 
+  #[cfg(test)]
   pub(super) fn consume_flow(&self, state: &str, browser: &str, now: i64) -> Result<String> {
+    Ok(self.consume_flow_for_cli(state, browser, now)?.0)
+  }
+
+  pub(super) fn consume_flow_for_cli(
+    &self,
+    state: &str,
+    browser: &str,
+    now: i64,
+  ) -> Result<(String, Option<String>)> {
     let mut connection = self.connection()?;
     let transaction = connection
       .transaction_with_behavior(TransactionBehavior::Immediate)
       .map_err(|_| StoreError::internal())?;
-    let verifier: Option<String> = transaction
+    let verifier: Option<(String, Option<String>)> = transaction
       .query_row(
-        "SELECT verifier FROM auth_flows WHERE state_hash=?1 AND browser_hash=?2 AND expires_at>?3",
+        "SELECT verifier,user_code FROM auth_flows LEFT JOIN auth_cli_resumes USING(state_hash)
+         WHERE state_hash=?1 AND browser_hash=?2 AND expires_at>?3",
         params![hash(state), hash(browser), now],
-        |row| row.get(0),
+        |row| Ok((row.get(0)?, row.get(1)?)),
       )
       .optional()
       .map_err(|_| StoreError::internal())?;
     let verifier = verifier.ok_or_else(unauthorized)?;
+    let cli_code = verifier
+      .1
+      .as_deref()
+      .map(super::cli::user_code)
+      .transpose()?;
     transaction
       .execute("DELETE FROM auth_flows WHERE state_hash=?1", [hash(state)])
       .map_err(|_| StoreError::internal())?;
     transaction.commit().map_err(|_| StoreError::internal())?;
-    Ok(verifier)
+    Ok((verifier.0, cli_code))
   }
 }
 

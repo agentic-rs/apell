@@ -49,14 +49,25 @@ fn timestamp() -> u64 {
 
 #[test]
 fn auth_selection_is_explicit_or_prefers_oidc_on_github_actions() {
-  assert_eq!(method(None, false), AuthMethod::Token);
-  assert_eq!(method(None, true), AuthMethod::GithubOidc);
-  assert_eq!(method(Some(AuthMethod::Token), true), AuthMethod::Token);
+  assert_eq!(method(None, false, false, false), AuthMethod::Account);
+  assert_eq!(method(None, false, false, true), AuthMethod::Token);
+  assert_eq!(method(None, false, true, true), AuthMethod::Account);
+  assert_eq!(method(None, false, true, false), AuthMethod::Account);
+  assert_eq!(method(None, true, true, true), AuthMethod::GithubOidc);
   assert_eq!(
-    method(Some(AuthMethod::GithubOidc), false),
+    method(Some(AuthMethod::Token), true, true, true),
+    AuthMethod::Token
+  );
+  assert_eq!(
+    method(Some(AuthMethod::Account), true, false, true),
+    AuthMethod::Account
+  );
+  assert_eq!(
+    method(Some(AuthMethod::GithubOidc), false, true, true),
     AuthMethod::GithubOidc
   );
   for (flag, expected) in [
+    ("account", AuthMethod::Account),
     ("token", AuthMethod::Token),
     ("github-oidc", AuthMethod::GithubOidc),
   ] {

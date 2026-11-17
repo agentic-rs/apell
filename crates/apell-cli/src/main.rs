@@ -1,3 +1,4 @@
+mod account;
 mod pack;
 mod publish;
 
@@ -8,7 +9,23 @@ fn main() -> ExitCode {
   let result = match arguments.first().map(|value| value.as_os_str()) {
     Some(command) if command == OsStr::new("pack") => pack::run(arguments),
     Some(command) if command == OsStr::new("publish") => publish::run(&arguments[1..]),
-    _ => Err(format!("{}\n{}", pack::USAGE, publish::USAGE)),
+    Some(command)
+      if ["login", "whoami", "logout", "package", "invitations"]
+        .iter()
+        .any(|value| command == OsStr::new(value)) =>
+    {
+      account::run(&arguments)
+    }
+    Some(command) if command == OsStr::new("--help") || command == OsStr::new("-h") => {
+      println!("{}\n{}\n{}", pack::USAGE, publish::USAGE, account::USAGE);
+      Ok(())
+    }
+    _ => Err(format!(
+      "{}\n{}\n{}",
+      pack::USAGE,
+      publish::USAGE,
+      account::USAGE
+    )),
   };
   match result {
     Ok(()) => ExitCode::SUCCESS,

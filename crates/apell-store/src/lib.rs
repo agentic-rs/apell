@@ -250,28 +250,35 @@ async fn publish_request(
   {
     authenticate(request.headers(), &state.token_hash)?;
   }
-  let (grant, authority) =
-    if expected_id.is_some() || !request.headers().contains_key(header::AUTHORIZATION) {
-      let user = management::session_user(&state, request.headers(), true).await?;
-      if let Some(id) = expected_id.clone() {
-        let actor_id = user.github_id;
-        query(&state, move |store| store.package_details(&id, actor_id)).await?;
+  let account_credential = request
+    .headers()
+    .get(header::AUTHORIZATION)
+    .and_then(|value| value.to_str().ok())
+    .is_some_and(|value| value.starts_with("Bearer apel_user_"));
+  let (grant, authority) = if expected_id.is_some()
+    || account_credential
+    || !request.headers().contains_key(header::AUTHORIZATION)
+  {
+    let user = management::session_user(&state, request.headers(), true).await?;
+    if let Some(id) = expected_id.clone() {
+      let actor_id = user.github_id;
+      query(&state, move |store| store.package_details(&id, actor_id)).await?;
+    }
+    (None, PublishAuthority::User(user.github_id))
+  } else {
+    match authenticate(request.headers(), &state.token_hash) {
+      Ok(()) => (None, PublishAuthority::Administrator),
+      Err(error) => {
+        let grant = state
+          .oidc
+          .as_ref()
+          .ok_or(error)?
+          .authenticate(request.headers())?;
+        let authority = grant.authority();
+        (Some(grant), authority)
       }
-      (None, PublishAuthority::User(user.github_id))
-    } else {
-      match authenticate(request.headers(), &state.token_hash) {
-        Ok(()) => (None, PublishAuthority::Administrator),
-        Err(error) => {
-          let grant = state
-            .oidc
-            .as_ref()
-            .ok_or(error)?
-            .authenticate(request.headers())?;
-          let authority = grant.authority();
-          (Some(grant), authority)
-        }
-      }
-    };
+    }
+  };
   let check_authority = authority.clone();
   query(&state, move |store| {
     store.authorize_publish(&check_authority)

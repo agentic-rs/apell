@@ -1,5 +1,5 @@
 mod auth;
-mod input;
+pub(crate) mod input;
 
 use apell_core::bundles::{digest, parse, Manifest, MAX_BUNDLE_BYTES};
 use input::{read_bounded, PublishArgs, PublishMetadata, MAX_ICON_BYTES, MAX_METADATA_BYTES};
@@ -12,7 +12,7 @@ use reqwest::{
 use serde::Deserialize;
 use std::{ffi::OsString, io::Read, time::Duration};
 
-pub const USAGE: &str = "Usage: apell publish <file.apel> --store <https-base-url> --metadata <json-file> [--icon <png-file>] [--auth github-oidc|token]";
+pub const USAGE: &str = "Usage: apell publish <file.apel> [--store <https-base-url>] --metadata <json-file> [--icon <png-file>] [--auth account|github-oidc|token]";
 const MAX_RESPONSE_BYTES: usize = 64 * 1024;
 
 struct PreparedPublish {
@@ -97,7 +97,13 @@ struct ErrorDetail {
 }
 
 pub fn run(arguments: &[OsString]) -> Result<(), String> {
-  let args = PublishArgs::parse(arguments)?;
+  let mut arguments = arguments.to_vec();
+  if !arguments.iter().any(|argument| argument == "--store") {
+    if let Some(store) = crate::account::default_store()? {
+      arguments.extend([OsString::from("--store"), OsString::from(store.as_str())]);
+    }
+  }
+  let args = PublishArgs::parse(&arguments)?;
   let prepared = PreparedPublish::load(&args)?;
   let credential = auth::credential(&args, &prepared)?;
   let published =

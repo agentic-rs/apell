@@ -31,7 +31,25 @@ impl Credential {
 
 pub fn credential(args: &PublishArgs, prepared: &PreparedPublish) -> Result<Credential, String> {
   let github_actions = std::env::var("GITHUB_ACTIONS").as_deref() == Ok("true");
-  match method(args.auth, github_actions) {
+  let mut store = args.endpoint.clone();
+  store.set_path("/");
+  // CI and explicit choices do not touch the interactive credential store.
+  let has_account = if args.auth.is_none() && !github_actions {
+    crate::account::CredentialStore::open()?.contains(&store)?
+  } else {
+    false
+  };
+  let has_token_file =
+    std::env::var_os("APELL_STORE_PUBLISH_TOKEN_FILE").is_some_and(|value| !value.is_empty());
+  match method(args.auth, github_actions, has_account, has_token_file) {
+    AuthMethod::Account => {
+      let credential = crate::account::CredentialStore::open()?.load(&store)?;
+      credential.validate()?;
+      Ok(Credential {
+        value: credential.token,
+        redactions: Vec::new(),
+      })
+    }
     AuthMethod::Token => {
       let path = std::env::var_os("APELL_STORE_PUBLISH_TOKEN_FILE")
         .filter(|value| !value.is_empty())
@@ -63,9 +81,16 @@ pub fn credential(args: &PublishArgs, prepared: &PreparedPublish) -> Result<Cred
   }
 }
 
-fn method(explicit: Option<AuthMethod>, github_actions: bool) -> AuthMethod {
+fn method(
+  explicit: Option<AuthMethod>,
+  github_actions: bool,
+  has_account: bool,
+  has_token_file: bool,
+) -> AuthMethod {
   explicit.unwrap_or(if github_actions {
     AuthMethod::GithubOidc
+  } else if has_account || !has_token_file {
+    AuthMethod::Account
   } else {
     AuthMethod::Token
   })

@@ -80,6 +80,40 @@ select {
   transform: none;
   opacity: 1;
 }
+
+.cli-approval {
+  max-width: 720px;
+  margin-inline: auto;
+}
+.cli-verification {
+  display: grid;
+  gap: 10px;
+  margin-block: 24px;
+  padding: 20px 12px;
+  border: 1px solid var(--rule);
+  border-radius: 16px;
+  text-align: center;
+  background: var(--surface);
+}
+.cli-verification code {
+  font-size: clamp(22px, 6vw, 36px);
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  color: var(--violet);
+}
+.cli-details {
+  display: grid;
+  gap: 6px;
+  margin-block: 24px;
+}
+.cli-details dt {
+  font-size: 13px;
+  color: var(--muted);
+}
+.cli-details dd {
+  margin: 0 0 12px;
+  overflow-wrap: anywhere;
+}
 .site-header {
   border-bottom: 1px solid var(--rule);
 }

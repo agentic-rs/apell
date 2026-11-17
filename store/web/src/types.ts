@@ -84,3 +84,15 @@ export interface PublishResult {
   sha256: string;
   created: boolean;
 }
+
+export interface CliRequest {
+  user_code: string;
+  expires_at: number;
+  status: 'pending' | 'approved' | 'denied';
+}
+
+export interface CliCredential {
+  id: string;
+  created_at: number;
+  expires_at: number;
+}

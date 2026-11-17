@@ -1,3 +1,7 @@
+# Load this file inside Nginx's http context. Use the actual connecting peer,
+# never an untrusted forwarding header, to protect shared authorization slots.
+limit_req_zone $binary_remote_addr zone=apell_auth_start:1m rate=6r/m;
+
 server {
   listen 80;
   listen [::]:80;
@@ -22,6 +26,25 @@ server {
   client_max_body_size 25m;
   client_body_timeout 60s;
   send_timeout 60s;
+
+  location ~ ^/api/v1/auth/(github/login|cli/start)$ {
+    limit_req zone=apell_auth_start burst=3 nodelay;
+    limit_req_status 429;
+    error_page 429 = @apell_auth_rate_limit;
+    proxy_pass http://127.0.0.1:8788;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_connect_timeout 5s;
+    proxy_read_timeout 60s;
+  }
+
+  location @apell_auth_rate_limit {
+    default_type application/json;
+    add_header Cache-Control no-store always;
+    add_header Retry-After 60 always;
+    return 429 '{"error":{"code":"rate_limited","message":"Too many sign-in attempts. Try again in a minute."}}';
+  }
 
   # OAuth authorization codes and state must not enter request logs.
   location = /api/v1/auth/github/callback {

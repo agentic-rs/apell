@@ -11,6 +11,7 @@ pub const MAX_ICON_BYTES: usize = 256 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AuthMethod {
+  Account,
   GithubOidc,
   Token,
 }
@@ -52,6 +53,7 @@ impl PublishArgs {
         Some("--icon") if icon.is_none() => icon = Some(PathBuf::from(value)),
         Some("--auth") if auth.is_none() => {
           auth = Some(match value.to_str() {
+            Some("account") => AuthMethod::Account,
             Some("github-oidc") => AuthMethod::GithubOidc,
             Some("token") => AuthMethod::Token,
             _ => return Err(super::USAGE.into()),

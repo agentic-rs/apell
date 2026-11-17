@@ -113,6 +113,10 @@ On the Store website, sign in with GitHub to register a package, publish files,
 and invite maintainers. Every maintainer can manage publishing connections and
 other maintainers. See [accounts and ownership](docs/store-accounts.md).
 
+Run `apell login --store https://store.example.invalid` to approve CLI access in
+your browser, then manage packages and publishing connections from the terminal.
+See [Store CLI commands](docs/store-cli.md).
+
 GitHub Actions can use [trusted publishing](docs/store.md#trusted-publishing-from-github-actions)
 to publish without a saved store token. Register the applet's repository and
 publishing workflow once, then let `apell publish` obtain a scoped credential

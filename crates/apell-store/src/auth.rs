@@ -1,3 +1,4 @@
+mod cli;
 mod config;
 mod github;
 mod routes;
@@ -38,12 +39,33 @@ impl Auth {
   }
 
   pub fn user(&self, headers: &HeaderMap) -> Result<User> {
+    if headers.contains_key("authorization") {
+      return self.cli_user(headers);
+    }
+    self.browser_user(headers)
+  }
+
+  pub fn cli_user(&self, headers: &HeaderMap) -> Result<User> {
+    Ok(self.store.cli_identity(&cli::bearer(headers)?, now())?.user)
+  }
+
+  pub fn browser_user(&self, headers: &HeaderMap) -> Result<User> {
+    if headers.contains_key("authorization") {
+      return Err(unauthorized());
+    }
     let secret = sessions::cookie(headers, sessions::SESSION_COOKIE)?.ok_or_else(unauthorized)?;
     self.store.session_user(&secret, now())
   }
 
   pub fn require_mutation(&self, headers: &HeaderMap) -> Result<User> {
-    let user = self.user(headers)?;
+    if headers.contains_key("authorization") {
+      return self.cli_user(headers);
+    }
+    self.require_browser_mutation(headers)
+  }
+
+  pub fn require_browser_mutation(&self, headers: &HeaderMap) -> Result<User> {
+    let user = self.browser_user(headers)?;
     if headers.get_all("origin").iter().count() != 1
       || headers.get("origin").and_then(|value| value.to_str().ok())
         != Some(self.config.origin.as_str())

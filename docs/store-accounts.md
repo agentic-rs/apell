@@ -4,6 +4,9 @@ The website uses GitHub sign-in. Public browsing, downloads, and the native Apel
 Store remain available without an account. Sign-in identifies a person by their
 numeric GitHub user ID; changing a GitHub username does not change ownership.
 
+The [CLI account commands](store-cli.md) support browser approval, registration,
+publishing, OIDC settings, and maintainer management using the same permissions.
+
 ## Register and publish
 
 1. Sign in and open **My packages → Register package**.
@@ -96,7 +99,11 @@ browser local storage.
 Use the updated [Nginx template](../deploy/store/nginx.conf.example): it suppresses
 access/error logging on the OAuth callback so authorization codes and state do not
 enter proxy logs. Any additional proxy or monitoring service must likewise avoid
-recording callback query strings or authentication headers.
+recording callback query strings or authentication headers. The template also
+limits authorization creation by the connecting client's address to six requests
+per minute with a small burst allowance. Preserve this limit, or an equivalent
+trusted-edge limit, when using another proxy. Keep the application listener private
+so anonymous clients cannot bypass it and exhaust the shared authorization pool.
 
 ### Migrate an existing Store
 
@@ -129,14 +136,17 @@ membership, and the audit log as private operational data.
 ## Account API
 
 All fields use snake_case. Account/authentication responses use `Cache-Control:
-no-store`. Browser sessions use cookies; administrative bearer tokens do not grant
-access to account management endpoints.
+no-store`. Browser sessions use cookies; CLI sessions use separate account bearer
+credentials. Administrative publishing tokens do not grant account management
+access. Browser mutations require Origin and CSRF checks; explicitly supplied CLI
+bearer credentials do not use browser cookies. CLI approval and credential
+management in the browser always require a browser session and CSRF protection.
 
 | Method       | Path under `/api/v1`                                 | Behavior                                             |
 | ------------ | ---------------------------------------------------- | ---------------------------------------------------- |
 | GET          | `/auth/me`                                           | Login availability, current user, session CSRF token |
 | GET          | `/auth/github/login`                                 | Start GitHub sign-in                                 |
-| GET          | `/auth/github/callback`                              | Complete sign-in; fixed redirect to account page     |
+| GET          | `/auth/github/callback`                              | Complete sign-in; return to account or CLI approval  |
 | POST         | `/auth/logout`                                       | Delete the current session                           |
 | GET / POST   | `/account/packages`                                  | List memberships/invitations; register an ID         |
 | GET          | `/account/packages/{id}`                             | Read package management details                      |
@@ -153,6 +163,32 @@ Registration takes `{ "applet_id": "example" }`; member invitations take
 `{ "github_login": "example-maintainer" }`; ownership transfers take
 `{ "github_id": 123456789 }`. Publisher changes take `repository`, `workflow`,
 `allowed_refs`, `event_names`, and nullable `environment`. Other account mutations
-take `{}`. All mutations require `x-csrf-token` and the browser's same-origin Origin
-header; multipart uploads retain the existing `package`, `metadata`, and optional
+take `{}`. Browser mutations require `x-csrf-token` and the browser's same-origin
+Origin header; multipart uploads retain the existing `package`, `metadata`, and optional
 `icon` fields. OAuth client secrets and Store session cookies are never API results.
+
+### CLI authorization
+
+The CLI starts a ten-minute authorization request, opens the Store's approval
+page, and polls with a separate high-entropy secret. The browser shows only the
+human verification code. Approval requires an existing browser session; GitHub
+sign-in preserves the code through a state-bound redirect. No extra OAuth App
+or GitHub device-flow setting is needed.
+
+| Method | Path under `/api/v1`                        | Behavior                                                     |
+| ------ | ------------------------------------------- | ------------------------------------------------------------ |
+| POST   | `/auth/cli/start`                           | Create a temporary authorization request                     |
+| POST   | `/auth/cli/poll`                            | Poll with `device_code`; issue one credential after approval |
+| GET    | `/auth/cli/me`                              | Read the CLI identity and expiry using its bearer credential |
+| POST   | `/auth/cli/logout`                          | Revoke the current CLI credential                            |
+| GET    | `/account/cli/requests/{user_code}`         | Inspect a request using a browser session                    |
+| POST   | `/account/cli/requests/{user_code}/approve` | Approve from the browser with CSRF protection                |
+| POST   | `/account/cli/requests/{user_code}/deny`    | Deny from the browser with CSRF protection                   |
+| GET    | `/account/cli/credentials`                  | List the browser user's CLI credentials                      |
+| DELETE | `/account/cli/credentials/{id}`             | Revoke one of the browser user's CLI credentials             |
+
+CLI credentials last seven days, are stored only as hashes on the server, and
+cannot approve further CLI credentials or manage browser sessions. An explicit
+invalid bearer credential never falls back to a browser cookie. Account and
+publishing requests check current package permissions. The existing GitHub
+Actions OIDC and private operator credentials keep their separate scopes.

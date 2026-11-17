@@ -97,8 +97,11 @@ name = "apell-cli"
 version = "0.1.0"
 dependencies = [
  "apell-core",
+ "directories",
+ "libc",
  "png 0.17.16",
  "reqwest",
+ "security-framework",
  "serde",
  "serde_json",
  "tempfile",

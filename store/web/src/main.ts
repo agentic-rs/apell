@@ -4,6 +4,7 @@ import { renderAccount, renderAccountHeader, renderRegistration, renderSignedOut
 import type { Actions } from './actions';
 import { button, element, routeLink, showError } from './dom';
 import { renderPackage } from './manage';
+import { renderCliApproval, renderCliCredentials } from './cli';
 import { renderCatalog, renderDetails } from './public';
 import type { AccountPackages, Applet, AppletDetails, PackageDetails, Session } from './types';
 
@@ -79,6 +80,7 @@ async function renderRoute(focus = false): Promise<void> {
     } else if (
       path === '/account' ||
       path === '/account/new' ||
+      path === '/account/cli' ||
       /^\/account\/packages\/[a-z0-9_-]+$/.test(path)
     ) {
       const auth = await auth_request;
@@ -86,10 +88,6 @@ async function renderRoute(focus = false): Promise<void> {
       if (!auth) throw new Error('Could not check your session. Please try again.');
       session = auth;
       renderAccountHeader(session, () => void signOut());
-      if (!session.user) {
-        main.replaceChildren(renderSignedOut(session));
-        return;
-      }
       const actions: Actions = {
         session,
         refresh: () => {
@@ -99,12 +97,22 @@ async function renderRoute(focus = false): Promise<void> {
           if (current_id === navigation_id) navigate(destination);
         },
       };
+      if (path === '/account/cli') {
+        main.replaceChildren(renderCliApproval(actions, signal));
+        return;
+      }
+      if (!session.user) {
+        main.replaceChildren(renderSignedOut(session));
+        return;
+      }
       if (path === '/account/new') {
         main.replaceChildren(renderRegistration(actions));
       } else if (path === '/account') {
         const data = await api<AccountPackages>('/api/v1/account/packages', { signal });
         if (current_id !== navigation_id) return;
-        main.replaceChildren(renderAccount(data, actions));
+        const account = renderAccount(data, actions);
+        account.append(renderCliCredentials(actions, signal));
+        main.replaceChildren(account);
       } else {
         const id = path.split('/').at(-1)!;
         const pkg = await api<PackageDetails>(

@@ -22,6 +22,7 @@ pub(crate) fn routes() -> Router<AppState> {
     .route("/v1/auth/github/login", get(login))
     .route("/v1/auth/github/callback", get(callback))
     .route("/v1/auth/logout", post(logout))
+    .merge(super::cli::routes())
 }
 
 #[derive(Serialize)]
@@ -31,7 +32,7 @@ struct Me {
   csrf_token: Option<String>,
 }
 
-async fn blocking<T: Send + 'static>(
+pub(super) async fn blocking<T: Send + 'static>(
   operation: impl FnOnce() -> Result<T> + Send + 'static,
 ) -> Result<T> {
   let permit = STORAGE_OPERATIONS
@@ -45,7 +46,7 @@ async fn blocking<T: Send + 'static>(
   .map_err(|_| StoreError::internal())?
 }
 
-fn enabled(state: &AppState) -> Result<Arc<Auth>> {
+pub(super) fn enabled(state: &AppState) -> Result<Arc<Auth>> {
   state.auth.clone().ok_or_else(|| {
     StoreError::new(
       StatusCode::SERVICE_UNAVAILABLE,
@@ -63,7 +64,7 @@ async fn me(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Me
       csrf_token: None,
     }));
   };
-  blocking(move || match auth.user(&headers) {
+  blocking(move || match auth.browser_user(&headers) {
     Ok(user) => {
       let secret =
         sessions::cookie(&headers, sessions::SESSION_COOKIE)?.ok_or_else(unauthorized)?;
@@ -83,17 +84,34 @@ async fn me(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Me
   .await
 }
 
-async fn login(State(state): State<AppState>) -> Result<Response> {
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Login {
+  cli_code: Option<String>,
+}
+
+async fn login(State(state): State<AppState>, Query(query): Query<Login>) -> Result<Response> {
   let auth = enabled(&state)?;
+  let cli_code = query
+    .cli_code
+    .map(|code| super::cli::user_code(&code))
+    .transpose()?;
   let state_secret = random_secret()?;
   let browser = random_secret()?;
   let verifier = random_secret()?;
   let url = authorization_url(&auth, &state_secret, &verifier)?;
   let browser_for_db = browser.clone();
   blocking(move || {
-    auth
-      .store
-      .create_flow(&state_secret, &browser_for_db, &verifier, now())
+    if let Some(code) = &cli_code {
+      auth.store.cli_authorization(code, now())?;
+    }
+    auth.store.create_flow_for_cli(
+      &state_secret,
+      &browser_for_db,
+      &verifier,
+      cli_code.as_deref(),
+      now(),
+    )
   })
   .await?;
   let mut response = Redirect::temporary(url.as_str()).into_response();
@@ -135,8 +153,11 @@ async fn callback(
   let auth = enabled(&state)?;
   let result = complete_callback(auth, headers, query).await;
   let mut response = match result {
-    Ok(secret) => {
-      let mut response = Redirect::to("/account").into_response();
+    Ok((secret, cli_code)) => {
+      let destination = cli_code
+        .map(|code| format!("/account/cli?code={code}"))
+        .unwrap_or_else(|| "/account".into());
+      let mut response = Redirect::to(&destination).into_response();
       set_cookie(
         &mut response,
         sessions::SESSION_COOKIE,
@@ -151,14 +172,23 @@ async fn callback(
   Ok(response)
 }
 
-async fn complete_callback(auth: Arc<Auth>, headers: HeaderMap, query: Callback) -> Result<String> {
+async fn complete_callback(
+  auth: Arc<Auth>,
+  headers: HeaderMap,
+  query: Callback,
+) -> Result<(String, Option<String>)> {
   let browser = sessions::cookie(&headers, sessions::FLOW_COOKIE)?.ok_or_else(unauthorized)?;
   let state = query
     .state
     .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
     .ok_or_else(unauthorized)?;
   let flow_auth = auth.clone();
-  let verifier = blocking(move || flow_auth.store.consume_flow(&state, &browser, now())).await?;
+  let (verifier, cli_code) = blocking(move || {
+    flow_auth
+      .store
+      .consume_flow_for_cli(&state, &browser, now())
+  })
+  .await?;
   if query.error.is_some() {
     return Err(unauthorized());
   }
@@ -167,9 +197,10 @@ async fn complete_callback(auth: Arc<Auth>, headers: HeaderMap, query: Callback)
   let old_secret = sessions::cookie(&headers, sessions::SESSION_COOKIE)?;
   blocking(move || {
     auth.store.upsert_user(&user)?;
-    auth
+    let secret = auth
       .store
-      .create_session(&user, old_secret.as_deref(), now())
+      .create_session(&user, old_secret.as_deref(), now())?;
+    Ok((secret, cli_code))
   })
   .await
 }
@@ -177,7 +208,7 @@ async fn complete_callback(auth: Arc<Auth>, headers: HeaderMap, query: Callback)
 async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Result<Response> {
   let auth = enabled(&state)?;
   blocking(move || {
-    auth.require_mutation(&headers)?;
+    auth.require_browser_mutation(&headers)?;
     let secret = sessions::cookie(&headers, sessions::SESSION_COOKIE)?.ok_or_else(unauthorized)?;
     auth.store.delete_session(&secret)
   })
