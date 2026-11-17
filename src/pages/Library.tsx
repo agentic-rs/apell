@@ -9,7 +9,7 @@ import {
 } from '../lib/tauri';
 import type { AppletSession, InstalledApplet, UnavailableApplet } from '../lib/types';
 import { InstallSheet } from '../components/InstallSheet';
-import companion_icon from '../../assets/companion.svg';
+import { AppletIcon } from '../components/AppletIcon';
 
 interface LibraryProps {
   onLaunch: (session: AppletSession) => void;
@@ -129,12 +129,8 @@ export function Library({
             <span className="applet-icon" aria-hidden="true">
               {launching_id === applet.applet_id ? (
                 <span className="spinner" />
-              ) : applet.applet_id === 'chatbot' ? (
-                <img src={companion_icon} alt="" />
               ) : (
-                <span className="applet-initial">
-                  {Array.from(applet.name.trim())[0]?.toLocaleUpperCase() || 'a'}
-                </span>
+                <AppletIcon applet={applet} />
               )}
             </span>
             <span className="applet-name">{applet.name}</span>

@@ -4,6 +4,7 @@ pub mod filesystem;
 pub mod github;
 mod http;
 pub mod http_request;
+mod icons;
 pub mod llm;
 pub mod providers;
 pub mod resources;

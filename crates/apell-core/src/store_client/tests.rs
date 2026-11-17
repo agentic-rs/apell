@@ -1,6 +1,7 @@
 mod fixture;
 
 use super::*;
+use base64::{engine::general_purpose::STANDARD, Engine};
 use fixture::{applet, detail, package, release, MockStore, Reply};
 
 #[test]
@@ -205,7 +206,7 @@ async fn package_redirects_and_oversized_downloads_are_rejected() {
 
 #[tokio::test]
 async fn icons_require_matching_png_digest_and_bounded_dimensions() {
-  let png = STANDARD.decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jv1kAAAAASUVORK5CYII=").unwrap();
+  let png = crate::icons::tests::png(1, 1, 255);
   let path = format!("/media/{}.png", digest(&png));
   let server = MockStore::new(vec![(path.clone(), Reply::ok(png.clone()))]).await;
   let uri = StoreClient::new(&server.origin)

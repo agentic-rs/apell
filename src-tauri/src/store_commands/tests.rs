@@ -29,6 +29,7 @@ fn installed(version: &str) -> InstalledApplet {
       lib: None,
     },
     sha256: "a".repeat(64),
+    icon_data_url: None,
     source: Some(PackageSource::Store(StoreSource {
       store_url: "https://store.example".into(),
       applet_id: "sample".into(),

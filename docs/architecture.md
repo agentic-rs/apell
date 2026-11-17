@@ -40,6 +40,13 @@ A trap, fuel exhaustion, or another terminal interpreter failure retires that ru
 
 An `.apel` is a ZIP32 archive. `manifest.json` and a non-empty UTF-8 `index.html` are required at the root. Reference other frontend assets relative to the entry document. The optional `lib` field names a contained WebAssembly module under `lib/`. Companion declares its backend in this manifest.
 
+An optional root `icon.png` supplies launcher artwork without changing the manifest.
+The native host validates a still PNG up to 256 KiB and 1,024 pixels per dimension
+from the installed package snapshot, then returns `icon_data_url` with the installed
+applet record. Missing or invalid icons produce `null` and do not make an applet
+unavailable. The launcher also falls back when image decoding fails. See
+[brand ownership](branding.md) for canonical applet artwork and website copies.
+
 ```json
 {
   "schema_version": 1,

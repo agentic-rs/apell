@@ -112,6 +112,7 @@ dependencies = [
  "apell-package",
  "base64 0.22.1",
  "futures-util",
+ "png 0.17.16",
  "reqwest",
  "rusqlite",
  "rustls",

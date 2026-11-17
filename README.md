@@ -129,6 +129,7 @@ An applet can live in its own repository. Stage the built frontend and optional 
 stage/
   manifest.json
   index.html
+  icon.png
   assets/main.js
   assets/main.css
   lib/main.wasm
@@ -147,6 +148,16 @@ stage/
 ```
 
 For a frontend-only applet, omit `lib`. Keep `applet_id` stable across releases so the applet retains its databases, files, resources, and preferences. Use a semantic version for each release.
+
+An optional root `icon.png` supplies the installed applet's launcher artwork. Use a
+still PNG up to 256 KiB, with each dimension between 1 and 1,024 pixels. This is a
+package asset, not a manifest field. Missing or invalid artwork falls back to the
+applet's initial; existing Companion packages retain their bundled fallback icon.
+The applet remains installable and runnable when its artwork is unavailable.
+Store listing artwork is uploaded separately with `apell publish --icon`.
+
+The apps repository owns Recorder, Learning, and Fieldnotes artwork; Apell owns
+the platform icon and shared visual theme. See [brand ownership and icon syncing](docs/branding.md).
 
 To use the SDKs from a separate repository, keep a pinned checkout of Apell available to the build. With that checkout under `vendor/apell`, run these commands from the applet repository.
 

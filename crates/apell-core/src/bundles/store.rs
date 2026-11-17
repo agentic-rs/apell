@@ -12,6 +12,8 @@ pub struct InstalledApplet {
   pub manifest: Manifest,
   pub sha256: String,
   pub source: Option<PackageSource>,
+  /// Optional package-owned artwork, validated from this exact package snapshot.
+  pub icon_data_url: Option<String>,
 }
 
 /// A failed installed package remains on disk and is reported independently.
@@ -38,11 +40,14 @@ struct Active {
 }
 
 impl Active {
-  fn installed(&self, manifest: Manifest) -> InstalledApplet {
+  fn installed(&self, bundle: &Bundle) -> InstalledApplet {
     InstalledApplet {
-      manifest,
+      manifest: bundle.manifest.clone(),
       sha256: self.sha256.clone(),
       source: self.source.clone(),
+      icon_data_url: bundle
+        .read_asset("icon.png")
+        .and_then(|bytes| crate::icons::png_data_url(bytes).ok()),
     }
   }
 }
@@ -128,7 +133,8 @@ impl BundleStore {
     if let Some(source) = &source {
       source.validate()?;
     }
-    let manifest = parse(bytes)?.manifest;
+    let bundle = parse(bytes)?;
+    let manifest = &bundle.manifest;
     let id = &manifest.applet_id;
     if matches!(guard, InstallGuard::Update(expected) if expected != id)
       || matches!(&source, Some(PackageSource::Store(source)) if source.applet_id != *id)
@@ -245,14 +251,14 @@ impl BundleStore {
         return Err(error);
       }
     }
-    Ok(active.installed(manifest))
+    Ok(active.installed(&bundle))
   }
 
   /// Snapshot the active pointer once; a concurrent install cannot mix a
-  /// manifest, source and content hash from different package versions.
+  /// manifest, icon, source and content hash from different package versions.
   pub fn installed(&self, applet_id: &str) -> Result<InstalledApplet, String> {
     let active = self.active(applet_id)?.ok_or("Applet is not installed.")?;
-    Ok(active.installed(self.read_active(&active)?.manifest))
+    Ok(active.installed(&self.read_active(&active)?))
   }
 
   pub fn load(&self, applet_id: &str) -> Result<Bundle, String> {
@@ -263,7 +269,7 @@ impl BundleStore {
   pub fn load_with_metadata(&self, applet_id: &str) -> Result<(Bundle, InstalledApplet), String> {
     let active = self.active(applet_id)?.ok_or("Applet is not installed.")?;
     let bundle = self.read_active(&active)?;
-    let installed = active.installed(bundle.manifest.clone());
+    let installed = active.installed(&bundle);
     Ok((bundle, installed))
   }
 
@@ -271,7 +277,7 @@ impl BundleStore {
     let mut installed = Vec::new();
     for id in self.ids()? {
       if let Some(record) = self.active(&id)? {
-        installed.push(record.installed(self.read_active(&record)?.manifest));
+        installed.push(record.installed(&self.read_active(&record)?));
       }
     }
     sort_installed(&mut installed);
@@ -292,7 +298,7 @@ impl BundleStore {
           .map(|active| {
             self
               .read_active(&active)
-              .map(|bundle| active.installed(bundle.manifest))
+              .map(|bundle| active.installed(&bundle))
           })
           .transpose()
       });

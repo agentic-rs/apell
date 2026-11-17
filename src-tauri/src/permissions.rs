@@ -249,6 +249,7 @@ mod tests {
       .unwrap(),
       sha256: "a".repeat(64),
       source: Some(source),
+      icon_data_url: None,
     }
   }
 

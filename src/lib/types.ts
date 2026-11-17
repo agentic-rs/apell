@@ -10,6 +10,7 @@ export interface Manifest {
 }
 export interface InstalledApplet extends Manifest {
   sha256: string;
+  icon_data_url?: string | null;
   source?: PackageSource | null;
 }
 export type PackageSource =

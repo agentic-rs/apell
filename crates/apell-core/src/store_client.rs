@@ -3,7 +3,7 @@ mod model;
 pub use model::{StoreApplet, StoreCatalog, StoreDetail, StoreRelease};
 
 use crate::bundles::{digest, parse};
-use base64::{engine::general_purpose::STANDARD, Engine};
+use crate::icons::{png_data_url, MAX_ICON_BYTES};
 use reqwest::{Client, Response};
 use serde::de::DeserializeOwned;
 use std::time::Duration;
@@ -164,21 +164,11 @@ impl StoreClient {
 
   pub async fn icon(&self, icon_url: &str) -> Result<String, String> {
     let hash = model::icon_hash(icon_url)?;
-    let bytes = bounded_body(self.response(icon_url).await?, 256 * 1024, |_, _| {}).await?;
-    if digest(&bytes) != hash
-      || bytes.len() < 33
-      || &bytes[..8] != b"\x89PNG\r\n\x1a\n"
-      || bytes[8..12] != 13u32.to_be_bytes()
-      || &bytes[12..16] != b"IHDR"
-    {
+    let bytes = bounded_body(self.response(icon_url).await?, MAX_ICON_BYTES, |_, _| {}).await?;
+    if digest(&bytes) != hash {
       return Err("The store icon failed verification.".into());
     }
-    let width = u32::from_be_bytes(bytes[16..20].try_into().unwrap());
-    let height = u32::from_be_bytes(bytes[20..24].try_into().unwrap());
-    if width == 0 || height == 0 || width > 1024 || height > 1024 {
-      return Err("The store icon is too large.".into());
-    }
-    Ok(format!("data:image/png;base64,{}", STANDARD.encode(bytes)))
+    png_data_url(&bytes)
   }
 }
 
