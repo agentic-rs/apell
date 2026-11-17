@@ -431,12 +431,22 @@ h1 {
 }
 .download-panel select {
   width: 100%;
+  appearance: none;
+  height: 48px;
   min-height: 46px;
   color: inherit;
   border: 1px solid #bdb2c9;
   border-radius: 10px;
   padding: 10px 30px 10px 12px;
-  background: white;
+  background-color: white;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--violet) 50%),
+    linear-gradient(135deg, var(--violet) 50%, transparent 50%);
+  background-position:
+    calc(100% - 17px) 21px,
+    calc(100% - 12px) 21px;
+  background-size: 5px 5px;
+  background-repeat: no-repeat;
   font-size: 14px;
 }
 .release-status {
