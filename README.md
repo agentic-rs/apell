@@ -67,6 +67,28 @@ Camera capture, location, QR transfer, and audio sharing remain mobile features;
 
 iOS requires macOS with Xcode and its simulator/device tools. Android requires the Android SDK, NDK, Java tooling, and an emulator or connected device. The credential plugin compiles against Android SDK 36 and has a minimum API level of 24. Keep SDK locations and signing configuration local.
 
+To run the shell from this checkout, install the CLI and choose a target in the terminal.
+
+```sh
+cargo install --locked --path crates/apell-cli
+appell dev
+```
+
+Both `appell dev` and `apell dev` build a debug app with its frontend bundled,
+install it, and open it on the selected iPhone. The app keeps running after the
+command exits. Use `appell dev --list` to see available targets. Use
+`--target simulator` or `--target device` to narrow the picker, or pass a
+specific target UDID to run unattended. From outside the checkout, pass
+`--project PATH` to select the Apell source directory.
+
+For a physical iPhone, sign in to your Apple Account in Xcode, pair and unlock
+the phone, and enable Developer Mode. Select your team (a Personal Team works)
+under **Signing & Capabilities** in the generated Xcode project and enable
+automatic signing. Use a bundle identifier available to your team. The command
+allows Xcode to register the selected device and create or refresh its development
+profile during the build. Keep the team and signing settings in the ignored
+local project. [Apple's device signing guide](https://developer.apple.com/documentation/xcode/running-your-app-on-simulated-or-physical-devices#Set-up-code-signing-for-physical-devices)
+
 ```sh
 # Generate the native project on the development machine.
 pnpm ios:init

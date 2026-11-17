@@ -1,5 +1,6 @@
 [package]
 name = "apell-cli"
+default-run = "apell"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
