@@ -113,7 +113,8 @@ Each entry authorizes one applet ID, an exact workflow path, and explicitly list
 Git refs and events. To require a protected GitHub environment, set `environment`
 and use the same name in the publishing job. Allowed refs are exact strings;
 wildcards are not supported. Only GitHub-hosted runners are accepted. Pull-request
-events and reusable publishing workflows are not accepted by this first adapter.
+events are rejected. A publishing job must be defined in the registered workflow;
+delegation to a different reusable workflow is not supported by this first adapter.
 Adding or changing a publisher requires a server configuration change; an
 unregistered repository cannot claim an applet by publishing first.
 
@@ -164,6 +165,10 @@ publishing credentials last at most five minutes and never outlive the identity
 token. They permit retries of the same package while valid. Both the parsed applet
 ID and actual package checksum are checked before publication. Restarting the
 store invalidates outstanding scoped credentials and clears the in-memory replay cache.
+
+GitHub may supply `job_workflow_ref` for a direct job. When present, it must exactly
+match the authorized `workflow_ref`; its presence alone does not make the job a
+delegated workflow.
 
 This establishes which workflow may publish. It does not inspect applet behavior
 or replace runtime permission controls. Protect the authorized branch and workflow

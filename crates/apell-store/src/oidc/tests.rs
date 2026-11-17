@@ -133,6 +133,46 @@ async fn signed_identity_mints_one_scoped_credential_with_bounded_lifetime() {
 }
 
 #[tokio::test]
+async fn direct_jobs_may_repeat_their_authorized_workflow_reference() {
+  let (service, _server) = service().await;
+  let mut identity = claims("direct-job");
+  identity["job_workflow_ref"] = identity["workflow_ref"].clone();
+  service
+    .exchange(exchange_request(
+      &signed(&identity),
+      "sample",
+      "a".repeat(64),
+    ))
+    .await
+    .unwrap();
+
+  identity["jti"] = json!("different-job");
+  identity["job_workflow_ref"] =
+    json!("example/shared/.github/workflows/publish.yml@refs/heads/main");
+  assert!(service
+    .exchange(exchange_request(
+      &signed(&identity),
+      "sample",
+      "a".repeat(64)
+    ))
+    .await
+    .is_err());
+
+  // Matching each other never substitutes for matching the configured workflow.
+  identity["jti"] = json!("unauthorized-self-reference");
+  identity["workflow_ref"] = json!("example/project/.github/workflows/other.yml@refs/heads/main");
+  identity["job_workflow_ref"] = identity["workflow_ref"].clone();
+  assert!(service
+    .exchange(exchange_request(
+      &signed(&identity),
+      "sample",
+      "a".repeat(64)
+    ))
+    .await
+    .is_err());
+}
+
+#[tokio::test]
 async fn signed_claims_must_match_repository_workflow_ref_environment_and_audience() {
   let (service, _server) = service().await;
   let mutations: [fn(&mut Value); 18] = [

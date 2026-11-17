@@ -54,7 +54,11 @@ impl Claims {
       Some(Rejection::ClaimTimeOrder)
     } else if self.runner_environment != "github-hosted" {
       Some(Rejection::ClaimRunner)
-    } else if self.job_workflow_ref.is_some() {
+    } else if self
+      .job_workflow_ref
+      .as_ref()
+      .is_some_and(|workflow| workflow != &self.workflow_ref)
+    {
       Some(Rejection::ClaimReusableWorkflow)
     } else if !matches!(
       self.event_name.as_str(),
