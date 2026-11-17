@@ -115,7 +115,8 @@ delegation to a different reusable workflow is not supported by this adapter.
 
 Existing operator-managed JSON policies are imported once during migration; see
 [operator setup](store-accounts.md#operator-setup). Subsequent edits use the website
-and database, so a restart cannot restore a connection that was disconnected.
+or CLI and are saved in the database, so a restart cannot restore a connection
+that was disconnected.
 
 ### Configure the workflow
 
