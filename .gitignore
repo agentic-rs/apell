@@ -17,3 +17,5 @@ src-tauri/.tauri/
 src/generated/
 
 .pnpm-store/
+store-data/
+store/.local/

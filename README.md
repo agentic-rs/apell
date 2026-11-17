@@ -99,6 +99,10 @@ iOS build/dev commands automatically run `pnpm ios:prepare`. It prepares the gen
 
 ## Create and distribute an applet
 
+For a self-hosted catalog with public downloads and private publishing, see
+[Apell Store](docs/store.md). Publish directly from an applet repository using
+`apell publish`; the native shell can install the downloaded `.apel` file.
+
 ### Applet authoring skill
 
 The [Apell Applet skill](skills/apell-applet/SKILL.md) guides agents through packaging and APIs, mobile architecture, and interaction review. It loads the references that match the task.

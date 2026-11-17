@@ -1,5 +1,17 @@
 [workspace]
-members = ["crates/apell-core", "crates/apell-speech", "src-tauri/plugins/tauri-plugin-apell-audio", "crates/apell-guest", "crates/apell-runtime", "crates/apell-cli", "src-tauri", "src-tauri/plugins/tauri-plugin-apell-credentials", "src-tauri/plugins/tauri-plugin-apell-sensors"]
+members = [
+  "crates/apell-package",
+  "crates/apell-store",
+  "crates/apell-core",
+  "crates/apell-speech",
+  "crates/apell-guest",
+  "crates/apell-runtime",
+  "crates/apell-cli",
+  "src-tauri",
+  "src-tauri/plugins/tauri-plugin-apell-audio",
+  "src-tauri/plugins/tauri-plugin-apell-credentials",
+  "src-tauri/plugins/tauri-plugin-apell-sensors",
+]
 exclude = ["examples/chatbot"]
 resolver = "2"
 
