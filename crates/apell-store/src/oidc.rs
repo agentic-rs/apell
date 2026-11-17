@@ -1,5 +1,6 @@
 mod claims;
 mod config;
+mod diagnostics;
 mod keys;
 #[cfg(test)]
 mod tests;
@@ -13,6 +14,7 @@ use axum::{
 };
 use claims::{Claims, ISSUER};
 pub use config::{OidcConfig, TrustedPublisher};
+use diagnostics::{emit, reject, Rejection};
 use jsonwebtoken::{decode, decode_header, Algorithm, Validation};
 use serde::Deserialize;
 use std::{
@@ -60,24 +62,36 @@ impl Oidc {
       .try_acquire()
       .map_err(|_| StoreError::busy())?;
     let jwt = bearer(request.headers(), MAX_JWT_BYTES)?;
-    let header = decode_header(jwt).map_err(|_| unauthorized())?;
-    if header.alg != Algorithm::RS256
-      || header.typ.as_deref() != Some("JWT")
-      || header.jku.is_some()
-      || header.jwk.is_some()
-      || header.x5u.is_some()
-      || header.crit.is_some()
-      || header.enc.is_some()
-      || header.zip.is_some()
-      || !header.extras.inner().is_empty()
-    {
-      return Err(unauthorized());
+    let header = decode_header(jwt).map_err(|_| reject(Rejection::HeaderMalformed))?;
+    let header_error = if header.alg != Algorithm::RS256 {
+      Some(Rejection::HeaderAlgorithm)
+    } else if header.typ.as_deref() != Some("JWT") {
+      Some(Rejection::HeaderType)
+    } else if header.jku.is_some() || header.jwk.is_some() || header.x5u.is_some() {
+      Some(Rejection::HeaderKeySource)
+    } else if header.crit.is_some() {
+      Some(Rejection::HeaderCritical)
+    } else if header.enc.is_some() || header.zip.is_some() {
+      Some(Rejection::HeaderEncryption)
+    } else if !header.extras.inner().is_empty() {
+      Some(Rejection::HeaderUnknownFields)
+    } else {
+      None
+    };
+    if let Some(reason) = header_error {
+      return Err(reject(reason));
     }
     let kid = header
       .kid
       .filter(|value| keys::valid_kid(value))
-      .ok_or_else(unauthorized)?;
-    let key = self.keys.get(&kid).await?;
+      .ok_or_else(|| reject(Rejection::HeaderKeyId))?;
+    let key = self.keys.get(&kid).await.inspect_err(|error| {
+      emit(if error.status == StatusCode::UNAUTHORIZED {
+        Rejection::KeyUnknown
+      } else {
+        Rejection::KeyUnavailable
+      });
+    })?;
     let mut validation = Validation::new(Algorithm::RS256);
     validation.set_issuer(&[ISSUER]);
     validation.set_audience(&[&self.config.audience]);
@@ -85,7 +99,7 @@ impl Oidc {
     validation.validate_nbf = true;
     validation.leeway = 30;
     let claims = decode::<Claims>(jwt, &key, &validation)
-      .map_err(|_| unauthorized())?
+      .map_err(|error| reject(diagnostics::decode_reason(error.kind())))?
       .claims;
     claims.validate(&self.config.audience, now())?;
     // Verify a trusted identity before polling even the small exchange body.
@@ -95,7 +109,7 @@ impl Oidc {
       .iter()
       .any(|publisher| claims.matches(publisher))
     {
-      return Err(unauthorized());
+      return Err(reject(claims.policy_failure(&self.config.publishers, None)));
     }
     let content_type = request
       .headers()
@@ -134,7 +148,9 @@ impl Oidc {
       .iter()
       .any(|publisher| publisher.applet_id == input.applet_id && claims.matches(publisher))
     {
-      return Err(unauthorized());
+      return Err(reject(
+        claims.policy_failure(&self.config.publishers, Some(&input.applet_id)),
+      ));
     }
     self
       .tokens
@@ -161,7 +177,7 @@ impl Oidc {
 
 fn bearer(headers: &HeaderMap, maximum: usize) -> Result<&str> {
   if headers.get_all(header::AUTHORIZATION).iter().count() != 1 {
-    return Err(unauthorized());
+    return Err(reject(Rejection::Authorization));
   }
   let token = headers
     .get(header::AUTHORIZATION)
@@ -170,7 +186,7 @@ fn bearer(headers: &HeaderMap, maximum: usize) -> Result<&str> {
     .filter(|value| {
       !value.is_empty() && value.len() <= maximum && value.bytes().all(|c| c.is_ascii_graphic())
     })
-    .ok_or_else(unauthorized)?;
+    .ok_or_else(|| reject(Rejection::Authorization))?;
   Ok(token)
 }
 

@@ -10,6 +10,46 @@ use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
+#[test]
+fn diagnostic_categories_never_include_rejected_claim_values() {
+  use diagnostics::{decode_reason, Rejection};
+  use jsonwebtoken::errors::ErrorKind;
+  let detail = "sensitive-rejected-claim-value";
+  for error in [
+    ErrorKind::MissingRequiredClaim(detail.into()),
+    ErrorKind::InvalidClaimFormat(detail.into()),
+    ErrorKind::Json(
+      serde_json::from_str::<u64>(&format!("\"{detail}\""))
+        .unwrap_err()
+        .into(),
+    ),
+  ] {
+    let reason = decode_reason(&error);
+    assert!(matches!(
+      reason,
+      Rejection::TokenMissingClaim | Rejection::TokenClaimFormat
+    ));
+    assert!(!reason.code().contains(detail));
+  }
+  let mut identity: Claims = serde_json::from_value(claims("diagnostic")).unwrap();
+  let policy = config().publishers;
+  identity.repository_id = "999".into();
+  assert_eq!(
+    identity.policy_failure(&policy, None),
+    Rejection::PolicyRepositoryId
+  );
+  identity.repository_id = "123".into();
+  identity.workflow_ref = detail.into();
+  assert_eq!(
+    identity.policy_failure(&policy, None),
+    Rejection::PolicyWorkflow
+  );
+  assert_eq!(
+    identity.policy_failure(&policy, Some("other")),
+    Rejection::PolicyApplet
+  );
+}
+
 async fn service() -> (Oidc, JwksServer) {
   let server = JwksServer::new(key().jwks.clone()).await;
   let mut service = Oidc::new(config()).unwrap();

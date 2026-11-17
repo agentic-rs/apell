@@ -51,6 +51,8 @@ jobs:
         run: |
           pnpm build:chatbot
           pnpm exec tauri icon assets/companion.svg --output artifacts/companion-icons
+      - name: Check identity shape without logging credentials
+        run: node --experimental-strip-types scripts/diagnose-publishing-identity.ts
       - name: Publish with GitHub Actions identity
         run: |
           cargo run --locked -p apell-cli --bin apell -- publish artifacts/chatbot.apel \

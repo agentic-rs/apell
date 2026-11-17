@@ -1,6 +1,6 @@
 use super::{
   config::{valid_ref, TrustedPublisher},
-  unauthorized,
+  diagnostics::{reject, Rejection},
 };
 use crate::Result;
 use serde::Deserialize;
@@ -30,42 +30,110 @@ pub(super) struct Claims {
 
 impl Claims {
   pub fn validate(&self, audience: &str, now: u64) -> Result<()> {
-    if self.iss != ISSUER
-      || self.aud != audience
-      || self.sub.is_empty()
-      || self.sub.len() > 1024
-      || self.sub.chars().any(char::is_control)
-      || self.jti.is_empty()
+    let reason = if self.iss != ISSUER {
+      Some(Rejection::ClaimIssuer)
+    } else if self.aud != audience {
+      Some(Rejection::ClaimAudience)
+    } else if self.sub.is_empty() || self.sub.len() > 1024 || self.sub.chars().any(char::is_control)
+    {
+      Some(Rejection::ClaimSubject)
+    } else if self.jti.is_empty()
       || self.jti.len() > 256
       || !self.jti.bytes().all(|c| c.is_ascii_graphic())
-      || self.exp <= now
-      || self.exp <= self.iat
-      || self.exp - self.iat > 600
-      || self.iat > now.saturating_add(30)
-      || self.nbf > now.saturating_add(30)
-      || self.nbf >= self.exp
-      || self.runner_environment != "github-hosted"
-      || self.job_workflow_ref.is_some()
-      || !matches!(
-        self.event_name.as_str(),
-        "push" | "workflow_dispatch" | "release"
-      )
-      || !valid_ref(&self.git_ref)
-      || !valid_repository(&self.repository)
-      || self
-        .repository_id
-        .parse::<u64>()
-        .ok()
-        .is_none_or(|id| id == 0)
-      || self
-        .repository_owner_id
-        .parse::<u64>()
-        .ok()
-        .is_none_or(|id| id == 0)
     {
-      return Err(unauthorized());
+      Some(Rejection::ClaimTokenId)
+    } else if self.exp <= now {
+      Some(Rejection::ClaimExpired)
+    } else if self.exp <= self.iat || self.exp - self.iat > 600 {
+      Some(Rejection::ClaimLifetime)
+    } else if self.iat > now.saturating_add(30) {
+      Some(Rejection::ClaimIssuedInFuture)
+    } else if self.nbf > now.saturating_add(30) {
+      Some(Rejection::ClaimNotYetValid)
+    } else if self.nbf >= self.exp {
+      Some(Rejection::ClaimTimeOrder)
+    } else if self.runner_environment != "github-hosted" {
+      Some(Rejection::ClaimRunner)
+    } else if self.job_workflow_ref.is_some() {
+      Some(Rejection::ClaimReusableWorkflow)
+    } else if !matches!(
+      self.event_name.as_str(),
+      "push" | "workflow_dispatch" | "release"
+    ) {
+      Some(Rejection::ClaimEvent)
+    } else if !valid_ref(&self.git_ref) {
+      Some(Rejection::ClaimRef)
+    } else if !valid_repository(&self.repository) {
+      Some(Rejection::ClaimRepository)
+    } else if self
+      .repository_id
+      .parse::<u64>()
+      .ok()
+      .is_none_or(|id| id == 0)
+    {
+      Some(Rejection::ClaimRepositoryId)
+    } else if self
+      .repository_owner_id
+      .parse::<u64>()
+      .ok()
+      .is_none_or(|id| id == 0)
+    {
+      Some(Rejection::ClaimOwnerId)
+    } else {
+      None
+    };
+    reason.map_or(Ok(()), |reason| Err(reject(reason)))
+  }
+
+  pub fn policy_failure(
+    &self,
+    publishers: &[TrustedPublisher],
+    applet_id: Option<&str>,
+  ) -> Rejection {
+    let mut candidates: Vec<_> = publishers
+      .iter()
+      .filter(|publisher| applet_id.is_none_or(|id| publisher.applet_id == id))
+      .collect();
+    if candidates.is_empty() {
+      return Rejection::PolicyApplet;
     }
-    Ok(())
+    candidates.retain(|publisher| self.repository_id == publisher.repository_id.to_string());
+    if candidates.is_empty() {
+      return Rejection::PolicyRepositoryId;
+    }
+    candidates
+      .retain(|publisher| self.repository_owner_id == publisher.repository_owner_id.to_string());
+    if candidates.is_empty() {
+      return Rejection::PolicyOwnerId;
+    }
+    candidates.retain(|publisher| {
+      self.workflow_ref
+        == format!(
+          "{}/{}@{}",
+          self.repository, publisher.workflow, self.git_ref
+        )
+    });
+    if candidates.is_empty() {
+      return Rejection::PolicyWorkflow;
+    }
+    candidates.retain(|publisher| publisher.allowed_refs.contains(&self.git_ref));
+    if candidates.is_empty() {
+      return Rejection::PolicyRef;
+    }
+    candidates.retain(|publisher| publisher.event_names.contains(&self.event_name));
+    if candidates.is_empty() {
+      return Rejection::PolicyEvent;
+    }
+    candidates.retain(|publisher| {
+      publisher
+        .environment
+        .as_ref()
+        .is_none_or(|name| self.environment.as_ref() == Some(name))
+    });
+    if candidates.is_empty() {
+      return Rejection::PolicyEnvironment;
+    }
+    Rejection::TokenInvalid
   }
 
   pub fn matches(&self, publisher: &TrustedPublisher) -> bool {

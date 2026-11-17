@@ -1,4 +1,7 @@
-use super::{unauthorized, Claims};
+use super::{
+  diagnostics::{emit, reject, Rejection},
+  Claims,
+};
 use crate::{Result, StoreError};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -15,13 +18,16 @@ pub(crate) struct Grant {
 
 impl Grant {
   pub fn validate_package(&self, bytes: &[u8], now: u64) -> Result<()> {
-    if self.expires_at <= now || apell_package::digest(bytes) != self.sha256 {
-      return Err(unauthorized());
+    if self.expires_at <= now {
+      return Err(reject(Rejection::CredentialExpired));
+    }
+    if apell_package::digest(bytes) != self.sha256 {
+      return Err(reject(Rejection::PackageChecksum));
     }
     let package =
       apell_package::parse(bytes).map_err(|_| StoreError::invalid("Invalid applet package."))?;
     if package.manifest.applet_id != self.applet_id {
-      return Err(unauthorized());
+      return Err(reject(Rejection::PackageIdentity));
     }
     Ok(())
   }
@@ -54,11 +60,15 @@ impl Tokens {
   ) -> Result<TokenResponse> {
     self.prune(now);
     let identity = hash(&claims.jti);
-    if claims.exp <= now || self.used_ids.contains_key(&identity) {
-      return Err(unauthorized());
+    if claims.exp <= now {
+      return Err(reject(Rejection::ClaimExpired));
+    }
+    if self.used_ids.contains_key(&identity) {
+      return Err(reject(Rejection::TokenReplayed));
     }
     // Do not evict live replay records or credentials to make room for a request.
     if self.grants.len() >= MAX_ACTIVE || self.used_ids.len() >= MAX_ACTIVE {
+      emit(Rejection::CredentialCapacity);
       return Err(StoreError::busy());
     }
     let mut random = [0u8; 32];
@@ -87,7 +97,7 @@ impl Tokens {
       .grants
       .get(&hash(token))
       .cloned()
-      .ok_or_else(unauthorized)
+      .ok_or_else(|| reject(Rejection::CredentialUnknown))
   }
 }
 

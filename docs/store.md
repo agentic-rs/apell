@@ -171,6 +171,12 @@ according to who should be able to release your applet. See GitHub's
 [OIDC reference](https://docs.github.com/en/actions/reference/security/oidc) for the
 claims and job permissions.
 
+For a rejected identity, the operator can temporarily set
+`APELL_STORE_OIDC_DIAGNOSTICS=1` and restart the store. Service logs then report
+fixed failure categories for token verification and policy matching. They do not
+include tokens, claim values, repository names, or actors. Remove the setting and
+restart after troubleshooting. Client-facing authentication errors stay generic.
+
 ## Release rules
 
 - A published applet ID and version identify immutable content and metadata.
@@ -250,6 +256,7 @@ Restart the service after changing it.
 | `APELL_STORE_PUBLISH_TOKEN_FILE`      | Required                                |
 | `APELL_STORE_PUBLIC_URL`              | Unset; required with trusted publishers |
 | `APELL_STORE_TRUSTED_PUBLISHERS_FILE` | Unset; OIDC disabled                    |
+| `APELL_STORE_OIDC_DIAGNOSTICS`        | Unset; failure diagnostics disabled     |
 
 ## Deploy
 
