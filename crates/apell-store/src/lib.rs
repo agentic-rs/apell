@@ -104,6 +104,21 @@ fn router_with_store(config: &Config, store: Store, oidc: Option<oidc::Oidc>) ->
     .route("/", any(not_found))
     .route("/{file}", get(icon))
     .fallback(not_found);
+  let mut frontend = Router::new();
+  for path in [
+    "/account",
+    "/account/",
+    "/account/new",
+    "/account/new/",
+    "/account/cli",
+    "/account/cli/",
+    "/account/packages/{id}",
+    "/account/packages/{id}/",
+    "/applets/{id}",
+    "/applets/{id}/",
+  ] {
+    frontend = frontend.route_service(path, ServeFile::new(config.web_dir.join("index.html")));
+  }
   Ok(
     Router::new()
       .route(
@@ -114,10 +129,8 @@ fn router_with_store(config: &Config, store: Store, oidc: Option<oidc::Oidc>) ->
       .nest("/media", media)
       .route("/api/", any(not_found))
       .route("/media/", any(not_found))
-      .fallback_service(
-        ServeDir::new(&config.web_dir)
-          .not_found_service(ServeFile::new(config.web_dir.join("index.html"))),
-      )
+      .merge(frontend)
+      .fallback_service(ServeDir::new(&config.web_dir))
       .method_not_allowed_fallback(|| async {
         StoreError::new(
           StatusCode::METHOD_NOT_ALLOWED,

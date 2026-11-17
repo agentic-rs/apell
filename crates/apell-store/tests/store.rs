@@ -428,6 +428,54 @@ fn malformed_and_oversized_icons_are_rejected() {
 }
 
 #[tokio::test]
+async fn frontend_deep_links_serve_html_for_get_and_head() {
+  let (_root, app) = app();
+  for route in [
+    "/",
+    "/account",
+    "/account/",
+    "/account/new",
+    "/account/new/",
+    "/account/cli?code=ABCDE-FGHJK",
+    "/account/cli/?code=ABCDE-FGHJK",
+    "/account/packages/sample",
+    "/account/packages/sample/",
+    "/applets/sample",
+    "/applets/sample/",
+  ] {
+    for method in ["GET", "HEAD"] {
+      let response = app
+        .clone()
+        .oneshot(
+          Request::builder()
+            .method(method)
+            .uri(route)
+            .body(Body::empty())
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+      assert_eq!(response.status(), StatusCode::OK, "{method} {route}");
+      assert_eq!(
+        response.headers()[header::CONTENT_TYPE],
+        "text/html",
+        "{method} {route}"
+      );
+      let body = response.into_body().collect().await.unwrap().to_bytes();
+      if method == "HEAD" {
+        assert!(body.is_empty(), "{method} {route}");
+      } else {
+        assert_eq!(
+          body.as_ref(),
+          b"<html>Store frontend</html>",
+          "{method} {route}"
+        );
+      }
+    }
+  }
+}
+
+#[tokio::test]
 async fn unknown_api_and_media_paths_do_not_return_the_website() {
   let (_root, app) = app();
   for route in [
@@ -439,20 +487,52 @@ async fn unknown_api_and_media_paths_do_not_return_the_website() {
     "/media/not-an-icon.png",
     "/media/missing/icon.png",
   ] {
-    let response = app
-      .clone()
-      .oneshot(Request::get(route).body(Body::empty()).unwrap())
-      .await
-      .unwrap();
-    assert_eq!(response.status(), StatusCode::NOT_FOUND, "{route}");
-    assert!(
-      response.headers()[header::CONTENT_TYPE]
-        .to_str()
-        .unwrap()
-        .starts_with("application/json"),
-      "{route}: {:?}",
-      response.headers()
-    );
+    for method in ["GET", "HEAD"] {
+      let response = app
+        .clone()
+        .oneshot(
+          Request::builder()
+            .method(method)
+            .uri(route)
+            .body(Body::empty())
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+      assert_eq!(response.status(), StatusCode::NOT_FOUND, "{method} {route}");
+      assert!(
+        response.headers()[header::CONTENT_TYPE]
+          .to_str()
+          .unwrap()
+          .starts_with("application/json"),
+        "{method} {route}: {:?}",
+        response.headers()
+      );
+    }
+  }
+  for route in [
+    "/assets/missing.js",
+    "/missing.css",
+    "/unknown",
+    "/account/unknown",
+    "/applets/sample/unknown",
+  ] {
+    for method in ["GET", "HEAD"] {
+      let response = app
+        .clone()
+        .oneshot(
+          Request::builder()
+            .method(method)
+            .uri(route)
+            .body(Body::empty())
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+      assert_eq!(response.status(), StatusCode::NOT_FOUND, "{method} {route}");
+      let body = response.into_body().collect().await.unwrap().to_bytes();
+      assert!(body.is_empty(), "{method} {route}");
+    }
   }
   let response = app
     .oneshot(Request::get("/").body(Body::empty()).unwrap())

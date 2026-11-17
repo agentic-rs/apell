@@ -1,6 +1,6 @@
 # Verification
 
-CLI browser authorization passed 59 Store tests, 24 CLI tests, all 79
+CLI browser authorization passed 60 Store tests, 24 CLI tests, all 79
 frontend/SDK tests, strict Store/CLI Clippy, the Store production build, and
 formatting checks. Fixtures cover browser-only approval with CSRF, OAuth resume
 without automatic approval, single-use and concurrent redemption, expiry and
@@ -11,7 +11,9 @@ management request bodies, and a complete binary login/publish/logout flow.
 GitHub Actions still selects OIDC independently of local account credentials.
 Firefox fixture checks passed at 320, 390, 768, and 1,200 pixels for approval,
 denial, session recovery, manual codes, expiry, credential revocation, and the
-existing account pages. The Linux Store release and native CLI built successfully.
+existing account pages. Direct-link regressions verify successful GET/HEAD page
+loads while unknown pages, assets, API routes, and media retain 404 responses.
+The Linux Store release and native CLI built successfully.
 
 GitHub accounts and package ownership passed 49 Store tests, 14 CLI tests, all 76 frontend/SDK tests, strict Store/CLI Clippy, the Store production build, formatting, and privacy checks. Coverage includes a complete mock GitHub OAuth/PKCE exchange, browser-bound state and replay rejection, secure sessions and CSRF, public registration races, reserved legacy IDs, invitation acceptance, protected ownership and accepted transfers, and membership/OIDC revocation during uploads. The policy migration preserves existing releases and cannot resurrect disconnected publishers on restart. Firefox fixture checks passed at 320, 390, 768, and 1,200 pixels for registration, invitations, publishing, people management, OIDC changes, and session recovery; keyboard and scrolling checks verified skip-link behavior. The Linux release was deployed with its binary checksum matching the tested build. Production checks verified the OAuth redirect and configured client, PKCE, secure cookies, anonymous session state, protected management endpoints, and invalid callback rejection. Existing package ownership and CI policy were migrated, callback request logging was suppressed, and one-time migration settings were removed. Existing downloads retained their checksums. Companion’s GitHub Actions workflow successfully republished its identical release through the database-backed OIDC policy. The user confirmed successful interactive GitHub sign-in and Companion appearing under My packages.
 
