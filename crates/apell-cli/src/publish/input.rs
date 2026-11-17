@@ -9,11 +9,18 @@ use url::{Host, Url};
 pub const MAX_METADATA_BYTES: usize = 16 * 1024;
 pub const MAX_ICON_BYTES: usize = 256 * 1024;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AuthMethod {
+  GithubOidc,
+  Token,
+}
+
 pub struct PublishArgs {
   pub package: PathBuf,
   pub metadata: PathBuf,
   pub icon: Option<PathBuf>,
   pub endpoint: Url,
+  pub auth: Option<AuthMethod>,
 }
 
 impl PublishArgs {
@@ -27,6 +34,7 @@ impl PublishArgs {
     let mut store = None;
     let mut metadata = None;
     let mut icon = None;
+    let mut auth = None;
     for pair in arguments[1..].chunks(2) {
       let [flag, value] = pair else {
         return Err(super::USAGE.into());
@@ -42,6 +50,13 @@ impl PublishArgs {
         }
         Some("--metadata") if metadata.is_none() => metadata = Some(PathBuf::from(value)),
         Some("--icon") if icon.is_none() => icon = Some(PathBuf::from(value)),
+        Some("--auth") if auth.is_none() => {
+          auth = Some(match value.to_str() {
+            Some("github-oidc") => AuthMethod::GithubOidc,
+            Some("token") => AuthMethod::Token,
+            _ => return Err(super::USAGE.into()),
+          });
+        }
         _ => return Err(super::USAGE.into()),
       }
     }
@@ -50,6 +65,7 @@ impl PublishArgs {
       endpoint: store.ok_or(super::USAGE)?,
       metadata: metadata.ok_or(super::USAGE)?,
       icon,
+      auth,
     })
   }
 }

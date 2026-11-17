@@ -1,7 +1,7 @@
 # Apell Store
 
 The store serves a public applet catalog, version history, and `.apel` downloads.
-Publishing requires a private bearer token. Applets remain in their own repositories;
+Publishing uses GitHub Actions trusted publishing or a private local token. Applets remain in their own repositories;
 publishing a release does not require changing the shell or landing-page repository.
 
 The website supports search, stable and preview releases, declared permissions,
@@ -52,8 +52,8 @@ Build your applet and pack it with `apell pack` as described in the
 }
 ```
 
-Keep the publishing token in a private file outside source control. Set
-`APELL_STORE_PUBLISH_TOKEN_FILE` to that file, then publish:
+For local publishing, keep the publishing token in a private file outside source
+control and set `APELL_STORE_PUBLISH_TOKEN_FILE` to that file. Then publish:
 
 ```sh
 apell publish artifacts/example.apel \
@@ -65,14 +65,111 @@ apell publish artifacts/example.apel \
 Replace the example URL with your store. The optional icon is a still PNG, at most
 256 KiB and 1,024 × 1,024 pixels. The CLI validates the package before sending it,
 requires HTTPS except for local loopback development, and refuses redirects so the
-publishing token cannot be forwarded to another destination. CI can write its secret
-to a temporary private file and set the same environment variable. Do not put the
-token in an argument, listing, package, or repository.
+publishing token cannot be forwarded to another destination. For GitHub Actions,
+use trusted publishing below. Do not put tokens in arguments, listings, packages,
+logs, or repositories.
 
 The server reads the ID, display name, version, permissions, and API version from
 the package itself. Listing metadata is separate from `manifest.json`. Descriptions
 are limited to 2,000 UTF-8 bytes and release notes to 10,000 bytes. Project links
 must use HTTPS without URL credentials.
+
+## Trusted publishing from GitHub Actions
+
+The store operator registers a trusted workflow for each applet. The workflow
+requests a GitHub OIDC identity token and `apell publish` exchanges it for a
+short-lived publishing credential restricted to that applet and package checksum.
+There is no long-lived publishing secret in the repository.
+
+### Register a publisher
+
+On the store server, create a private configuration file following
+[trusted-publishers.example.json](../deploy/store/trusted-publishers.example.json):
+
+```json
+{
+  "publishers": [
+    {
+      "applet_id": "example",
+      "repository_id": 123456789,
+      "repository_owner_id": 987654321,
+      "workflow": ".github/workflows/publish.yml",
+      "allowed_refs": ["refs/heads/main"],
+      "event_names": ["push", "workflow_dispatch"],
+      "environment": null
+    }
+  ]
+}
+```
+
+Get the immutable repository and owner IDs using
+`gh api repos/OWNER/REPO --jq '{repository_id: .id, repository_owner_id: .owner.id}'`.
+Names alone do not establish trust. Set `APELL_STORE_PUBLIC_URL` to the store's
+canonical HTTPS origin and `APELL_STORE_TRUSTED_PUBLISHERS_FILE` to this file,
+then restart the service. The URL must have no path, query, fragment, or
+credentials. Keep actual deployment values out of source control.
+
+Each entry authorizes one applet ID, an exact workflow path, and explicitly listed
+Git refs and events. To require a protected GitHub environment, set `environment`
+and use the same name in the publishing job. Allowed refs are exact strings;
+wildcards are not supported. Only GitHub-hosted runners are accepted. Pull-request
+events and reusable publishing workflows are not accepted by this first adapter.
+Adding or changing a publisher requires a server configuration change; an
+unregistered repository cannot claim an applet by publishing first.
+
+### Configure the workflow
+
+Set the non-secret repository variable `APELL_STORE_URL` to the same canonical
+origin. Build and pack the applet, then run:
+
+```yaml
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      # Check out the source, install a pinned CLI, and build the applet first.
+      - name: Publish
+        env:
+          APELL_STORE_URL: ${{ vars.APELL_STORE_URL }}
+        run: |
+          apell publish artifacts/example.apel \
+            --store "$APELL_STORE_URL" \
+            --metadata listing.json \
+            --icon icon.png \
+            --auth github-oidc
+```
+
+The [Companion workflow](../.github/workflows/publish-companion.yml) is a complete
+example. It publishes from `main` when the applet manifest changes, or through
+manual dispatch. Advance the applet version before publishing changed content;
+rebuilding an existing version with different bytes is rejected.
+
+The CLI selects OIDC automatically in GitHub Actions. `--auth github-oidc` makes
+that requirement explicit; a missing identity token or failed exchange never
+falls back to the broad local token. `--auth token` explicitly selects the local
+token-file flow. Identity and publishing tokens remain in memory and are not
+written to disk or printed.
+
+The store verifies GitHub's RS256 signature, issuer, audience, time claims, numeric
+repository/owner IDs, and workflow/ref/event/environment claims. It uses GitHub's
+fixed key endpoint with bounded caching and refreshes. Within a running server, each identity token can be
+exchanged once; replay tracking remains until that identity expires. Scoped
+publishing credentials last at most five minutes and never outlive the identity
+token. They permit retries of the same package while valid. Both the parsed applet
+ID and actual package checksum are checked before publication. Restarting the
+store invalidates outstanding scoped credentials and clears the in-memory replay cache.
+
+This establishes which workflow may publish. It does not inspect applet behavior
+or replace runtime permission controls. Protect the authorized branch and workflow
+according to who should be able to release your applet. See GitHub's
+[OIDC reference](https://docs.github.com/en/actions/reference/security/oidc) for the
+claims and job permissions.
 
 ## Release rules
 
@@ -98,13 +195,14 @@ stored for download; it is never executed or served as a website by the store.
 All API responses use JSON with snake_case fields. URLs in catalog responses are
 relative to the store origin.
 
-| Method | Route                                              | Purpose                                                    |
-| ------ | -------------------------------------------------- | ---------------------------------------------------------- |
-| GET    | `/healthz`                                         | Process health                                             |
-| GET    | `/api/v1/applets`                                  | Public catalog, including latest and latest stable release |
-| GET    | `/api/v1/applets/{id}`                             | Listing and complete version history                       |
-| GET    | `/api/v1/applets/{id}/versions/{version}/download` | Immutable `.apel` attachment                               |
-| POST   | `/api/v1/publish`                                  | Authenticated multipart upload                             |
+| Method | Route                                              | Purpose                                                      |
+| ------ | -------------------------------------------------- | ------------------------------------------------------------ |
+| GET    | `/healthz`                                         | Process health                                               |
+| GET    | `/api/v1/applets`                                  | Public catalog, including latest and latest stable release   |
+| GET    | `/api/v1/applets/{id}`                             | Listing and complete version history                         |
+| GET    | `/api/v1/applets/{id}/versions/{version}/download` | Immutable `.apel` attachment                                 |
+| POST   | `/api/v1/publish`                                  | Authenticated multipart upload                               |
+| POST   | `/api/v1/auth/github-actions`                      | Exchange a trusted GitHub identity for a scoped upload token |
 
 Publishing uses `Authorization: Bearer <token>` and multipart fields `package`
 (`.apel` bytes), `metadata` (listing JSON), and optional `icon` (PNG bytes). A new
@@ -124,6 +222,12 @@ authentication happens before the upload body is read. Requests and concurrent
 validation are bounded. The small-store catalog supports up to 256 applets and
 1,024 releases per applet; exceeding those limits is an explicit error.
 
+The OIDC exchange takes `Authorization: Bearer <github-id-token>` and JSON
+`{"applet_id":"example","sha256":"<package-sha256>"}`. Its response contains
+`token` and `expires_at` (Unix seconds) and uses `Cache-Control: no-store`. Use
+that token as the bearer credential on `/api/v1/publish`. The exchange is disabled
+unless trusted-publisher configuration is present.
+
 ## Run locally
 
 ```sh
@@ -138,12 +242,14 @@ Open `http://127.0.0.1:8788`. Generated credentials, data, and web build output 
 ignored by Git. The token must contain 32–512 printable ASCII bytes without spaces.
 Restart the service after changing it.
 
-| Environment variable             | Default          |
-| -------------------------------- | ---------------- |
-| `APELL_STORE_LISTEN`             | `127.0.0.1:8788` |
-| `APELL_STORE_DATA_DIR`           | `store-data`     |
-| `APELL_STORE_WEB_DIR`            | `store/web/dist` |
-| `APELL_STORE_PUBLISH_TOKEN_FILE` | Required         |
+| Environment variable                  | Default                                 |
+| ------------------------------------- | --------------------------------------- |
+| `APELL_STORE_LISTEN`                  | `127.0.0.1:8788`                        |
+| `APELL_STORE_DATA_DIR`                | `store-data`                            |
+| `APELL_STORE_WEB_DIR`                 | `store/web/dist`                        |
+| `APELL_STORE_PUBLISH_TOKEN_FILE`      | Required                                |
+| `APELL_STORE_PUBLIC_URL`              | Unset; required with trusted publishers |
+| `APELL_STORE_TRUSTED_PUBLISHERS_FILE` | Unset; OIDC disabled                    |
 
 ## Deploy
 
@@ -157,6 +263,13 @@ Generic [systemd](../deploy/store/apell-store.service) and
 example domain and certificate paths in a local copy. Keep actual host names,
 addresses, and credentials out of Git. The systemd template uses a dedicated
 service account, a persistent data directory, and a 384 MiB memory limit.
+
+For trusted publishing, put the two OIDC settings in
+`/etc/apell-store/environment`, using the
+[environment example](../deploy/store/environment.example). The systemd unit
+reads this optional file. Keep it and the trusted-publishers JSON readable only by
+the administrator and service account. The server needs outbound HTTPS access to
+GitHub's OIDC key endpoint. No new inbound port is required.
 
 Before deploying, create the service account and token file with restrictive
 permissions. Point `/opt/apell-store/current` at a release directory containing

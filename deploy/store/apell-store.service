@@ -12,6 +12,7 @@ Environment=APELL_STORE_LISTEN=127.0.0.1:8788
 Environment=APELL_STORE_DATA_DIR=/var/lib/apell-store
 Environment=APELL_STORE_WEB_DIR=/opt/apell-store/current/web
 Environment=APELL_STORE_PUBLISH_TOKEN_FILE=/etc/apell-store/publish-token
+EnvironmentFile=-/etc/apell-store/environment
 StateDirectory=apell-store
 StateDirectoryMode=0700
 UMask=0077

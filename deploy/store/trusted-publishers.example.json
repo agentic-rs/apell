@@ -1,0 +1,13 @@
+{
+  "publishers": [
+    {
+      "applet_id": "example",
+      "repository_id": 123456789,
+      "repository_owner_id": 987654321,
+      "workflow": ".github/workflows/publish.yml",
+      "allowed_refs": ["refs/heads/main"],
+      "event_names": ["push", "workflow_dispatch"],
+      "environment": null
+    }
+  ]
+}

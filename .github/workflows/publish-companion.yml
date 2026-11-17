@@ -1,0 +1,60 @@
+name: Publish Companion
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'examples/chatbot/manifest.json'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: publish-companion
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      APELL_STORE_URL: ${{ vars.APELL_STORE_URL }}
+      RUSTUP_TOOLCHAIN: 1.99.0
+      CARGO_BUILD_JOBS: 2
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Check store configuration
+        run: test -n "$APELL_STORE_URL"
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24.10.0
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 10.30.3
+      - name: Set up Rust
+        run: rustup toolchain install 1.99.0 --profile minimal --target wasm32-unknown-unknown
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends pkg-config libssl-dev clang cmake
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Test publishing client
+        run: cargo test --locked -p apell-cli
+      - name: Build Companion and its icon
+        run: |
+          pnpm build:chatbot
+          pnpm exec tauri icon assets/companion.svg --output artifacts/companion-icons
+      - name: Publish with GitHub Actions identity
+        run: |
+          cargo run --locked -p apell-cli --bin apell -- publish artifacts/chatbot.apel \
+            --store "$APELL_STORE_URL" \
+            --metadata examples/chatbot/publish.json \
+            --icon artifacts/companion-icons/128x128@2x.png \
+            --auth github-oidc

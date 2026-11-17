@@ -1,9 +1,11 @@
 mod error;
 mod model;
+mod oidc;
 mod storage;
 
 pub use error::{Result, StoreError};
 pub use model::{Applet, AppletDetail, Catalog, PublishMetadata, PublishResult, Release};
+pub use oidc::{OidcConfig, TrustedPublisher};
 pub use storage::Store;
 
 use axum::{
@@ -32,6 +34,7 @@ pub struct Config {
   pub data_dir: PathBuf,
   pub web_dir: PathBuf,
   pub publish_token: String,
+  pub oidc: Option<OidcConfig>,
 }
 
 impl Config {
@@ -70,6 +73,7 @@ impl Config {
         .map(PathBuf::from)
         .unwrap_or_else(|| "store/web/dist".into()),
       publish_token: token,
+      oidc: OidcConfig::from_env()?,
     })
   }
 }
@@ -87,16 +91,23 @@ fn validate_token(token: &str) -> std::result::Result<(), String> {
 struct AppState {
   store: Store,
   token_hash: [u8; 32],
+  oidc: Option<oidc::Oidc>,
   uploads: Arc<Semaphore>,
   queries: Arc<Semaphore>,
   downloads: Arc<Semaphore>,
 }
 
 pub fn router(config: &Config) -> Result<Router> {
+  let oidc = config.oidc.clone().map(oidc::Oidc::new).transpose()?;
+  router_with_identity(config, oidc)
+}
+
+fn router_with_identity(config: &Config, oidc: Option<oidc::Oidc>) -> Result<Router> {
   validate_token(&config.publish_token).map_err(StoreError::invalid)?;
   let state = AppState {
     store: Store::open(&config.data_dir)?,
     token_hash: Sha256::digest(config.publish_token.as_bytes()).into(),
+    oidc,
     uploads: Arc::new(Semaphore::new(1)),
     queries: Arc::new(Semaphore::new(4)),
     downloads: Arc::new(Semaphore::new(8)),
@@ -110,6 +121,7 @@ pub fn router(config: &Config) -> Result<Router> {
       get(download),
     )
     .route("/v1/publish", post(publish))
+    .route("/v1/auth/github-actions", post(exchange_identity))
     .fallback(not_found);
   let media = Router::new()
     .route("/", any(not_found))
@@ -143,6 +155,7 @@ pub fn router(config: &Config) -> Result<Router> {
 }
 
 async fn response_headers(request: Request, next: Next) -> Response {
+  let authentication = request.uri().path().starts_with("/api/v1/auth/");
   let mut response = next.run(request).await;
   let headers = response.headers_mut();
   headers.insert(
@@ -163,7 +176,9 @@ async fn response_headers(request: Request, next: Next) -> Response {
     HeaderValue::from_static("same-origin"),
   );
   headers.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static("default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"));
-  if !headers.contains_key(header::CACHE_CONTROL) {
+  if authentication {
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+  } else if !headers.contains_key(header::CACHE_CONTROL) {
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
   }
   response
@@ -230,8 +245,28 @@ fn authenticate(headers: &HeaderMap, expected: &[u8; 32]) -> Result<()> {
   Ok(())
 }
 
+async fn exchange_identity(State(state): State<AppState>, request: Request) -> Result<Response> {
+  let oidc = state.oidc.as_ref().ok_or_else(|| {
+    StoreError::new(
+      StatusCode::UNAUTHORIZED,
+      "unauthorized",
+      "Trusted publishing is not configured.",
+    )
+  })?;
+  Ok(Json(oidc.exchange(request).await?).into_response())
+}
+
 async fn publish(State(state): State<AppState>, request: Request) -> Result<Response> {
-  authenticate(request.headers(), &state.token_hash)?;
+  let grant = match authenticate(request.headers(), &state.token_hash) {
+    Ok(()) => None,
+    Err(error) => Some(
+      state
+        .oidc
+        .as_ref()
+        .ok_or(error)?
+        .authenticate(request.headers())?,
+    ),
+  };
   let permit = state
     .uploads
     .clone()
@@ -249,6 +284,9 @@ async fn publish(State(state): State<AppState>, request: Request) -> Result<Resp
   let store = state.store.clone();
   let result = tokio::task::spawn_blocking(move || {
     let _permit = permit;
+    if let Some(grant) = grant {
+      grant.validate_package(&parsed.package, oidc::now())?;
+    }
     store.publish(parsed.package, parsed.metadata, parsed.icon)
   })
   .await

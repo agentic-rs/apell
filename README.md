@@ -109,6 +109,11 @@ For a self-hosted catalog with public downloads and private publishing, see
 `apell publish`; users can browse, install, and update directly in Apell's Store
 screen or install a downloaded `.apel` file.
 
+GitHub Actions can use [trusted publishing](docs/store.md#trusted-publishing-from-github-actions)
+to publish without a saved store token. Register the applet's repository and
+publishing workflow once, then let `apell publish` obtain a scoped credential
+through OIDC.
+
 ### Applet authoring skill
 
 The [Apell Applet skill](skills/apell-applet/SKILL.md) guides agents through packaging and APIs, mobile architecture, and interaction review. It loads the references that match the task.

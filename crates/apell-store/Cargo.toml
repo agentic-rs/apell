@@ -7,9 +7,13 @@ license.workspace = true
 [dependencies]
 apell-package = { path = "../apell-package" }
 axum = { version = "0.8", features = ["multipart"] }
+base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 futures-util = "0.3"
+getrandom = "0.3"
+jsonwebtoken = { version = "12", default-features = false, features = ["rust_crypto"] }
 png = "0.17"
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 semver = "1"
 serde = { version = "1", features = ["derive"] }
@@ -24,5 +28,6 @@ url = "2"
 
 [dev-dependencies]
 http-body-util = "0.1"
+rsa = { version = "0.9", features = ["sha2"] }
 tower = { version = "0.5", features = ["util"] }
 zip = { version = "=4.6.1", default-features = false, features = ["deflate-flate2-zlib-rs"] }

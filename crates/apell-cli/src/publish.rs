@@ -1,3 +1,4 @@
+mod auth;
 mod input;
 
 use apell_core::bundles::{digest, parse, Manifest, MAX_BUNDLE_BYTES};
@@ -11,7 +12,7 @@ use reqwest::{
 use serde::Deserialize;
 use std::{ffi::OsString, io::Read, time::Duration};
 
-pub const USAGE: &str = "Usage: apell publish <file.apel> --store <https-base-url> --metadata <json-file> [--icon <png-file>]";
+pub const USAGE: &str = "Usage: apell publish <file.apel> --store <https-base-url> --metadata <json-file> [--icon <png-file>] [--auth github-oidc|token]";
 const MAX_RESPONSE_BYTES: usize = 64 * 1024;
 
 struct PreparedPublish {
@@ -98,11 +99,9 @@ struct ErrorDetail {
 pub fn run(arguments: &[OsString]) -> Result<(), String> {
   let args = PublishArgs::parse(arguments)?;
   let prepared = PreparedPublish::load(&args)?;
-  let token_file = std::env::var_os("APELL_STORE_PUBLISH_TOKEN_FILE")
-    .filter(|value| !value.is_empty())
-    .ok_or("Set APELL_STORE_PUBLISH_TOKEN_FILE to a file containing the publishing token.")?;
-  let token = input::read_token(std::path::Path::new(&token_file))?;
-  let published = send(&args, &prepared, &token)?;
+  let credential = auth::credential(&args, &prepared)?;
+  let published =
+    send(&args, &prepared, &credential.value).map_err(|error| credential.redact(error))?;
   println!(
     "{} {} {}. SHA-256 {}",
     if published.created {

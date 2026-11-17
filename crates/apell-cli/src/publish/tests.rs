@@ -12,7 +12,7 @@ fn args(values: &[&str]) -> Vec<OsString> {
   values.iter().map(OsString::from).collect()
 }
 
-fn fixture(endpoint: Url) -> PreparedPublish {
+pub(super) fn fixture(endpoint: Url) -> PreparedPublish {
   let root = tempfile::tempdir().unwrap();
   let package = root.path().join("package");
   std::fs::create_dir(&package).unwrap();
@@ -34,12 +34,13 @@ fn fixture(endpoint: Url) -> PreparedPublish {
     package: file,
     metadata,
     icon: None,
+    auth: None,
     endpoint,
   })
   .unwrap()
 }
 
-fn read_request(stream: &mut TcpStream) -> Vec<u8> {
+pub(super) fn read_request(stream: &mut TcpStream) -> Vec<u8> {
   stream
     .set_read_timeout(Some(Duration::from_secs(5)))
     .unwrap();
@@ -59,7 +60,10 @@ fn read_request(stream: &mut TcpStream) -> Vec<u8> {
             .eq_ignore_ascii_case("content-length")
             .then(|| value.trim().parse().unwrap())
         })
-        .expect("multipart length is known");
+        .unwrap_or_else(|| {
+          assert!(headers.starts_with("GET "), "multipart length is known");
+          0
+        });
       let total = offset + 4 + length;
       while bytes.len() < total {
         let count = stream.read(&mut buffer).unwrap();
@@ -206,6 +210,7 @@ fn publication_sends_auth_and_multipart_and_checks_returned_identity() {
     package: "unused.apel".into(),
     metadata: "unused.json".into(),
     icon: None,
+    auth: None,
     endpoint,
   };
   let result = send(&args, &prepared, TOKEN).unwrap();
@@ -242,6 +247,7 @@ fn publishing_does_not_follow_redirects_or_forward_authorization() {
     package: "unused.apel".into(),
     metadata: "unused.json".into(),
     icon: None,
+    auth: None,
     endpoint,
   };
   assert!(send(&args, &prepared, TOKEN)
@@ -295,6 +301,7 @@ fn local_validation_rejects_invalid_packages_metadata_and_icons() {
     package,
     metadata,
     icon: None,
+    auth: None,
     endpoint: input::store_endpoint("https://store.example").unwrap(),
   };
   assert!(PreparedPublish::load(&args).is_err());

@@ -1,0 +1,2 @@
+APELL_STORE_PUBLIC_URL=https://store.example.invalid
+APELL_STORE_TRUSTED_PUBLISHERS_FILE=/etc/apell-store/trusted-publishers.json

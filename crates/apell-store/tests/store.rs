@@ -61,6 +61,7 @@ fn app() -> (tempfile::TempDir, Router) {
     data_dir: root.path().join("data"),
     web_dir: root.path().join("web"),
     publish_token: TOKEN.into(),
+    oidc: None,
   };
   let app = router(&config).unwrap();
   (root, app)

@@ -1,0 +1,5 @@
+{
+  "description": "Chat with your models, attach images and audio, and keep your conversations in Apell.",
+  "project_url": "https://github.com/agentic-rs/apell/tree/main/examples/chatbot",
+  "release_notes": "Published through GitHub Actions trusted publishing. Includes saved conversations, provider and model selection, image and audio input, and generated media."
+}
