@@ -1,4 +1,7 @@
-use super::targets::{Kind, Target};
+use super::{
+  applets::Batch,
+  targets::{Kind, Target},
+};
 use serde::Deserialize;
 use std::{
   env,
@@ -10,7 +13,7 @@ use std::{
 };
 use tempfile::TempDir;
 
-pub(super) fn run(project: &Path, target: &Target) -> Result<(), String> {
+pub(super) fn run(project: &Path, target: &Target, batch: Option<&Batch>) -> Result<(), String> {
   let apple = project.join("src-tauri/gen/apple");
   if !apple.exists() {
     run_command(
@@ -38,8 +41,8 @@ pub(super) fn run(project: &Path, target: &Target) -> Result<(), String> {
   }
   build.arg("--config").arg(config.to_string());
   match target.kind {
-    Kind::Simulator => run_simulator(build, &apple, &target.udid),
-    Kind::Device => run_device(build, &target.udid),
+    Kind::Simulator => run_simulator(build, &apple, &target.udid, batch),
+    Kind::Device => run_device(build, &target.udid, batch),
   }
 }
 
@@ -145,7 +148,12 @@ fn bundle_identifier(app: &Path) -> Result<String, String> {
   Ok(id.into())
 }
 
-fn run_simulator(mut build: Command, apple: &Path, udid: &str) -> Result<(), String> {
+fn run_simulator(
+  mut build: Command,
+  apple: &Path,
+  udid: &str,
+  batch: Option<&Batch>,
+) -> Result<(), String> {
   let (arch, output) = if cfg!(target_arch = "aarch64") {
     ("aarch64-sim", "arm64-sim")
   } else {
@@ -171,10 +179,19 @@ fn run_simulator(mut build: Command, apple: &Path, udid: &str) -> Result<(), Str
     Command::new("open").args(["-a", "Simulator", "--args", "-CurrentDeviceUDID", udid]),
     "open Simulator",
   )?;
-  run_command(
-    Command::new("xcrun").args(["simctl", "launch", "--terminate-running-process", udid, &id]),
-    "launch Apell on the simulator",
-  )
+  let staged = batch
+    .map(|batch| batch.stage_simulator(udid, &id))
+    .transpose()?;
+  let mut launch = Command::new("xcrun");
+  launch.args(["simctl", "launch", "--terminate-running-process", udid, &id]);
+  if let Some(batch) = batch {
+    launch.arg(batch.launch_argument());
+  }
+  run_command(&mut launch, "launch Apell on the simulator")?;
+  if let Some((batch, staged)) = batch.zip(staged.as_ref()) {
+    batch.wait_simulator(staged)?;
+  }
+  Ok(())
 }
 
 // Tauri hosts its Rust build-options service for the entire archive. Its iOS
@@ -227,7 +244,7 @@ fn prepare_archiver(directory: &Path, udid: &str, build: &mut Command) -> Result
   Ok(())
 }
 
-fn run_device(mut build: Command, udid: &str) -> Result<(), String> {
+fn run_device(mut build: Command, udid: &str, batch: Option<&Batch>) -> Result<(), String> {
   let temp =
     TempDir::new().map_err(|e| format!("Could not create a temporary archive directory: {e}"))?;
   prepare_archiver(temp.path(), udid, &mut build)?;
@@ -248,19 +265,31 @@ fn run_device(mut build: Command, udid: &str) -> Result<(), String> {
     "install Apell on the selected iPhone",
   )
   .map_err(|error| format!("{error} Unlock the iPhone and check its connection in Xcode. If Wi-Fi times out, connect by USB and rerun the command."))?;
+  if let Some(batch) = batch {
+    batch.stage_device(udid, &id)?;
+  }
+  let mut launch = Command::new("xcrun");
+  launch.args([
+    "devicectl",
+    "device",
+    "process",
+    "launch",
+    "--device",
+    udid,
+    "--terminate-existing",
+    &id,
+  ]);
+  if let Some(batch) = batch {
+    launch.arg("--").arg(batch.launch_argument());
+  }
   run_command(
-    Command::new("xcrun").args([
-      "devicectl",
-      "device",
-      "process",
-      "launch",
-      "--device",
-      udid,
-      "--terminate-existing",
-      &id,
-    ]),
+    &mut launch,
     "launch Apell (unlock the iPhone and enable Developer Mode if prompted)",
-  )
+  )?;
+  if let Some(batch) = batch {
+    batch.wait_device(udid, &id)?;
+  }
+  Ok(())
 }
 
 #[cfg(test)]

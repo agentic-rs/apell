@@ -4,6 +4,8 @@ mod backend_services;
 mod commands;
 #[cfg(target_os = "macos")]
 mod desktop;
+#[cfg(any(test, all(target_os = "ios", debug_assertions)))]
+mod dev_install;
 mod host;
 mod install;
 #[cfg(target_os = "ios")]
@@ -41,6 +43,8 @@ pub fn run() {
     .setup(|app| {
       let root = app.path().app_data_dir()?;
       let host = host::Host::new(root).map_err(std::io::Error::other)?;
+      #[cfg(all(target_os = "ios", debug_assertions))]
+      dev_install::start(app, &host);
       let origins = navigation::trusted_origins(app.config().build.dev_url.as_ref());
       let boot = navigation::bootstrap(&host.host_key, &origins)?;
       app.manage(host);

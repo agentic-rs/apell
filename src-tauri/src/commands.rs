@@ -68,6 +68,9 @@ pub async fn shell_command(
     "store.config" | "store.set_url" | "store.catalog" | "store.detail" | "store.icon"
     | "store.install" => crate::store_commands::dispatch(app, &host, &method, params).await,
     "applets.list" => {
+      // The first library load must observe any pending developer installs.
+      #[cfg(all(target_os = "ios", debug_assertions))]
+      let _gate = host.store_gate.lock().await;
       let store = host.bundles.clone();
       blocking(move || {
         serde_json::to_value(store.list_report()?).map_err(|_| "Could not encode applets.".into())

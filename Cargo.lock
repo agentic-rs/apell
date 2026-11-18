@@ -106,6 +106,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "url",
+ "uuid",
 ]
 
 [[package]]

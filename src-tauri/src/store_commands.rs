@@ -4,7 +4,10 @@ mod tests;
 
 use crate::host::Host;
 use apell_core::{
-  bundles::{AppletListReport, InstalledApplet, PackageSource, StoreChannel, StoreSource},
+  bundles::{
+    AppletListReport, InstalledApplet, PackageSource, StoreChannel, StoreSource,
+    StoreSwitchSnapshot,
+  },
   store_client::{normalize_store_url, StoreApplet, StoreClient, StoreRelease},
 };
 use serde::{Deserialize, Serialize};
@@ -37,6 +40,7 @@ struct InstallQuery {
   applet_id: String,
   release: StoreRelease,
   expected_installed_sha256: Option<String>,
+  switch_snapshot: Option<StoreSwitchSnapshot>,
   operation_id: String,
 }
 
@@ -58,6 +62,7 @@ struct CatalogResult {
 enum ReleaseAction {
   Install,
   Update,
+  SwitchSource,
   Installed,
   Older,
   Conflict,
@@ -76,6 +81,14 @@ struct DetailResult {
   applet: StoreApplet,
   releases: Vec<ReleaseOption>,
   installed: Option<InstalledApplet>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  switch_snapshot: Option<StoreSwitchSnapshot>,
+}
+
+struct InstallReview<'a> {
+  installed: Option<&'a InstalledApplet>,
+  switch_snapshot: Option<StoreSwitchSnapshot>,
+  blocked: Option<&'static str>,
 }
 
 fn input<T: serde::de::DeserializeOwned>(params: Value) -> Result<T, String> {
@@ -145,23 +158,15 @@ pub async fn dispatch(
         .applets
         .into_iter()
         .map(|applet| {
-          let saved = installed
-            .applets
-            .iter()
-            .find(|saved| saved.manifest.applet_id == applet.applet_id)
-            .cloned();
-          let source_conflict = blocked_install_reason(&installed, &store_url, &applet.applet_id)
-            .is_some()
-            || saved
-              .as_ref()
-              .is_some_and(|saved| !same_store(saved, &store_url, &applet.applet_id));
+          let review = review_install(&installed, &store_url, &applet.applet_id);
+          let source_conflict = review.blocked.is_some() || review.switch_snapshot.is_some();
           let update_available = !source_conflict
-            && saved
-              .as_ref()
+            && review
+              .installed
               .is_some_and(|saved| has_update(&applet, saved));
           CatalogItem {
             applet,
-            installed: saved,
+            installed: review.installed.cloned(),
             update_available,
             source_conflict,
           }
@@ -176,22 +181,12 @@ pub async fn dispatch(
         .detail(&request.applet_id)
         .await?;
       let installed = installed(host).await?;
-      let blocked = blocked_install_reason(&installed, &store_url, &request.applet_id);
-      let saved = installed
-        .applets
-        .into_iter()
-        .find(|saved| saved.manifest.applet_id == request.applet_id);
+      let review = review_install(&installed, &store_url, &request.applet_id);
       let releases = detail
         .releases
         .into_iter()
         .map(|release| {
-          let (action, action_reason) = release_action(
-            &store_url,
-            &request.applet_id,
-            &release,
-            saved.as_ref(),
-            blocked,
-          );
+          let (action, action_reason) = release_action(&release, &review);
           ReleaseOption {
             release,
             action,
@@ -203,7 +198,8 @@ pub async fn dispatch(
         store_url,
         applet: detail.applet,
         releases,
-        installed: saved,
+        installed: review.installed.cloned(),
+        switch_snapshot: review.switch_snapshot,
       })
     }
     "store.icon" => {
@@ -225,29 +221,39 @@ pub async fn dispatch(
   }
 }
 
-fn same_store(installed: &InstalledApplet, store_url: &str, applet_id: &str) -> bool {
-  is_store_source(installed.source.as_ref(), store_url, applet_id)
-}
-
 fn is_store_source(source: Option<&PackageSource>, store_url: &str, applet_id: &str) -> bool {
   matches!(source, Some(PackageSource::Store(source)) if source.store_url == store_url && source.applet_id == applet_id)
 }
 
-fn blocked_install_reason(
-  report: &AppletListReport,
+fn review_install<'a>(
+  report: &'a AppletListReport,
   store_url: &str,
   id: &str,
-) -> Option<&'static str> {
-  if report.unavailable.iter().any(|saved| saved.applet_id == id) {
-    return Some("An unavailable package already uses this applet identity. Its files and data were preserved.");
-  }
-  report
-    .retained_sources
-    .get(id)
-    .filter(|source| !is_store_source(source.as_ref(), store_url, id))
-    .map(|_| {
-      "This applet has saved data from a different source. Reinstall it from its original source."
+) -> InstallReview<'a> {
+  let installed = report
+    .applets
+    .iter()
+    .find(|saved| saved.manifest.applet_id == id);
+  let blocked = report
+    .unavailable
+    .iter()
+    .any(|saved| saved.applet_id == id)
+    .then_some("An unavailable package already uses this applet identity. Its files and data were preserved.");
+  let switch_snapshot = installed
+    .map(|saved| StoreSwitchSnapshot {
+      sha256: saved.sha256.clone(),
+      source: saved.source.clone(),
+      removed: false,
     })
+    .or_else(|| report.retained.get(id).cloned())
+    .filter(|snapshot| {
+      blocked.is_none() && !is_store_source(snapshot.source.as_ref(), store_url, id)
+    });
+  InstallReview {
+    installed,
+    switch_snapshot,
+    blocked,
+  }
 }
 
 fn has_update(applet: &StoreApplet, installed: &InstalledApplet) -> bool {
@@ -266,22 +272,25 @@ fn has_update(applet: &StoreApplet, installed: &InstalledApplet) -> bool {
 }
 
 fn release_action(
-  store_url: &str,
-  applet_id: &str,
   release: &StoreRelease,
-  installed: Option<&InstalledApplet>,
-  blocked: Option<&str>,
+  review: &InstallReview,
 ) -> (ReleaseAction, Option<String>) {
-  if let Some(reason) = blocked {
+  if let Some(reason) = review.blocked {
     return (ReleaseAction::Conflict, Some(reason.into()));
   }
-  let Some(installed) = installed else {
-    return (ReleaseAction::Install, None);
+  let switching = review.switch_snapshot.is_some();
+  let Some(installed) = review.installed else {
+    return (
+      if switching {
+        ReleaseAction::SwitchSource
+      } else {
+        ReleaseAction::Install
+      },
+      None,
+    );
   };
-  if !same_store(installed, store_url, applet_id) {
-    return (ReleaseAction::Conflict, Some("This applet was installed from a file, GitHub, or another store. Update it from its original source.".into()));
-  }
   match release.compare_version(&installed.manifest.version) {
+    Ok(order) if switching && !order.is_lt() => (ReleaseAction::SwitchSource, None),
     Ok(std::cmp::Ordering::Greater) => (ReleaseAction::Update, None),
     Ok(std::cmp::Ordering::Less) => (
       ReleaseAction::Older,
@@ -292,12 +301,48 @@ fn release_action(
     {
       (ReleaseAction::Installed, None)
     }
+    Err(_) => (
+      ReleaseAction::Conflict,
+      Some(
+        "Install a versioned local package before switching this legacy applet to the Store."
+          .into(),
+      ),
+    ),
     _ => (
       ReleaseAction::Conflict,
       Some(
         "This version does not match the installed package. Existing data was preserved.".into(),
       ),
     ),
+  }
+}
+
+fn checked_switch(
+  release: &StoreRelease,
+  review: &InstallReview,
+  expected_installed: Option<&str>,
+  expected_switch: Option<&StoreSwitchSnapshot>,
+) -> Result<bool, String> {
+  let (action, reason) = release_action(release, review);
+  if matches!(action, ReleaseAction::Older | ReleaseAction::Conflict) {
+    return Err(reason.unwrap_or_else(|| "This release cannot be installed.".into()));
+  }
+  if review.installed.map(|saved| saved.sha256.as_str()) != expected_installed {
+    return Err("The installed applet changed. Review its details again.".into());
+  }
+  match (action, expected_switch) {
+    (ReleaseAction::SwitchSource, Some(snapshot))
+      if review.switch_snapshot.as_ref() == Some(snapshot) =>
+    {
+      Ok(true)
+    }
+    (ReleaseAction::SwitchSource, None) => {
+      Err("Confirm the installation source change before installing this release.".into())
+    }
+    (ReleaseAction::SwitchSource, Some(_)) | (_, Some(_)) => {
+      Err("The applet's installation source changed. Review its details again.".into())
+    }
+    _ => Ok(false),
   }
 }
 
@@ -308,26 +353,13 @@ async fn install(app: AppHandle, host: &Host, request: InstallQuery) -> Result<V
   let _gate = host.store_gate.lock().await;
   let store_url = configured(host, &request.store_url).await?;
   let report = installed(host).await?;
-  let saved = report
-    .applets
-    .iter()
-    .find(|saved| saved.manifest.applet_id == request.applet_id);
-  let (action, reason) = release_action(
-    &store_url,
-    &request.applet_id,
+  let review = review_install(&report, &store_url, &request.applet_id);
+  let switching = checked_switch(
     &request.release,
-    saved,
-    blocked_install_reason(&report, &store_url, &request.applet_id),
-  );
-  if !matches!(
-    action,
-    ReleaseAction::Install | ReleaseAction::Update | ReleaseAction::Installed
-  ) {
-    return Err(reason.unwrap_or_else(|| "This release cannot be installed.".into()));
-  }
-  if saved.map(|saved| saved.sha256.as_str()) != request.expected_installed_sha256.as_deref() {
-    return Err("The installed applet changed. Review its details again.".into());
-  }
+    &review,
+    request.expected_installed_sha256.as_deref(),
+    request.switch_snapshot.as_ref(),
+  )?;
   let source = StoreSource {
     store_url: store_url.clone(),
     applet_id: request.applet_id.clone(),
@@ -344,12 +376,20 @@ async fn install(app: AppHandle, host: &Host, request: InstallQuery) -> Result<V
   }).await?;
   let bundles = host.bundles.clone();
   let result = tauri::async_runtime::spawn_blocking(move || {
-    bundles.install_store_release(
-      &bytes,
-      &request.release.sha256,
-      source,
-      request.expected_installed_sha256.as_deref(),
-    )
+    if switching {
+      let snapshot = request
+        .switch_snapshot
+        .as_ref()
+        .ok_or("Missing installation source snapshot.")?;
+      bundles.switch_to_store_release(&bytes, &request.release.sha256, source, snapshot)
+    } else {
+      bundles.install_store_release(
+        &bytes,
+        &request.release.sha256,
+        source,
+        request.expected_installed_sha256.as_deref(),
+      )
+    }
   })
   .await
   .map_err(|_| "Store installation was interrupted.")??;

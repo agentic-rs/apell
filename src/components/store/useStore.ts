@@ -164,7 +164,10 @@ export function useStore(
     });
 
   const install = (release: StoreReleaseOption) => {
-    if (!detail || !current_url.current || !['install', 'update'].includes(release.action)) return;
+    if (!detail || !current_url.current) return;
+    const switching = release.action === 'switch_source';
+    if (switching ? !detail.switch_snapshot : !['install', 'update'].includes(release.action))
+      return;
     const snapshot = detail;
     void run('install', async (operation_id) => {
       setProgress(undefined);
@@ -183,10 +186,13 @@ export function useStore(
           applet_id: snapshot.applet.applet_id,
           release,
           expected_installed_sha256: snapshot.installed?.sha256 ?? null,
+          ...(switching ? { switch_snapshot: snapshot.switch_snapshot } : {}),
           operation_id,
         });
         if (!scope.current.alive) return;
-        setStatus('Installed. Restart Apell to use this version if the applet is already running.');
+        setStatus(
+          `${switching ? 'Switched to this store.' : 'Installed.'} Restart Apell to use this version if the applet is already running.`,
+        );
         await Promise.all([
           loadDetail(snapshot.store_url, snapshot.applet.applet_id, release.version),
           loadCatalog(snapshot.store_url),

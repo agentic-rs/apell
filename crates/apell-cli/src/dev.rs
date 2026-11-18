@@ -1,4 +1,6 @@
 #[cfg(target_os = "macos")]
+mod applets;
+#[cfg(target_os = "macos")]
 mod runner;
 #[cfg(target_os = "macos")]
 mod targets;
@@ -8,14 +10,18 @@ use std::path::Path;
 use std::{ffi::OsString, path::PathBuf};
 
 pub const USAGE: &str =
-  "Usage: apell dev [--list] [--target simulator|device|NAME|UDID] [--project PATH]
-Build and launch the Apell shell from a checkout. Run without --target to choose an iPhone.";
+  "Usage: apell dev [--list] [--target simulator|device|NAME|UDID] [--project PATH] [--install FILE.apel]...
+Build and launch the Apell shell from a checkout. Run without --target to choose an iPhone.
+Repeat --install to install multiple local applet packages.";
+
+const MAX_APPLETS: usize = 16;
 
 #[derive(Default)]
 struct Options {
   list: bool,
   target: Option<String>,
   project: Option<PathBuf>,
+  install: Vec<PathBuf>,
 }
 
 impl Options {
@@ -40,8 +46,21 @@ impl Options {
             .ok_or(USAGE)?;
           options.project = Some(value.into());
         }
+        Some("--install") => {
+          let value = args
+            .next()
+            .filter(|arg| !arg.is_empty() && !arg.to_string_lossy().starts_with("--"))
+            .ok_or(USAGE)?;
+          if options.install.len() == MAX_APPLETS {
+            return Err(format!("Install at most {MAX_APPLETS} applets per run."));
+          }
+          options.install.push(value.into());
+        }
         _ => return Err(USAGE.into()),
       }
+    }
+    if options.list && !options.install.is_empty() {
+      return Err("--list cannot install applets.".into());
     }
     if options.list
       && options
@@ -94,6 +113,7 @@ pub fn run(args: &[OsString]) -> Result<(), String> {
     }
     let path = options.project.unwrap_or_else(|| PathBuf::from("."));
     let root = checkout(&path)?;
+    let applets = applets::Batch::prepare(&options.install)?;
     let available = targets::discover(filter)?;
     let target = targets::select(&available, options.target.as_deref())?;
     // Both SDKs use the same generated Xcode project and archive paths.
@@ -106,7 +126,7 @@ pub fn run(args: &[OsString]) -> Result<(), String> {
       std::fs::TryLockError::Error(error) => format!("Could not lock the checkout: {error}"),
     })?;
     println!("Running Apell on {target}");
-    runner::run(&root, &target)
+    runner::run(&root, &target, applets.as_ref())
   }
   #[cfg(not(target_os = "macos"))]
   {
@@ -127,9 +147,31 @@ mod tests {
       &["--project"],
       &["--target", "device", "--target", "simulator"],
       &["--list", "--target", "some-device"],
+      &["--install"],
+      &["--list", "--install", "test.apel"],
     ] {
       let args = args.iter().map(OsString::from).collect::<Vec<_>>();
       assert!(Options::parse(&args).is_err());
     }
+  }
+
+  #[test]
+  fn accepts_multiple_packages_with_paths_relative_to_the_caller() {
+    let args = [
+      "--project",
+      "checkout",
+      "--install",
+      "../Demo App.apel",
+      "--install",
+      "other.apel",
+    ];
+    let options = Options::parse(&args.map(OsString::from)).unwrap();
+    assert_eq!(
+      options.install,
+      [
+        PathBuf::from("../Demo App.apel"),
+        PathBuf::from("other.apel")
+      ]
+    );
   }
 }

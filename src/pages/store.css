@@ -265,6 +265,11 @@
   align-items: center;
   gap: 18px;
 }
+.store-detail-heading > div:last-child,
+.store-source-review {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 .store-detail-heading h2 {
   margin: 0;
   font-size: 25px;

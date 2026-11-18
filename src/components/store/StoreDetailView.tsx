@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import type { InstallProgress, StoreDetail, StoreReleaseOption } from '../../lib/types';
 import {
   newStoreAccess,
@@ -5,8 +6,10 @@ import {
   recommendedStoreRelease,
   storeDate,
   storeSize,
+  storeSourceLabel,
 } from '../../lib/storeState';
 import { Icon } from '../Icon';
+import { Sheet } from '../Sheet';
 import { StoreIcon } from './StoreIcon';
 
 export function StoreDetailView({
@@ -30,10 +33,15 @@ export function StoreDetailView({
   onOpen: () => void;
   onBack: () => void;
 }) {
+  const [confirm_switch, setConfirmSwitch] = useState(false);
   const release = detail.releases.find((item) => item.version === selected_version);
   const recommended = recommendedStoreRelease(detail);
   const new_access = release ? newStoreAccess(release, detail.installed) : [];
-  const can_install = release && (release.action === 'install' || release.action === 'update');
+  const previous = detail.switch_snapshot;
+  const previous_source = previous ? storeSourceLabel(previous.source) : null;
+  const can_switch = release?.action === 'switch_source' && !!previous;
+  const can_install =
+    release && (release.action === 'install' || release.action === 'update' || can_switch);
   return (
     <section className="store-detail" aria-label={detail.applet.name}>
       <button className="store-back" disabled={busy} onClick={onBack}>
@@ -49,7 +57,11 @@ export function StoreDetailView({
         <div>
           <h2>{detail.applet.name}</h2>
           <p>
-            {detail.installed ? `Installed · ${detail.installed.version}` : 'An applet for Apell'}
+            {detail.installed
+              ? `Installed · ${detail.installed.version}${previous_source ? ` · From ${previous_source}` : ''}`
+              : previous_source
+                ? `Saved data from ${previous_source}`
+                : 'An applet for Apell'}
           </p>
         </div>
       </div>
@@ -88,7 +100,7 @@ export function StoreDetailView({
               )}
               {!!new_access.length && can_install && (
                 <div className="store-new-access">
-                  <strong>New access in this update</strong>
+                  <strong>New access in this version</strong>
                   <ul>
                     {new_access.map((name) => (
                       <li key={name}>{name}</li>
@@ -102,13 +114,15 @@ export function StoreDetailView({
                   <button
                     className="store-primary"
                     disabled={busy}
-                    onClick={() => onInstall(release)}
+                    onClick={() => (can_switch ? setConfirmSwitch(true) : onInstall(release))}
                   >
                     {installing
                       ? 'Installing…'
-                      : release.action === 'update'
-                        ? `Update to ${release.version}`
-                        : 'Install applet'}
+                      : can_switch
+                        ? 'Switch to this Store'
+                        : release.action === 'update'
+                          ? `Update to ${release.version}`
+                          : 'Install applet'}
                   </button>
                 )}
                 {detail.installed && (
@@ -202,6 +216,35 @@ export function StoreDetailView({
           </div>
         )}
       </div>
+      {release && can_switch && (
+        <Sheet
+          open={confirm_switch}
+          title="Switch installation source?"
+          onClose={() => setConfirmSwitch(false)}
+        >
+          <p className="store-source-review">
+            Install {detail.applet.name} {release.version} from {detail.store_url} instead of{' '}
+            {previous_source}. Future updates will come from this store.
+          </p>
+          <p>
+            This copy will have access to the applet’s saved data, including secure storage if
+            declared. Remembered device permissions from the current source won’t carry over.
+          </p>
+          <div className="store-form-actions">
+            <button onClick={() => setConfirmSwitch(false)}>Cancel</button>
+            <button
+              className="store-primary"
+              disabled={busy}
+              onClick={() => {
+                setConfirmSwitch(false);
+                onInstall(release);
+              }}
+            >
+              Switch and install
+            </button>
+          </div>
+        </Sheet>
+      )}
     </section>
   );
 }
