@@ -687,54 +687,76 @@ fn store_installs_validate_source_and_cannot_take_over_file_or_github_ownership(
 }
 
 #[test]
-fn store_channel_changes_keep_ownership_and_equal_precedence_releases_are_immutable() {
+fn existing_preview_store_installs_follow_nightly() {
+  let mut source = serde_json::to_value(store_source(StoreChannel::Stable)).unwrap();
+  source["channel"] = "preview".into();
+  let migrated: StoreSource = serde_json::from_value(source).unwrap();
+  assert_eq!(migrated.channel, StoreChannel::Nightly);
+  assert_eq!(serde_json::to_value(migrated).unwrap()["channel"], "nightly");
+}
+
+#[test]
+fn store_channel_changes_require_the_reviewed_state_and_preserve_release_immutability() {
   let dir = tempfile::tempdir().unwrap();
   let store = BundleStore::new(dir.path().into());
   let first = package("sample", "1.0.0");
   let hash = digest(&first);
   let stable = store_source(StoreChannel::Stable);
-  let preview = store_source(StoreChannel::Preview);
+  let nightly = store_source(StoreChannel::Nightly);
   store
-    .install_store_release(&first, &hash, stable, None)
+    .install_store_release(&first, &hash, stable.clone(), None)
     .unwrap();
+  let next = package("sample", "2.0.0-nightly.1");
+  let next_hash = digest(&next);
+  assert!(store
+    .install_store_release(&next, &next_hash, nightly.clone(), Some(&hash))
+    .is_err());
+  let snapshot = StoreSwitchSnapshot {
+    sha256: hash.clone(),
+    source: Some(stable.into()),
+    removed: false,
+  };
   let changed_channel = store
-    .install_store_release(&first, &hash, preview.clone(), Some(&hash))
+    .switch_store_channel(&next, &next_hash, nightly.clone(), &snapshot)
     .unwrap();
-  assert_eq!(changed_channel.source, Some(preview.clone().into()));
+  assert_eq!(changed_channel.source, Some(nightly.clone().into()));
+  assert!(store
+    .switch_store_channel(&next, &next_hash, nightly.clone(), &snapshot)
+    .is_err());
   let changed = archive(&[
-    ("manifest.json", &manifest("sample", "1.0.0")),
+    ("manifest.json", &manifest("sample", "2.0.0-nightly.1")),
     ("index.html", b"replacement"),
   ]);
   for bytes in [
     changed,
-    package("sample", "1.0.0+build.2"),
-    package("sample", "0.9.0"),
+    package("sample", "2.0.0-nightly.1+build.2"),
+    package("sample", "1.9.0-nightly.1"),
   ] {
     assert!(store
-      .install_store_release(&bytes, &digest(&bytes), preview.clone(), Some(&hash))
+      .install_store_release(&bytes, &digest(&bytes), nightly.clone(), Some(&next_hash))
       .is_err());
-    assert_eq!(store.installed("sample").unwrap().sha256, hash);
+    assert_eq!(store.installed("sample").unwrap().sha256, next_hash);
   }
-  let next = package("sample", "2.0.0");
+  let next = package("sample", "2.0.0-nightly.2");
   assert!(store
     .install_store_release(
       &next,
       &digest(&next),
       StoreSource {
         store_url: "https://another.example".into(),
-        ..preview.clone()
+        ..nightly.clone()
       },
-      Some(&hash)
+      Some(&next_hash)
     )
     .is_err());
   store
-    .install_store_release(&next, &digest(&next), preview.clone(), Some(&hash))
+    .install_store_release(&next, &digest(&next), nightly.clone(), Some(&next_hash))
     .unwrap();
   let reopened = BundleStore::new(dir.path().into())
     .installed("sample")
     .unwrap();
-  assert_eq!(reopened.source, Some(preview.into()));
-  assert_eq!(reopened.manifest.version, "2.0.0");
+  assert_eq!(reopened.source, Some(nightly.into()));
+  assert_eq!(reopened.manifest.version, "2.0.0-nightly.2");
 }
 
 #[test]

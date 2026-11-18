@@ -14,11 +14,16 @@ import type {
   AppletSession,
   InstallProgress,
   StoreCatalog,
+  StoreChannel,
   StoreConfig,
   StoreDetail,
   StoreReleaseOption,
 } from '../../lib/types';
-import { recommendedStoreRelease } from '../../lib/storeState';
+import {
+  recommendedStoreRelease,
+  storeChannelName,
+  storeReleaseChannel,
+} from '../../lib/storeState';
 
 type StoreOperation = 'save' | 'install' | 'open' | 'restart';
 
@@ -45,6 +50,7 @@ export function useStore(
   const [progress, setProgress] = useState<InstallProgress>();
   const scope = useRef({ alive: false, config: 0, catalog: 0, detail: 0, operation: '' });
   const current_url = useRef<string | null>(null);
+  const detail_channel = useRef<StoreChannel | undefined>(undefined);
 
   const loadCatalog = async (store_url: string) => {
     const request = ++scope.current.catalog;
@@ -65,7 +71,12 @@ export function useStore(
     }
   };
 
-  const loadDetail = async (store_url: string, applet_id: string, version?: string) => {
+  const loadDetail = async (
+    store_url: string,
+    applet_id: string,
+    version?: string,
+    channel?: StoreChannel,
+  ) => {
     const request = ++scope.current.detail;
     setSelectedId(applet_id);
     setDetail(undefined);
@@ -82,7 +93,7 @@ export function useStore(
         setSelectedVersion(
           version && result.releases.some((release) => release.version === version)
             ? version
-            : recommendedStoreRelease(result).version,
+            : recommendedStoreRelease(result, channel).version,
         );
       }
     } catch (error) {
@@ -168,11 +179,13 @@ export function useStore(
       if (result.store_url) void loadCatalog(result.store_url);
     });
 
-  const install = (release: StoreReleaseOption) => {
+  const install = (release: StoreReleaseOption, confirmed_channel_switch = false) => {
     if (!detail || !current_url.current) return;
     const switching = release.action === 'switch_source';
-    if (switching ? !detail.switch_snapshot : !['install', 'update'].includes(release.action))
-      return;
+    const switching_channel = release.action === 'switch_channel';
+    if (switching && !detail.switch_snapshot) return;
+    if (switching_channel && (!confirmed_channel_switch || !detail.channel_snapshot)) return;
+    if (!switching && !switching_channel && !['install', 'update'].includes(release.action)) return;
     const snapshot = detail;
     void run('install', async (operation_id) => {
       setRestartAfterInstall(undefined);
@@ -193,6 +206,7 @@ export function useStore(
           release,
           expected_installed_sha256: snapshot.installed?.sha256 ?? null,
           ...(switching ? { switch_snapshot: snapshot.switch_snapshot } : {}),
+          ...(switching_channel ? { channel_snapshot: snapshot.channel_snapshot } : {}),
           operation_id,
         });
         if (!scope.current.alive) return;
@@ -211,7 +225,13 @@ export function useStore(
           setStatus('Download paused. Continue when you’re ready.');
           return;
         }
-        setStatus(switching ? 'Switched to this store.' : 'Installed.');
+        setStatus(
+          switching
+            ? 'Switched to this store.'
+            : switching_channel
+              ? `Switched to ${storeChannelName(storeReleaseChannel(release))}.`
+              : 'Installed.',
+        );
         if (installed.restart_required) setRestartAfterInstall(installed.applet.applet_id);
         void loadDetail(snapshot.store_url, snapshot.applet.applet_id, release.version);
         void loadCatalog(snapshot.store_url);
@@ -252,19 +272,21 @@ export function useStore(
     saveAddress,
     closeDetail,
     install,
-    openDetail: (applet_id: string) => {
+    openDetail: (applet_id: string, channel?: StoreChannel) => {
       setStatus('');
       setActionError('');
       setRestartAfterInstall(undefined);
-      if (current_url.current && !scope.current.operation)
-        void loadDetail(current_url.current, applet_id);
+      if (current_url.current && !scope.current.operation) {
+        detail_channel.current = channel;
+        void loadDetail(current_url.current, applet_id, undefined, channel);
+      }
     },
     refreshCatalog: () => {
       if (current_url.current && !scope.current.operation) void loadCatalog(current_url.current);
     },
     retryDetail: () => {
       if (current_url.current && selected_id && !scope.current.operation)
-        void loadDetail(current_url.current, selected_id);
+        void loadDetail(current_url.current, selected_id, undefined, detail_channel.current);
     },
     openApplet: () => {
       if (detail?.installed) openInstalled(detail.applet.applet_id, detail.restart_required);

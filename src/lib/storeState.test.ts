@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { matchingStoreApplets, newStoreAccess, recommendedStoreRelease } from './storeState';
+import {
+  matchingStoreApplets,
+  newStoreAccess,
+  recommendedStoreRelease,
+  storeChannelRelease,
+} from './storeState';
 import type { InstalledApplet, StoreCatalogEntry, StoreDetail, StoreRelease } from './types';
 
 const store_url = 'https://store.example.invalid';
@@ -16,7 +21,7 @@ const stable: StoreRelease = {
   download_url: '/api/downloads/chat/1.0.0.apel',
   prerelease: false,
 };
-const preview: StoreRelease = { ...stable, version: '2.0.0-beta.1', prerelease: true };
+const nightly: StoreRelease = { ...stable, version: '1.0.0-nightly.1', prerelease: true };
 const installed: InstalledApplet = {
   schema_version: 1,
   api_version: 1,
@@ -34,8 +39,9 @@ const applet: StoreCatalogEntry = {
   description: 'A helpful companion',
   icon_url: null,
   project_url: null,
-  latest_release: preview,
+  latest_release: stable,
   latest_stable_release: stable,
+  latest_nightly_release: nightly,
   installed,
   update_available: true,
   source_conflict: false,
@@ -46,39 +52,49 @@ const detail: StoreDetail = {
   installed,
   restart_required: false,
   releases: [
-    { ...preview, action: 'update' },
     { ...stable, action: 'installed' },
+    { ...nightly, action: 'older' },
   ],
 };
 
 describe('store release review', () => {
-  it('recommends stable for a new install, falling back to a preview when needed', () => {
+  it('recommends stable for a new install, falling back to a nightly-only release when needed', () => {
     expect(recommendedStoreRelease({ ...detail, installed: null })).toBe(stable);
     expect(
       recommendedStoreRelease({
         ...detail,
         installed: null,
-        applet: { ...applet, latest_stable_release: null },
+        applet: { ...applet, latest_release: nightly, latest_stable_release: null },
       }),
-    ).toBe(preview);
+    ).toBe(nightly);
   });
 
-  it('follows previews only for the installed applet’s own store source', () => {
-    const preview_install: InstalledApplet = {
+  it('follows Nightly only for the installed applet’s own store source', () => {
+    const nightly_install: InstalledApplet = {
       ...installed,
-      source: { kind: 'store', store_url, applet_id: 'chat', channel: 'preview' },
+      source: { kind: 'store', store_url, applet_id: 'chat', channel: 'nightly' },
     };
     expect(recommendedStoreRelease(detail)).toBe(stable);
-    expect(recommendedStoreRelease({ ...detail, installed: preview_install })).toBe(preview);
+    expect(recommendedStoreRelease({ ...detail, installed: nightly_install })).toBe(nightly);
+    expect(recommendedStoreRelease(detail, 'nightly')).toBe(nightly);
     expect(
       recommendedStoreRelease({
         ...detail,
-        installed: preview_install,
+        installed: nightly_install,
         store_url: 'https://other.example.invalid',
       }),
     ).toBe(stable);
     expect(recommendedStoreRelease({ ...detail, installed: { ...installed, source: null } })).toBe(
       stable,
+    );
+  });
+
+  it('does not treat the newest stable version as a nightly on an older Store', () => {
+    const legacy = { ...applet, latest_nightly_release: undefined };
+    expect(storeChannelRelease(legacy, 'nightly')).toBeNull();
+    expect(storeChannelRelease({ ...legacy, latest_release: nightly }, 'nightly')).toBe(nightly);
+    expect(recommendedStoreRelease({ ...detail, applet: legacy }, 'nightly').version).toBe(
+      nightly.version,
     );
   });
 
@@ -94,6 +110,13 @@ describe('store release review', () => {
 });
 
 describe('store catalog filtering', () => {
+  it('shows nightly-only applets after choosing Nightly, while Updates spans installed channels', () => {
+    const nightly_only = { ...applet, latest_release: nightly, latest_stable_release: null };
+    expect(matchingStoreApplets([nightly_only], '', false, 'stable')).toEqual([]);
+    expect(matchingStoreApplets([nightly_only], '', false, 'nightly')).toEqual([nightly_only]);
+    expect(matchingStoreApplets([nightly_only], '', true, 'stable')).toEqual([nightly_only]);
+  });
+
   it('shows upgrades only from the matching installation source', () => {
     const conflict = { ...applet, applet_id: 'external', source_conflict: true };
     const current = { ...applet, applet_id: 'current', update_available: false };

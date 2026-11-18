@@ -20,6 +20,7 @@ export interface Applet {
   icon_url: string | null;
   latest_release: Release;
   latest_stable_release: Release | null;
+  latest_nightly_release?: Release | null;
 }
 
 export interface AppletDetails {

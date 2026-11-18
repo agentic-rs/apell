@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { AppletSession } from '../lib/types';
+import type { AppletSession, StoreChannel } from '../lib/types';
 import { useBackAction } from '../lib/backNavigation';
 import { StoreAddress } from '../components/store/StoreAddress';
 import { StoreCatalogView } from '../components/store/StoreCatalogView';
@@ -17,6 +17,7 @@ export function Store({
   const state = useStore(onLaunch, onBusyChange);
   const [query, setQuery] = useState('');
   const [updates_only, setUpdatesOnly] = useState(false);
+  const [channel, setChannel] = useState<StoreChannel>('stable');
   const can_leave_address = state.address_open && !!(state.config?.store_url || state.config_error);
   useBackAction(25, can_leave_address || !!state.selected_id, () => {
     if (state.operation) return;
@@ -113,11 +114,18 @@ export function Store({
           error={state.catalog_error}
           query={query}
           updates_only={updates_only}
+          channel={channel}
           onQuery={setQuery}
           onFilter={setUpdatesOnly}
+          onChannel={setChannel}
           onRefresh={state.refreshCatalog}
           onAddress={() => state.setAddressOpen(true)}
-          onSelect={state.openDetail}
+          onSelect={(applet_id) =>
+            state.openDetail(
+              applet_id,
+              !updates_only && channel === 'nightly' ? channel : undefined,
+            )
+          }
         />
       )}
     </div>

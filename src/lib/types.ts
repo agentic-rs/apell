@@ -26,7 +26,7 @@ export type PackageSource =
       kind: 'store';
       store_url: string;
       applet_id: string;
-      channel: 'stable' | 'preview';
+      channel: StoreChannel;
     };
 export interface UnavailableApplet {
   applet_id: string;
@@ -66,6 +66,7 @@ export interface GitHubRelease {
 export interface StoreConfig {
   store_url: string | null;
 }
+export type StoreChannel = 'stable' | 'nightly';
 export interface StoreRelease {
   version: string;
   sha256: string;
@@ -87,6 +88,7 @@ export interface StoreApplet {
   icon_url: string | null;
   latest_release: StoreRelease;
   latest_stable_release: StoreRelease | null;
+  latest_nightly_release?: StoreRelease | null;
 }
 export interface StoreCatalogEntry extends StoreApplet {
   installed: InstalledApplet | null;
@@ -98,7 +100,7 @@ export interface StoreCatalog {
   applets: StoreCatalogEntry[];
 }
 export type StoreReleaseAction =
-  'install' | 'update' | 'switch_source' | 'installed' | 'older' | 'conflict';
+  'install' | 'update' | 'switch_source' | 'switch_channel' | 'installed' | 'older' | 'conflict';
 export interface StoreReleaseOption extends StoreRelease {
   action: StoreReleaseAction;
   action_reason?: string;
@@ -115,7 +117,9 @@ export interface StoreDetail {
   releases: StoreReleaseOption[];
   installed: InstalledApplet | null;
   restart_required: boolean;
+  installed_channel?: StoreChannel;
   switch_snapshot?: StoreSwitchSnapshot;
+  channel_snapshot?: StoreSwitchSnapshot;
 }
 export interface StoreInstallRequest {
   store_url: string;
@@ -123,6 +127,7 @@ export interface StoreInstallRequest {
   release: StoreRelease;
   expected_installed_sha256: string | null;
   switch_snapshot?: StoreSwitchSnapshot;
+  channel_snapshot?: StoreSwitchSnapshot;
   operation_id: string;
 }
 export type StoreInstallResult =

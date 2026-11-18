@@ -106,10 +106,10 @@ impl StoreClient {
     if !crate::valid_name(applet_id) {
       return Err("Invalid applet identity.".into());
     }
-    let detail: StoreDetail = self
+    let mut detail: StoreDetail = self
       .json(&format!("/api/v1/applets/{applet_id}"), 16 * 1024 * 1024)
       .await?;
-    detail.validate(applet_id)?;
+    detail.validate_and_fill_nightly_release(applet_id)?;
     Ok(detail)
   }
 

@@ -406,6 +406,10 @@ fn semver_order_and_stable_selection_are_independent_of_upload_order() {
   let detail = store.detail("sample").unwrap();
   assert_eq!(detail.applet.latest_release.version, "2.0.0-nightly.10");
   assert_eq!(
+    detail.applet.latest_nightly_release.unwrap().version,
+    "2.0.0-nightly.10"
+  );
+  assert_eq!(
     detail.applet.latest_stable_release.unwrap().version,
     "1.10.0"
   );
@@ -430,6 +434,37 @@ fn semver_order_and_stable_selection_are_independent_of_upload_order() {
       .status,
     StatusCode::CONFLICT
   );
+}
+
+#[test]
+fn stable_publication_does_not_replace_the_nightly_head() {
+  let root = tempfile::tempdir().unwrap();
+  let store = Store::open(root.path()).unwrap();
+  // Older previews are Nightly without changing their immutable version.
+  for version in ["1.9.0-rc.3", "2.0.0"] {
+    store
+      .publish(package(version, "sample"), metadata(), None)
+      .unwrap();
+  }
+  let applet = store.detail("sample").unwrap().applet;
+  assert_eq!(applet.latest_nightly_release.unwrap().version, "1.9.0-rc.3");
+  // A Stable version ahead of every nightly must never eclipse that channel.
+  for version in ["1.10.0-nightly.10", "1.10.0-nightly.2"] {
+    store
+      .publish(package(version, "sample"), metadata(), None)
+      .unwrap();
+  }
+  for applet in [
+    store.catalog().unwrap().applets.remove(0),
+    store.detail("sample").unwrap().applet,
+  ] {
+    assert_eq!(applet.latest_release.version, "2.0.0");
+    assert_eq!(applet.latest_stable_release.unwrap().version, "2.0.0");
+    assert_eq!(
+      applet.latest_nightly_release.unwrap().version,
+      "1.10.0-nightly.10"
+    );
+  }
 }
 
 #[test]

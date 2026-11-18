@@ -344,7 +344,7 @@ mod tests {
       .unwrap();
     let mut update = installed(
       StoreSource {
-        channel: StoreChannel::Preview,
+        channel: StoreChannel::Nightly,
         ..stable.clone()
       }
       .into(),

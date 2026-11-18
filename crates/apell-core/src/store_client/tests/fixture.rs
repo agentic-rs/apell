@@ -52,6 +52,7 @@ pub fn applet(release: &StoreRelease) -> StoreApplet {
     icon_url: None,
     latest_release: release.clone(),
     latest_stable_release: (!release.prerelease).then(|| release.clone()),
+    latest_nightly_release: release.prerelease.then(|| release.clone()),
   }
 }
 pub fn detail(release: &StoreRelease) -> StoreDetail {

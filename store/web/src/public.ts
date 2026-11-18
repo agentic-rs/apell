@@ -1,5 +1,14 @@
 import type { Applet, AppletDetails, Release } from './types';
 import { button, element, link } from './dom';
+import {
+  channel_labels,
+  channelPath,
+  getReleaseChannel,
+  latestInChannel,
+  selectedChannel,
+  setChannel,
+  type ReleaseChannel,
+} from './channels';
 
 function localUrl(value: string): string | undefined {
   if (!value.startsWith('/') || value.startsWith('//')) return undefined;
@@ -38,13 +47,25 @@ function icon(applet: Applet, class_name = ''): HTMLElement {
 function badge(release: Release): HTMLElement {
   return element(
     'span',
-    `badge${release.prerelease ? ' preview' : ''}`,
-    release.prerelease ? 'Preview' : 'Stable',
+    `badge${release.prerelease ? ' nightly' : ''}`,
+    channel_labels[getReleaseChannel(release)],
   );
 }
 
-function preferredRelease(applet: Applet): Release {
-  return applet.latest_stable_release ?? applet.latest_release;
+function channelPicker(onSelect: (channel: ReleaseChannel) => void) {
+  const group = element('div', 'channel-picker');
+  group.setAttribute('role', 'group');
+  group.setAttribute('aria-label', 'Release channel');
+  const stable = button(channel_labels.stable, () => onSelect('stable'));
+  const nightly = button(channel_labels.nightly, () => onSelect('nightly'));
+  group.append(stable, nightly);
+  return {
+    group,
+    sync: (channel: ReleaseChannel) => {
+      stable.setAttribute('aria-pressed', String(channel === 'stable'));
+      nightly.setAttribute('aria-pressed', String(channel === 'nightly'));
+    },
+  };
 }
 
 function sizeLabel(bytes: number): string {
@@ -72,6 +93,7 @@ function state(title: string, description: string): HTMLElement {
 
 export function renderCatalog(main: HTMLElement, applets: Applet[]): void {
   document.title = 'Apell Store';
+  let channel = selectedChannel(new URL(location.href));
   const introduction = element('section', 'catalog-intro');
   const copy = element('div');
   copy.append(
@@ -97,32 +119,44 @@ export function renderCatalog(main: HTMLElement, applets: Applet[]): void {
   count.setAttribute('role', 'status');
   const grid = element('ul', 'applet-grid');
   const search_state = element('div');
+  const picker = channelPicker((next) => {
+    channel = next;
+    filter();
+  });
   function filter(): void {
+    picker.sync(channel);
     const query = search_input.value.trim().toLocaleLowerCase();
-    const matches = applets.filter((applet) =>
+    const available = applets.flatMap((applet) => {
+      const release = latestInChannel(applet, channel);
+      return release ? [{ applet, release }] : [];
+    });
+    const matches = available.filter(({ applet }) =>
       `${applet.name} ${applet.description}`.toLocaleLowerCase().includes(query),
     );
     count.textContent = `${matches.length} ${matches.length === 1 ? 'applet' : 'applets'}`;
-    grid.replaceChildren(...matches.map(renderCard));
+    grid.replaceChildren(...matches.map(({ applet, release }) => renderCard(applet, release)));
     search_state.replaceChildren();
     if (!matches.length) {
       search_state.append(
-        applets.length
+        available.length
           ? state('Nothing here matches yet.', 'Try another name or a shorter search.')
           : state(
-              'The collection is on its way.',
-              'Published applets will appear here, ready to download.',
+              `No ${channel_labels[channel]} releases yet.`,
+              `Check the ${channel_labels[channel === 'stable' ? 'nightly' : 'stable']} channel for more applets.`,
             ),
       );
     }
     const url = new URL(location.href);
     if (search_input.value) url.searchParams.set('q', search_input.value);
     else url.searchParams.delete('q');
+    setChannel(url, channel);
     history.replaceState(null, '', url);
   }
   search_input.addEventListener('input', filter);
   search_form.addEventListener('submit', (event) => event.preventDefault());
-  catalog.append(search_form, count, grid, search_state);
+  const filters = element('div', 'catalog-filters');
+  filters.append(search_form, picker.group);
+  catalog.append(filters, count, grid, search_state);
   const instructions = element('aside', 'install-tip');
   instructions.append(
     element('strong', '', 'New to applets?'),
@@ -136,13 +170,16 @@ export function renderCatalog(main: HTMLElement, applets: Applet[]): void {
   filter();
 }
 
-function renderCard(applet: Applet): HTMLLIElement {
+function renderCard(applet: Applet, release: Release): HTMLLIElement {
   const item = element('li');
-  const card = link('', `/applets/${encodeURIComponent(applet.applet_id)}`, 'applet-card');
+  const card = link(
+    '',
+    channelPath(`/applets/${encodeURIComponent(applet.applet_id)}`, getReleaseChannel(release)),
+    'applet-card',
+  );
   card.dataset.route = '';
   const copy = element('div', 'card-copy');
   const heading = element('div', 'card-heading');
-  const release = preferredRelease(applet);
   heading.append(element('h2', '', applet.name), badge(release));
   copy.append(heading, element('p', 'card-description', applet.description));
   const footer = element('div', 'card-footer');
@@ -176,6 +213,7 @@ const permission_labels: Record<string, string> = {
 
 export function renderDetails(main: HTMLElement, details: AppletDetails): void {
   const { applet, releases } = details;
+  let channel = selectedChannel(new URL(location.href));
   document.title = `${applet.name} · Apell Store`;
   const back = link('← All applets', '/', 'back-link');
   back.dataset.route = '';
@@ -201,21 +239,11 @@ export function renderDetails(main: HTMLElement, details: AppletDetails): void {
 
   const install = element('aside', 'download-panel');
   install.setAttribute('aria-label', 'Download applet');
+  const picker = channelPicker((next) => updateChannel(next));
   const version_label = element('label', '', 'Version');
   version_label.htmlFor = 'release';
   const select = element('select');
   select.id = 'release';
-  const recommended = preferredRelease(applet);
-  for (const release of releases) {
-    const option = element(
-      'option',
-      '',
-      `v${release.version}${release.prerelease ? ' · Preview' : ' · Stable'}${release.version === recommended.version ? ' · Recommended' : ''}`,
-    );
-    option.value = release.version;
-    select.append(option);
-  }
-  select.value = recommended.version;
   const release_status = element('div', 'release-status');
   const release_info = element('p', 'muted');
   const download = link('Download .apel ↓', '#', 'button primary');
@@ -255,6 +283,7 @@ export function renderDetails(main: HTMLElement, details: AppletDetails): void {
     copy_status,
   );
   install.append(
+    picker.group,
     version_label,
     select,
     release_status,
@@ -264,11 +293,49 @@ export function renderDetails(main: HTMLElement, details: AppletDetails): void {
     integrity,
   );
 
+  function updateChannel(next: ReleaseChannel, version?: string): void {
+    channel = next;
+    picker.sync(channel);
+    const url = new URL(location.href);
+    setChannel(url, channel);
+    history.replaceState(null, '', url);
+    back.href = channelPath('/', channel);
+
+    const available = releases.filter((release) => getReleaseChannel(release) === channel);
+    const latest = latestInChannel(applet, channel, releases);
+    select.replaceChildren(
+      ...available.map((release) => {
+        const label = `v${release.version}${release.version === latest?.version ? ' · Latest' : ''}`;
+        const option = element('option', '', label);
+        option.value = release.version;
+        return option;
+      }),
+    );
+    select.disabled = available.length === 0;
+    if (select.disabled) select.append(element('option', '', 'No published versions'));
+    else select.value = version ?? latest?.version ?? available[0].version;
+    selectRelease();
+  }
+
   function selectRelease(): void {
-    const release = releases.find((candidate) => candidate.version === select.value) ?? recommended;
+    const release = releases.find((candidate) => candidate.version === select.value);
+    copy_status.textContent = '';
+    integrity.hidden = !release;
+    permissions.hidden = !release;
+    if (!release) {
+      release_status.replaceChildren();
+      release_info.textContent = `No ${channel_labels[channel]} releases are available.`;
+      download.removeAttribute('href');
+      download.removeAttribute('download');
+      download.setAttribute('aria-disabled', 'true');
+      release_notes.textContent = 'Select a published version to view its release notes.';
+      permission_list.replaceChildren();
+      checksum.textContent = '';
+      return;
+    }
     release_status.replaceChildren(badge(release));
     if (release.prerelease)
-      release_status.append(element('p', '', 'A preview release may still be changing.'));
+      release_status.append(element('p', '', 'Nightly builds may be less reliable.'));
     release_info.textContent = `${sizeLabel(release.size_bytes)} · ${dateLabel(release.published_at)}`;
     const download_url = localUrl(release.download_url);
     if (download_url) {
@@ -281,7 +348,6 @@ export function renderDetails(main: HTMLElement, details: AppletDetails): void {
     }
     release_notes.textContent = release.release_notes || 'No release notes for this version.';
     checksum.textContent = release.sha256;
-    copy_status.textContent = '';
     permission_list.replaceChildren(
       ...release.permissions.map((permission) =>
         element('li', '', permission_labels[permission] ?? permission),
@@ -296,7 +362,7 @@ export function renderDetails(main: HTMLElement, details: AppletDetails): void {
     );
   }
   select.addEventListener('change', selectRelease);
-  selectRelease();
+  updateChannel(channel);
   content.append(article, install);
 
   const history_section = element('section', 'version-history');
@@ -314,8 +380,7 @@ export function renderDetails(main: HTMLElement, details: AppletDetails): void {
     const choose = button(
       'View version',
       () => {
-        select.value = release.version;
-        selectRelease();
+        updateChannel(getReleaseChannel(release), release.version);
         install.scrollIntoView({ behavior: 'instant', block: 'center' });
         select.focus({ preventScroll: true });
       },

@@ -1,4 +1,5 @@
 import { packagePath, type Actions } from './actions';
+import { latestInChannel } from './channels';
 import { element, routeLink } from './dom';
 import { renderPeople } from './people';
 import { renderPublisher, renderReleaseForm } from './publishing';
@@ -45,15 +46,17 @@ export function renderPackage(
   if (tab === 'people') root.append(renderPeople(pkg, actions));
   else if (tab === 'publishing') root.append(renderPublisher(pkg, actions));
   else {
-    if (applet)
+    if (applet) {
+      const stable = latestInChannel(applet, 'stable');
+      const nightly = latestInChannel(applet, 'nightly');
       root.append(
         element(
           'p',
           'release-summary',
-          `Latest release: ${applet.latest_release.version}. Published versions are immutable.`,
+          `Stable: ${stable?.version ?? 'None'} · Nightly: ${nightly?.version ?? 'None'}. Published versions are immutable.`,
         ),
       );
-    else
+    } else
       root.append(element('p', 'release-summary', 'Registered and ready for its first release.'));
     root.append(renderReleaseForm(pkg, applet, actions));
   }

@@ -4,7 +4,7 @@ The store serves a public applet catalog, version history, and `.apel` downloads
 Publishing uses a signed-in package maintainer, GitHub Actions trusted publishing, or an operator token. Applets remain in their own repositories;
 publishing a release does not require changing the shell or landing-page repository.
 
-The website supports search, stable and preview releases, declared permissions,
+The website supports search, Stable and Nightly releases, declared permissions,
 release notes, and SHA-256 checksums. Applets can also be browsed, installed, and
 updated from **Store** inside Apell. Website downloads remain installable through
 **+ → Install an .apel file**. Existing file and GitHub installation still work.
@@ -16,15 +16,21 @@ stays in the device's local settings; browsing and installation never require a
 publishing token. Search the catalog, open an applet, and review its version,
 release notes, and declared access before choosing **Install**.
 
-Stable releases are recommended when available. Preview releases can be selected
-explicitly. **Updates** shows newer releases for applets installed from the
-selected store. Review an update's permissions, including newly declared access,
-then choose **Update**. Updates are manual, and existing applet data is retained.
+The catalog opens on **Stable**. Choose **Nightly** to see prereleases,
+including applets that have not published a Stable release yet. Each channel
+has its own latest version and version history. **Updates** follows the channel
+each installed applet uses; a release in the other channel is never an update.
+Review an update's permissions, including newly declared access, then choose
+**Update**. Updates are manual, and existing applet data is retained.
 If the old version is running, choose **Restart applet** after installing to
 open the new package and backend. This leaves Apell and other applets running.
 
-Each store installation records the store address, applet ID, and stable or preview
-channel. Changing the configured store does not change installed applets' update
+Each Store installation records the Store address, applet ID, and channel.
+To change channels, open the applet’s Store page, select the other channel,
+and confirm **Switch and install**. The applet keeps its data and remembered
+permissions. Apell prevents downgrades, so a Nightly user may need to wait for
+a newer Stable version to switch back. Previously installed Preview applets
+now follow Nightly. Changing the configured store does not change installed applets' update
 sources. To move an applet from a file, a GitHub release, or another store, open its
 page, choose a Store release, and confirm **Switch to this Store**. This keeps the
 applet's saved data and changes its source for future updates. The selected release
@@ -204,8 +210,9 @@ restart after troubleshooting. Client-facing authentication errors stay generic.
   `409 Conflict`; increment the version.
 - Versions are ordered by SemVer precedence, not by upload time. A later upload of
   an older version cannot replace the recommended download.
-- The website recommends the newest stable release when one exists, otherwise the
-  newest prerelease. Preview releases remain available in version history.
+- A version without a SemVer prerelease suffix (`1.2.0`) is **Stable**. Any
+  SemVer prerelease (`1.3.0-nightly.2`, `1.3.0-beta.1`) is **Nightly**. The Store
+  selects the latest version within each channel independently.
 - Versions differing only by `+build` metadata cannot coexist. Use a distinct
   prerelease version such as `1.2.0-nightly.2` for each nightly build.
 
@@ -223,7 +230,7 @@ relative to the store origin.
 | Method | Route                                              | Purpose                                                      |
 | ------ | -------------------------------------------------- | ------------------------------------------------------------ |
 | GET    | `/healthz`                                         | Process health                                               |
-| GET    | `/api/v1/applets`                                  | Public catalog, including latest and latest stable release   |
+| GET    | `/api/v1/applets`                                  | Public catalog, including latest Stable and Nightly releases |
 | GET    | `/api/v1/applets/{id}`                             | Listing and complete version history                         |
 | GET    | `/api/v1/applets/{id}/versions/{version}/download` | Immutable `.apel` attachment                                 |
 | POST   | `/api/v1/publish`                                  | Authenticated multipart upload                               |

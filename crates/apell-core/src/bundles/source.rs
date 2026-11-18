@@ -40,7 +40,18 @@ impl GitHubSource {
 #[serde(rename_all = "snake_case")]
 pub enum StoreChannel {
   Stable,
-  Preview,
+  #[serde(alias = "preview")]
+  Nightly,
+}
+
+impl StoreChannel {
+  pub fn from_prerelease(prerelease: bool) -> Self {
+    if prerelease {
+      Self::Nightly
+    } else {
+      Self::Stable
+    }
+  }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]

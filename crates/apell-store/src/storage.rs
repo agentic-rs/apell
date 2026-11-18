@@ -443,6 +443,31 @@ fn applet(connection: &Connection, id: &str) -> Result<Applet> {
         .ok_or_else(StoreError::internal)
     })
     .transpose()?;
+  let latest_nightly_release = if record.release.prerelease {
+    Some(record.release.clone())
+  } else {
+    // Derive the Nightly head from existing immutable versions. No schema
+    // change or backfill is needed, and older Store binaries can still read
+    // the same database. Only load metadata for the winning prerelease.
+    let mut nightly: Option<Version> = None;
+    for value in release_versions(connection, id)? {
+      let version = Version::parse(&value).map_err(|_| StoreError::internal())?;
+      if !version.pre.is_empty()
+        && nightly
+          .as_ref()
+          .is_none_or(|previous| version.cmp_precedence(previous).is_gt())
+      {
+        nightly = Some(version);
+      }
+    }
+    nightly
+      .map(|version| {
+        read_release(connection, id, &version.to_string())?
+          .map(|record| record.release)
+          .ok_or_else(StoreError::internal)
+      })
+      .transpose()?
+  };
   Ok(Applet {
     applet_id: record.applet_id,
     name: record.name,
@@ -451,6 +476,7 @@ fn applet(connection: &Connection, id: &str) -> Result<Applet> {
     icon_url: record.icon_sha256.map(|hash| format!("/media/{hash}.png")),
     latest_release: record.release,
     latest_stable_release,
+    latest_nightly_release,
   })
 }
 

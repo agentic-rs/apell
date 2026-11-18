@@ -70,6 +70,41 @@ fn release_and_catalog_metadata_are_validated_before_use() {
 }
 
 #[tokio::test]
+async fn nightly_head_is_independent_of_stable_and_recovers_from_legacy_details() {
+  let stable = release(&package("sample", "2.0.0", &["sqlite"]), "2.0.0");
+  let nightly = release(
+    &package("sample", "1.5.0-nightly.10", &["sqlite"]),
+    "1.5.0-nightly.10",
+  );
+  let older = release(&package("sample", "1.4.0-rc.1", &["sqlite"]), "1.4.0-rc.1");
+  let mut metadata = detail(&stable);
+  metadata.releases.extend([older.clone(), nightly.clone()]);
+  metadata.applet.latest_nightly_release = Some(older);
+  assert!(metadata.validate("sample").is_err());
+  metadata.applet.latest_nightly_release = Some(stable);
+  assert!(metadata.applet.validate().is_err());
+  metadata.applet.latest_nightly_release = Some(nightly.clone());
+  metadata.validate("sample").unwrap();
+
+  let mut legacy = serde_json::to_value(&metadata).unwrap();
+  legacy["applet"]
+    .as_object_mut()
+    .unwrap()
+    .remove("latest_nightly_release");
+  let server = MockStore::new(vec![(
+    "/api/v1/applets/sample".into(),
+    Reply::json(&legacy),
+  )])
+  .await;
+  let recovered = StoreClient::new(&server.origin)
+    .unwrap()
+    .detail("sample")
+    .await
+    .unwrap();
+  assert_eq!(recovered.applet.nightly_release(), Some(&nightly));
+}
+
+#[tokio::test]
 async fn catalog_networking_rejects_redirects_and_malformed_responses() {
   for reply in [
     Reply::status(302, b"".to_vec()).header("Location", "https://other.example/api/v1/applets"),

@@ -26,6 +26,8 @@ pub struct StoreApplet {
   pub icon_url: Option<String>,
   pub latest_release: StoreRelease,
   pub latest_stable_release: Option<StoreRelease>,
+  #[serde(default)]
+  pub latest_nightly_release: Option<StoreRelease>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -102,6 +104,17 @@ impl StoreRelease {
 }
 
 impl StoreApplet {
+  /// Older Store catalogs only expose a nightly head when it also happens
+  /// to be the newest release overall.
+  pub fn nightly_release(&self) -> Option<&StoreRelease> {
+    self.latest_nightly_release.as_ref().or_else(|| {
+      self
+        .latest_release
+        .prerelease
+        .then_some(&self.latest_release)
+    })
+  }
+
   pub fn validate(&self) -> Result<(), String> {
     if !crate::valid_name(&self.applet_id)
       || self.name.trim().is_empty()
@@ -144,6 +157,17 @@ impl StoreApplet {
     {
       return Err("The store returned inconsistent latest release metadata.".into());
     }
+    if let Some(nightly) = &self.latest_nightly_release {
+      nightly.validate(&self.applet_id)?;
+      if !nightly.prerelease
+        || nightly
+          .compare_version(&self.latest_release.version)?
+          .is_gt()
+        || (self.latest_release.prerelease && nightly != &self.latest_release)
+      {
+        return Err("The store returned inconsistent nightly release metadata.".into());
+      }
+    }
     Ok(())
   }
 }
@@ -165,7 +189,23 @@ impl StoreCatalog {
 }
 
 impl StoreDetail {
+  /// Fill the independent nightly head for details from an older Store.
+  pub(super) fn validate_and_fill_nightly_release(
+    &mut self,
+    requested_id: &str,
+  ) -> Result<(), String> {
+    let nightly = self.validate_history(requested_id)?;
+    if self.applet.latest_nightly_release.is_none() {
+      self.applet.latest_nightly_release = nightly.cloned();
+    }
+    Ok(())
+  }
+
   pub fn validate(&self, requested_id: &str) -> Result<(), String> {
+    self.validate_history(requested_id).map(|_| ())
+  }
+
+  fn validate_history(&self, requested_id: &str) -> Result<Option<&StoreRelease>, String> {
     self.applet.validate()?;
     if self.applet.applet_id != requested_id
       || self.releases.is_empty()
@@ -176,6 +216,7 @@ impl StoreDetail {
     let mut versions = HashSet::new();
     let mut latest: Option<&StoreRelease> = None;
     let mut stable: Option<&StoreRelease> = None;
+    let mut nightly: Option<&StoreRelease> = None;
     for release in &self.releases {
       release.validate(requested_id)?;
       let mut version =
@@ -191,21 +232,29 @@ impl StoreDetail {
       }) {
         latest = Some(release);
       }
-      if !release.prerelease
-        && stable.is_none_or(|prior| {
-          release
-            .compare_version(&prior.version)
-            .is_ok_and(|order| order.is_gt())
-        })
-      {
-        stable = Some(release);
+      let head = if release.prerelease {
+        &mut nightly
+      } else {
+        &mut stable
+      };
+      if head.is_none_or(|prior| {
+        release
+          .compare_version(&prior.version)
+          .is_ok_and(|order| order.is_gt())
+      }) {
+        *head = Some(release);
       }
     }
     if latest != Some(&self.applet.latest_release)
       || stable != self.applet.latest_stable_release.as_ref()
+      || self
+        .applet
+        .latest_nightly_release
+        .as_ref()
+        .is_some_and(|listed| Some(listed) != nightly)
     {
       return Err("The store version history does not match its listing.".into());
     }
-    Ok(())
+    Ok(nightly)
   }
 }

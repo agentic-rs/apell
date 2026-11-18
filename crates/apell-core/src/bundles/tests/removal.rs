@@ -55,24 +55,24 @@ fn removal_keeps_only_the_binding_and_accepts_a_fresh_install_from_its_source() 
       .update_from_source("sample", &next, None, github.clone())
       .is_err());
     let hash = digest(&next);
-    let preview = store_source(StoreChannel::Preview);
+    let nightly = store_source(StoreChannel::Nightly);
     assert!(reopened
-      .install_store_release(&next, &hash, preview.clone(), Some(&hash))
+      .install_store_release(&next, &hash, nightly.clone(), Some(&hash))
       .is_err());
     if original.as_ref() == Some(&stable) {
       let wrong_store = StoreSource {
         store_url: "https://other.example".into(),
-        ..preview.clone()
+        ..nightly.clone()
       };
       assert!(reopened
         .install_store_release(&next, &hash, wrong_store, None)
         .is_err());
       reopened
-        .install_store_release(&next, &hash, preview, None)
+        .install_store_release(&next, &hash, store_source(StoreChannel::Stable), None)
         .unwrap();
     } else {
       assert!(reopened
-        .install_store_release(&next, &hash, preview, None)
+        .install_store_release(&next, &hash, nightly, None)
         .is_err());
       if original.as_ref() == Some(&github) {
         assert!(reopened

@@ -101,6 +101,7 @@ enum InstallGuard<'a> {
   Update(&'a str),
   StoreSnapshot(Option<&'a str>),
   StoreSwitch(&'a StoreSwitchSnapshot),
+  StoreChannelSwitch(&'a StoreSwitchSnapshot),
 }
 
 pub struct BundleStore {
@@ -219,6 +220,26 @@ impl BundleStore {
     )
   }
 
+  /// Follow a different channel of the same Store, using the exact applet
+  /// state reviewed by the user. Normal Store installs cannot change tracks.
+  pub fn switch_store_channel(
+    &self,
+    bytes: &[u8],
+    expected_hash: &str,
+    source: StoreSource,
+    expected: &StoreSwitchSnapshot,
+  ) -> Result<InstalledApplet, String> {
+    if !valid_hash(&expected.sha256) {
+      return Err("Invalid installed package snapshot.".into());
+    }
+    self.publish(
+      bytes,
+      Some(expected_hash),
+      Some(source.into()),
+      InstallGuard::StoreChannelSwitch(expected),
+    )
+  }
+
   fn publish(
     &self,
     bytes: &[u8],
@@ -244,9 +265,40 @@ impl BundleStore {
     {
       return Err("The release package has a different applet ID.".into());
     }
+    if let Some(PackageSource::Store(source)) = &source {
+      let version =
+        semver::Version::parse(&manifest.version).map_err(|_| "Invalid package version.")?;
+      if source.channel != super::StoreChannel::from_prerelease(!version.pre.is_empty()) {
+        return Err("The package version does not belong to the selected Store channel.".into());
+      }
+    }
     let _lock = self.lock_storage()?;
     let directory = self.root.join(id);
     let record = self.record(id)?;
+    if let InstallGuard::StoreChannelSwitch(expected) = guard {
+      let current = record
+        .as_ref()
+        .ok_or("The applet no longer has a Store channel.")?;
+      if &current.switch_snapshot() != expected {
+        return Err(
+          "The installed applet changed. Reopen its store page before switching channels.".into(),
+        );
+      }
+      match (&current.source, &source) {
+        (Some(PackageSource::Store(old)), Some(PackageSource::Store(new)))
+          if old.same_identity(new) && old.channel != new.channel => {}
+        _ => return Err("Choose a different channel from this applet’s Store.".into()),
+      }
+    } else if matches!(guard, InstallGuard::StoreSnapshot(_)) {
+      if let (Some(PackageSource::Store(old)), Some(PackageSource::Store(new))) = (
+        record.as_ref().and_then(|current| current.source.as_ref()),
+        &source,
+      ) {
+        if old.same_identity(new) && old.channel != new.channel {
+          return Err("Confirm the Store channel change before installing this release.".into());
+        }
+      }
+    }
     let switch_source = if let InstallGuard::StoreSwitch(expected) = guard {
       let current = record
         .as_ref()

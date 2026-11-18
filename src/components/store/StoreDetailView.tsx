@@ -1,9 +1,16 @@
 import { useState } from 'react';
-import type { InstallProgress, StoreDetail, StoreReleaseOption } from '../../lib/types';
+import type {
+  InstallProgress,
+  StoreChannel,
+  StoreDetail,
+  StoreReleaseOption,
+} from '../../lib/types';
 import {
   newStoreAccess,
   permissionName,
   recommendedStoreRelease,
+  storeChannelName,
+  storeReleaseChannel,
   storeDate,
   storeSize,
   storeSourceLabel,
@@ -31,19 +38,28 @@ export function StoreDetailView({
   restarting: boolean;
   progress?: InstallProgress;
   onVersion: (version: string) => void;
-  onInstall: (release: StoreReleaseOption) => void;
+  onInstall: (release: StoreReleaseOption, confirmed_channel_switch?: boolean) => void;
   onOpen: () => void;
   onBack: () => void;
 }) {
   const [confirm_switch, setConfirmSwitch] = useState(false);
   const release = detail.releases.find((item) => item.version === selected_version);
-  const recommended = recommendedStoreRelease(detail);
+  const recommended = recommendedStoreRelease(detail, release && storeReleaseChannel(release));
+  const channel = storeReleaseChannel(release ?? recommended);
+  const channel_name = storeChannelName(channel);
+  const versions = detail.releases.filter((item) => storeReleaseChannel(item) === channel);
+  const changeChannel = (next: StoreChannel) => {
+    const latest = recommendedStoreRelease(detail, next);
+    if (storeReleaseChannel(latest) === next) onVersion(latest.version);
+  };
   const new_access = release ? newStoreAccess(release, detail.installed) : [];
   const previous = detail.switch_snapshot;
   const previous_source = previous ? storeSourceLabel(previous.source) : null;
-  const can_switch = release?.action === 'switch_source' && !!previous;
+  const can_switch_source = release?.action === 'switch_source' && !!previous;
+  const can_switch_channel = release?.action === 'switch_channel' && !!detail.channel_snapshot;
+  const confirm_required = can_switch_source || can_switch_channel;
   const can_install =
-    release && (release.action === 'install' || release.action === 'update' || can_switch);
+    release && (release.action === 'install' || release.action === 'update' || confirm_required);
   return (
     <section className="store-detail" aria-label={detail.applet.name}>
       <button className="store-back" disabled={busy} onClick={onBack}>
@@ -60,7 +76,7 @@ export function StoreDetailView({
           <h2>{detail.applet.name}</h2>
           <p>
             {detail.installed
-              ? `Installed · ${detail.installed.version}${previous_source ? ` · From ${previous_source}` : ''}`
+              ? `Installed · ${detail.installed.version}${detail.installed_channel ? ` · ${storeChannelName(detail.installed_channel)}` : ''}${previous_source ? ` · From ${previous_source}` : ''}`
               : previous_source
                 ? `Saved data from ${previous_source}`
                 : 'An applet for Apell'}
@@ -71,15 +87,32 @@ export function StoreDetailView({
       <div className="store-detail-layout">
         <div className="store-download-panel">
           <label>
+            Release channel
+            <select
+              value={channel}
+              disabled={busy}
+              onChange={(event) =>
+                changeChannel(event.target.value === 'nightly' ? 'nightly' : 'stable')
+              }
+            >
+              <option value="stable" disabled={!detail.releases.some((item) => !item.prerelease)}>
+                Stable
+              </option>
+              <option value="nightly" disabled={!detail.releases.some((item) => item.prerelease)}>
+                Nightly
+              </option>
+            </select>
+          </label>
+          <label>
             Version
             <select
               value={selected_version}
               disabled={busy}
               onChange={(event) => onVersion(event.target.value)}
             >
-              {detail.releases.map((item) => (
+              {versions.map((item) => (
                 <option key={item.version} value={item.version}>
-                  {item.version} · {item.prerelease ? 'Preview' : 'Stable'}
+                  {item.version}
                   {item.version === recommended.version ? ' · Recommended' : ''}
                 </option>
               ))}
@@ -89,7 +122,7 @@ export function StoreDetailView({
             <>
               <div className="store-release-meta">
                 <span className={`store-badge${release.prerelease ? ' store-badge-preview' : ''}`}>
-                  {release.prerelease ? 'Preview' : 'Stable'}
+                  {channel_name}
                 </span>
                 <span>
                   {storeSize(release.size_bytes)} · {storeDate(release.published_at)}
@@ -97,7 +130,7 @@ export function StoreDetailView({
               </div>
               {release.prerelease && (
                 <p className="store-preview-note">
-                  This is a preview release and may be less stable.
+                  Nightly builds may be less stable than Stable releases.
                 </p>
               )}
               {!!new_access.length && can_install && (
@@ -116,17 +149,19 @@ export function StoreDetailView({
                   <button
                     className="store-primary"
                     disabled={busy}
-                    onClick={() => (can_switch ? setConfirmSwitch(true) : onInstall(release))}
+                    onClick={() => (confirm_required ? setConfirmSwitch(true) : onInstall(release))}
                   >
                     {installing
                       ? 'Installing…'
                       : release.downloaded_bytes !== undefined
                         ? 'Continue download'
-                        : can_switch
+                        : can_switch_source
                           ? 'Switch to this Store'
-                          : release.action === 'update'
-                            ? `Update to ${release.version}`
-                            : 'Install applet'}
+                          : can_switch_channel
+                            ? `Switch to ${channel_name}`
+                            : release.action === 'update'
+                              ? `Update to ${release.version}`
+                              : 'Install applet'}
                   </button>
                 )}
                 {detail.installed && (
@@ -236,20 +271,29 @@ export function StoreDetailView({
           </div>
         )}
       </div>
-      {release && can_switch && (
+      {release && confirm_required && (
         <Sheet
           open={confirm_switch}
-          title="Switch installation source?"
+          title={can_switch_source ? 'Switch installation source?' : `Switch to ${channel_name}?`}
           onClose={() => setConfirmSwitch(false)}
         >
-          <p className="store-source-review">
-            Install {detail.applet.name} {release.version} from {detail.store_url} instead of{' '}
-            {previous_source}. Future updates will come from this store.
-          </p>
-          <p>
-            This copy will have access to the applet’s saved data, including secure storage if
-            declared. Remembered device permissions from the current source won’t carry over.
-          </p>
+          {can_switch_source ? (
+            <>
+              <p className="store-source-review">
+                Install {detail.applet.name} {release.version} from {detail.store_url} instead of{' '}
+                {previous_source}. Future {channel_name} updates will come from this store.
+              </p>
+              <p>
+                This copy will have access to the applet’s saved data, including secure storage if
+                declared. Remembered device permissions from the current source won’t carry over.
+              </p>
+            </>
+          ) : (
+            <p className="store-source-review">
+              Install {detail.applet.name} {release.version} and follow {channel_name} for future
+              updates. Your saved applet data stays on this device.
+            </p>
+          )}
           <div className="store-form-actions">
             <button onClick={() => setConfirmSwitch(false)}>Cancel</button>
             <button
@@ -257,7 +301,7 @@ export function StoreDetailView({
               disabled={busy}
               onClick={() => {
                 setConfirmSwitch(false);
-                onInstall(release);
+                onInstall(release, can_switch_channel);
               }}
             >
               Switch and install

@@ -1,5 +1,7 @@
 import type {
   StoreCatalogEntry,
+  StoreApplet,
+  StoreChannel,
   StoreDetail,
   StoreRelease,
   InstalledApplet,
@@ -37,24 +39,68 @@ export function matchingStoreApplets(
   applets: StoreCatalogEntry[],
   query: string,
   updates_only: boolean,
+  channel: StoreChannel = 'stable',
 ): StoreCatalogEntry[] {
   const search = query.trim().toLocaleLowerCase();
   return applets.filter(
     (applet) =>
-      (!updates_only || (applet.update_available && !applet.source_conflict)) &&
+      (updates_only
+        ? applet.update_available && !applet.source_conflict
+        : storeChannelRelease(applet, channel) !== null) &&
       `${applet.name} ${applet.description}`.toLocaleLowerCase().includes(search),
   );
 }
 
+export const storeChannelName = (channel: StoreChannel): string =>
+  channel === 'nightly' ? 'Nightly' : 'Stable';
+
+export const storeReleaseChannel = (release: StoreRelease): StoreChannel =>
+  release.prerelease ? 'nightly' : 'stable';
+
+export function storeChannelRelease(
+  applet: StoreApplet,
+  channel: StoreChannel,
+): StoreRelease | null {
+  if (channel === 'stable') return applet.latest_stable_release;
+  return applet.latest_nightly_release === undefined
+    ? applet.latest_release.prerelease
+      ? applet.latest_release
+      : null
+    : applet.latest_nightly_release;
+}
+
+export function installedStoreChannel(
+  store_url: string,
+  applet_id: string,
+  installed: InstalledApplet | null,
+): StoreChannel | undefined {
+  const source = installed?.source;
+  return source?.kind === 'store' &&
+    source.store_url === store_url &&
+    source.applet_id === applet_id
+    ? source.channel
+    : undefined;
+}
+
 export function recommendedStoreRelease(
-  detail: Pick<StoreDetail, 'store_url' | 'applet' | 'installed'>,
+  detail: Pick<StoreDetail, 'store_url' | 'applet' | 'installed' | 'installed_channel'> &
+    Partial<Pick<StoreDetail, 'releases'>>,
+  requested?: StoreChannel,
 ): StoreRelease {
-  return detail.installed?.source?.kind === 'store' &&
-    detail.installed.source.store_url === detail.store_url &&
-    detail.installed.source.applet_id === detail.applet.applet_id &&
-    detail.installed.source.channel === 'preview'
-    ? detail.applet.latest_release
-    : (detail.applet.latest_stable_release ?? detail.applet.latest_release);
+  const { applet } = detail;
+  const channel =
+    requested ??
+    detail.installed_channel ??
+    installedStoreChannel(detail.store_url, applet.applet_id, detail.installed) ??
+    'stable';
+  return (
+    storeChannelRelease(applet, channel) ??
+    (channel === 'nightly' && applet.latest_nightly_release === undefined
+      ? detail.releases?.find((release) => release.prerelease)
+      : undefined) ??
+    storeChannelRelease(applet, channel === 'nightly' ? 'stable' : 'nightly') ??
+    applet.latest_release
+  );
 }
 
 export function newStoreAccess(release: StoreRelease, installed: InstalledApplet | null): string[] {

@@ -191,6 +191,38 @@ h1 {
 .search {
   max-width: 560px;
 }
+.catalog-filters {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.catalog-filters .search {
+  flex: 1 1 260px;
+}
+.channel-picker {
+  display: flex;
+  gap: 3px;
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+  background: #eeebf3;
+  padding: 3px;
+}
+.channel-picker button {
+  min-height: 42px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--violet);
+  padding: 7px 15px;
+  font-size: 14px;
+  font-weight: 600;
+}
+.channel-picker button[aria-pressed='true'] {
+  background: var(--violet);
+  color: #fff;
+}
 .search label {
   display: block;
   font-size: 14px;
@@ -291,7 +323,7 @@ h1 {
   line-height: 1.6;
   white-space: nowrap;
 }
-.badge.preview {
+.badge.nightly {
   background: #f8eadf;
   color: #944811;
 }
@@ -464,6 +496,12 @@ h1 {
   font-size: 14px;
   font-weight: 600;
   margin-bottom: 8px;
+}
+.download-panel .channel-picker {
+  margin-bottom: 18px;
+}
+.download-panel .channel-picker button {
+  flex: 1;
 }
 .download-panel select {
   width: 100%;

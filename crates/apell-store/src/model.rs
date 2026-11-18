@@ -79,6 +79,8 @@ pub struct Applet {
   pub icon_url: Option<String>,
   pub latest_release: Release,
   pub latest_stable_release: Option<Release>,
+  #[serde(default)]
+  pub latest_nightly_release: Option<Release>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

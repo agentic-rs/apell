@@ -71,19 +71,25 @@ fn retained_data_requires_confirmation_when_reinstalling_from_another_source() {
     release_action(&selected, &original).0,
     ReleaseAction::Install
   );
-  assert!(!checked_switch(&selected, &original, None, None).unwrap());
+  assert_eq!(
+    checked_switch(&selected, &original, None, None, None).unwrap(),
+    ReleaseAction::Install
+  );
 
   let different = review_install(&report, "https://other.example", "sample");
   assert_eq!(
     release_action(&selected, &different).0,
     ReleaseAction::SwitchSource
   );
-  assert!(checked_switch(&selected, &different, None, None).is_err());
-  assert!(checked_switch(&selected, &different, None, Some(&snapshot)).unwrap());
+  assert!(checked_switch(&selected, &different, None, None, None).is_err());
+  assert_eq!(
+    checked_switch(&selected, &different, None, Some(&snapshot), None).unwrap(),
+    ReleaseAction::SwitchSource
+  );
 
   report.retained.get_mut("sample").unwrap().source = None;
   let stale = review_install(&report, "https://other.example", "sample");
-  assert!(checked_switch(&selected, &stale, None, Some(&snapshot)).is_err());
+  assert!(checked_switch(&selected, &stale, None, Some(&snapshot), None).is_err());
 }
 
 #[test]
@@ -142,12 +148,29 @@ fn source_switch_requires_the_reviewed_active_package_and_cannot_replace_a_broke
   let selected = release("1.0.0");
   let review = review_install(&report, "https://store.example", "sample");
   let snapshot = review.switch_snapshot.clone().unwrap();
-  assert!(checked_switch(&selected, &review, None, Some(&snapshot)).is_err());
-  assert!(checked_switch(&selected, &review, Some(&saved.sha256), None).is_err());
-  assert!(checked_switch(&selected, &review, Some(&saved.sha256), Some(&snapshot)).unwrap());
+  assert!(checked_switch(&selected, &review, None, Some(&snapshot), None).is_err());
+  assert!(checked_switch(&selected, &review, Some(&saved.sha256), None, None).is_err());
+  assert_eq!(
+    checked_switch(
+      &selected,
+      &review,
+      Some(&saved.sha256),
+      Some(&snapshot),
+      None
+    )
+    .unwrap(),
+    ReleaseAction::SwitchSource
+  );
   report.applets[0].source = installed("1.0.0").source;
   let stale = review_install(&report, "https://store.example", "sample");
-  assert!(checked_switch(&selected, &stale, Some(&saved.sha256), Some(&snapshot)).is_err());
+  assert!(checked_switch(
+    &selected,
+    &stale,
+    Some(&saved.sha256),
+    Some(&snapshot),
+    None
+  )
+  .is_err());
 
   report.applets.clear();
   report.unavailable.push(UnavailableApplet {
@@ -159,7 +182,7 @@ fn source_switch_requires_the_reviewed_active_package_and_cannot_replace_a_broke
     release_action(&selected, &broken).0,
     ReleaseAction::Conflict
   );
-  assert!(checked_switch(&selected, &broken, None, Some(&snapshot)).is_err());
+  assert!(checked_switch(&selected, &broken, None, Some(&snapshot), None).is_err());
 }
 
 #[test]
@@ -172,17 +195,78 @@ fn update_badges_follow_the_installed_release_channel() {
     icon_url: None,
     latest_release: release("2.0.0-beta.1"),
     latest_stable_release: Some(release("1.0.0")),
+    latest_nightly_release: Some(release("2.0.0-beta.1")),
   };
   let mut saved = installed("1.0.0");
   assert!(!has_update(&applet, &saved));
   if let Some(PackageSource::Store(source)) = &mut saved.source {
-    source.channel = StoreChannel::Preview;
+    source.channel = StoreChannel::Nightly;
   }
   assert!(has_update(&applet, &saved));
   saved = installed("0.9.0");
   assert!(has_update(&applet, &saved));
   applet.latest_stable_release = None;
   assert!(!has_update(&applet, &saved));
+  applet.latest_release = release("3.0.0");
+  applet.latest_stable_release = Some(applet.latest_release.clone());
+  saved = installed("2.0.0-beta.1");
+  if let Some(PackageSource::Store(source)) = &mut saved.source {
+    source.channel = StoreChannel::Nightly;
+  }
+  assert!(!has_update(&applet, &saved));
+}
+
+#[test]
+fn same_store_channel_switch_requires_the_reviewed_snapshot() {
+  let mut report = empty_report();
+  let saved = installed("1.0.0");
+  report.applets.push(saved.clone());
+  let review = review_install(&report, "https://store.example", "sample");
+  let next = release("2.0.0-nightly.1");
+  let hash = Some(saved.sha256.as_str());
+  let snapshot = review.channel_snapshot.as_ref().unwrap();
+  assert_eq!(
+    release_action(&next, &review).0,
+    ReleaseAction::SwitchChannel
+  );
+  assert!(checked_switch(&next, &review, hash, None, None).is_err());
+  assert!(checked_switch(&next, &review, hash, Some(snapshot), None).is_err());
+  assert_eq!(
+    checked_switch(&next, &review, hash, None, Some(snapshot)).unwrap(),
+    ReleaseAction::SwitchChannel
+  );
+  assert!(checked_switch(
+    &release("1.0.0-nightly.1"),
+    &review,
+    hash,
+    None,
+    Some(snapshot)
+  )
+  .is_err());
+
+  let retained = StoreSwitchSnapshot {
+    removed: true,
+    ..snapshot.clone()
+  };
+  let stale = retained.clone();
+  report.applets.clear();
+  report.retained.insert("sample".into(), retained);
+  let review = review_install(&report, "https://store.example", "sample");
+  assert!(checked_switch(
+    &next,
+    &review,
+    None,
+    None,
+    Some(&StoreSwitchSnapshot {
+      removed: false,
+      ..stale.clone()
+    })
+  )
+  .is_err());
+  assert_eq!(
+    checked_switch(&next, &review, None, None, Some(&stale)).unwrap(),
+    ReleaseAction::SwitchChannel
+  );
 }
 
 #[test]

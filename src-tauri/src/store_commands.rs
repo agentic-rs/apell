@@ -44,6 +44,7 @@ struct InstallQuery {
   release: StoreRelease,
   expected_installed_sha256: Option<String>,
   switch_snapshot: Option<StoreSwitchSnapshot>,
+  channel_snapshot: Option<StoreSwitchSnapshot>,
   operation_id: String,
 }
 
@@ -66,6 +67,7 @@ enum ReleaseAction {
   Install,
   Update,
   SwitchSource,
+  SwitchChannel,
   Installed,
   Older,
   Conflict,
@@ -89,11 +91,17 @@ struct DetailResult {
   restart_required: bool,
   #[serde(skip_serializing_if = "Option::is_none")]
   switch_snapshot: Option<StoreSwitchSnapshot>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  installed_channel: Option<StoreChannel>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  channel_snapshot: Option<StoreSwitchSnapshot>,
 }
 
 struct InstallReview<'a> {
   installed: Option<&'a InstalledApplet>,
   switch_snapshot: Option<StoreSwitchSnapshot>,
+  installed_channel: Option<StoreChannel>,
+  channel_snapshot: Option<StoreSwitchSnapshot>,
   blocked: Option<&'static str>,
 }
 
@@ -210,7 +218,10 @@ pub async fn dispatch(
         let mut downloaded_bytes = None;
         if matches!(
           action,
-          ReleaseAction::Install | ReleaseAction::Update | ReleaseAction::SwitchSource
+          ReleaseAction::Install
+            | ReleaseAction::Update
+            | ReleaseAction::SwitchSource
+            | ReleaseAction::SwitchChannel
         ) {
           if let Ok(checkpoint) = download_checkpoint(&app, &store_url, &release) {
             let bytes = checkpoint.received(release.size_bytes).await;
@@ -233,6 +244,8 @@ pub async fn dispatch(
           .installed
           .is_some_and(|saved| host.needs_applet_restart(saved)),
         switch_snapshot: review.switch_snapshot,
+        installed_channel: review.installed_channel,
+        channel_snapshot: review.channel_snapshot,
       })
     }
     "store.icon" => {
@@ -254,10 +267,6 @@ pub async fn dispatch(
   }
 }
 
-fn is_store_source(source: Option<&PackageSource>, store_url: &str, applet_id: &str) -> bool {
-  matches!(source, Some(PackageSource::Store(source)) if source.store_url == store_url && source.applet_id == applet_id)
-}
-
 fn review_install<'a>(
   report: &'a AppletListReport,
   store_url: &str,
@@ -272,19 +281,32 @@ fn review_install<'a>(
     .iter()
     .any(|saved| saved.applet_id == id)
     .then_some("An unavailable package already uses this applet identity. Its files and data were preserved.");
-  let switch_snapshot = installed
+  let snapshot = installed
     .map(|saved| StoreSwitchSnapshot {
       sha256: saved.sha256.clone(),
       source: saved.source.clone(),
       removed: false,
     })
     .or_else(|| report.retained.get(id).cloned())
-    .filter(|snapshot| {
-      blocked.is_none() && !is_store_source(snapshot.source.as_ref(), store_url, id)
-    });
+    .filter(|_| blocked.is_none());
+  let installed_channel = match snapshot.as_ref().and_then(|state| state.source.as_ref()) {
+    Some(PackageSource::Store(source))
+      if source.store_url == store_url && source.applet_id == id =>
+    {
+      Some(source.channel)
+    }
+    _ => None,
+  };
+  let (channel_snapshot, switch_snapshot) = if installed_channel.is_some() {
+    (snapshot, None)
+  } else {
+    (None, snapshot)
+  };
   InstallReview {
     installed,
     switch_snapshot,
+    installed_channel,
+    channel_snapshot,
     blocked,
   }
 }
@@ -293,7 +315,7 @@ fn has_update(applet: &StoreApplet, installed: &InstalledApplet) -> bool {
   let candidate = match installed.source.as_ref() {
     Some(PackageSource::Store(source)) => match source.channel {
       StoreChannel::Stable => applet.latest_stable_release.as_ref(),
-      StoreChannel::Preview => Some(&applet.latest_release),
+      StoreChannel::Nightly => applet.nightly_release(),
     },
     _ => None,
   };
@@ -312,10 +334,15 @@ fn release_action(
     return (ReleaseAction::Conflict, Some(reason.into()));
   }
   let switching = review.switch_snapshot.is_some();
+  let switching_channel = review
+    .installed_channel
+    .is_some_and(|current| current != StoreChannel::from_prerelease(release.prerelease));
   let Some(installed) = review.installed else {
     return (
       if switching {
         ReleaseAction::SwitchSource
+      } else if switching_channel {
+        ReleaseAction::SwitchChannel
       } else {
         ReleaseAction::Install
       },
@@ -324,6 +351,7 @@ fn release_action(
   };
   match release.compare_version(&installed.manifest.version) {
     Ok(order) if switching && !order.is_lt() => (ReleaseAction::SwitchSource, None),
+    Ok(std::cmp::Ordering::Greater) if switching_channel => (ReleaseAction::SwitchChannel, None),
     Ok(std::cmp::Ordering::Greater) => (ReleaseAction::Update, None),
     Ok(std::cmp::Ordering::Less) => (
       ReleaseAction::Older,
@@ -355,7 +383,8 @@ fn checked_switch(
   review: &InstallReview,
   expected_installed: Option<&str>,
   expected_switch: Option<&StoreSwitchSnapshot>,
-) -> Result<bool, String> {
+  expected_channel: Option<&StoreSwitchSnapshot>,
+) -> Result<ReleaseAction, String> {
   let (action, reason) = release_action(release, review);
   if matches!(action, ReleaseAction::Older | ReleaseAction::Conflict) {
     return Err(reason.unwrap_or_else(|| "This release cannot be installed.".into()));
@@ -363,11 +392,24 @@ fn checked_switch(
   if review.installed.map(|saved| saved.sha256.as_str()) != expected_installed {
     return Err("The installed applet changed. Review its details again.".into());
   }
+  if action == ReleaseAction::SwitchChannel {
+    if expected_switch.is_some() {
+      return Err("The applet's installation source changed. Review its details again.".into());
+    }
+    return match expected_channel {
+      Some(snapshot) if review.channel_snapshot.as_ref() == Some(snapshot) => Ok(action),
+      Some(_) => Err("The installed applet changed. Review its details again.".into()),
+      None => Err("Confirm the Store channel change before installing this release.".into()),
+    };
+  }
+  if expected_channel.is_some() {
+    return Err("The applet's Store channel changed. Review its details again.".into());
+  }
   match (action, expected_switch) {
     (ReleaseAction::SwitchSource, Some(snapshot))
       if review.switch_snapshot.as_ref() == Some(snapshot) =>
     {
-      Ok(true)
+      Ok(action)
     }
     (ReleaseAction::SwitchSource, None) => {
       Err("Confirm the installation source change before installing this release.".into())
@@ -375,7 +417,7 @@ fn checked_switch(
     (ReleaseAction::SwitchSource, Some(_)) | (_, Some(_)) => {
       Err("The applet's installation source changed. Review its details again.".into())
     }
-    _ => Ok(false),
+    _ => Ok(action),
   }
 }
 
@@ -387,20 +429,17 @@ async fn install(app: AppHandle, host: &Host, request: InstallQuery) -> Result<V
   let store_url = configured(host, &request.store_url).await?;
   let report = installed(host).await?;
   let review = review_install(&report, &store_url, &request.applet_id);
-  let switching = checked_switch(
+  let action = checked_switch(
     &request.release,
     &review,
     request.expected_installed_sha256.as_deref(),
     request.switch_snapshot.as_ref(),
+    request.channel_snapshot.as_ref(),
   )?;
   let source = StoreSource {
     store_url: store_url.clone(),
     applet_id: request.applet_id.clone(),
-    channel: if request.release.prerelease {
-      StoreChannel::Preview
-    } else {
-      StoreChannel::Stable
-    },
+    channel: StoreChannel::from_prerelease(request.release.prerelease),
   };
   let operation_id = &request.operation_id;
   let checkpoint = download_checkpoint(&app, &store_url, &request.release)?;
@@ -426,12 +465,18 @@ async fn install(app: AppHandle, host: &Host, request: InstallQuery) -> Result<V
   };
   let bundles = host.bundles.clone();
   let result = tauri::async_runtime::spawn_blocking(move || {
-    if switching {
+    if action == ReleaseAction::SwitchSource {
       let snapshot = request
         .switch_snapshot
         .as_ref()
         .ok_or("Missing installation source snapshot.")?;
       bundles.switch_to_store_release(&bytes, &request.release.sha256, source, snapshot)
+    } else if action == ReleaseAction::SwitchChannel {
+      let snapshot = request
+        .channel_snapshot
+        .as_ref()
+        .ok_or("Missing Store channel snapshot.")?;
+      bundles.switch_store_channel(&bytes, &request.release.sha256, source, snapshot)
     } else {
       bundles.install_store_release(
         &bytes,

@@ -1,4 +1,5 @@
 import { mutate, packageEndpoint, perform, type Actions } from './actions';
+import { channelForVersion, channelPath } from './channels';
 import { button, element, inputField, section, statusMessage, submitButton } from './dom';
 import type { Applet, PackageDetails, PublishResult } from './types';
 
@@ -9,7 +10,7 @@ export function renderReleaseForm(
 ): HTMLElement {
   const panel = section(
     'Publish a release',
-    'Upload a built .apel file. Its package ID must match this package, and changed content needs a new version.',
+    'Upload a built .apel file with this package ID. A version such as 1.2.0 goes to Stable; a prerelease such as 1.3.0-nightly.1 goes to Nightly. Changed content needs a new version.',
   );
   const form = element('form', 'manage-form');
   const package_file = inputField(form, 'package', 'Applet package', {
@@ -76,7 +77,10 @@ export function renderReleaseForm(
         release_notes.value = '';
         status.textContent = `${result.created ? 'Published' : 'Already published'} ${result.applet_id} ${result.version}.`;
         const view = element('a', 'text-link', 'View published applet →');
-        view.href = `/applets/${encodeURIComponent(result.applet_id)}`;
+        view.href = channelPath(
+          `/applets/${encodeURIComponent(result.applet_id)}`,
+          channelForVersion(result.version),
+        );
         view.dataset.route = '';
         status.append(document.createTextNode(' '), view);
       },
