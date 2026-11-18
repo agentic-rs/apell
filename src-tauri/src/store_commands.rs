@@ -8,11 +8,14 @@ use apell_core::{
     AppletListReport, InstalledApplet, PackageSource, StoreChannel, StoreSource,
     StoreSwitchSnapshot,
   },
-  store_client::{normalize_store_url, StoreApplet, StoreClient, StoreRelease},
+  store_client::{
+    normalize_store_url, DownloadCheckpoint, DownloadOutcome, StoreApplet, StoreClient,
+    StoreRelease,
+  },
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 pub use state::StoreConfig;
 
@@ -74,6 +77,8 @@ struct ReleaseOption {
   action: ReleaseAction,
   #[serde(skip_serializing_if = "Option::is_none")]
   action_reason: Option<String>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  downloaded_bytes: Option<u64>,
 }
 #[derive(Serialize)]
 struct DetailResult {
@@ -81,6 +86,7 @@ struct DetailResult {
   applet: StoreApplet,
   releases: Vec<ReleaseOption>,
   installed: Option<InstalledApplet>,
+  restart_required: bool,
   #[serde(skip_serializing_if = "Option::is_none")]
   switch_snapshot: Option<StoreSwitchSnapshot>,
 }
@@ -89,6 +95,22 @@ struct InstallReview<'a> {
   installed: Option<&'a InstalledApplet>,
   switch_snapshot: Option<StoreSwitchSnapshot>,
   blocked: Option<&'static str>,
+}
+
+fn download_checkpoint(
+  app: &AppHandle,
+  store_url: &str,
+  release: &StoreRelease,
+) -> Result<DownloadCheckpoint, String> {
+  let cache = app
+    .path()
+    .app_cache_dir()
+    .map_err(|_| "Store download cache is unavailable.")?;
+  Ok(DownloadCheckpoint::new(
+    &cache.join("store-downloads"),
+    store_url,
+    release,
+  ))
 }
 
 fn input<T: serde::de::DeserializeOwned>(params: Value) -> Result<T, String> {
@@ -182,23 +204,34 @@ pub async fn dispatch(
         .await?;
       let installed = installed(host).await?;
       let review = review_install(&installed, &store_url, &request.applet_id);
-      let releases = detail
-        .releases
-        .into_iter()
-        .map(|release| {
-          let (action, action_reason) = release_action(&release, &review);
-          ReleaseOption {
-            release,
-            action,
-            action_reason,
+      let mut releases = Vec::with_capacity(detail.releases.len());
+      for release in detail.releases {
+        let (action, action_reason) = release_action(&release, &review);
+        let mut downloaded_bytes = None;
+        if matches!(
+          action,
+          ReleaseAction::Install | ReleaseAction::Update | ReleaseAction::SwitchSource
+        ) {
+          if let Ok(checkpoint) = download_checkpoint(&app, &store_url, &release) {
+            let bytes = checkpoint.received(release.size_bytes).await;
+            downloaded_bytes = (bytes > 0).then_some(bytes);
           }
-        })
-        .collect();
+        }
+        releases.push(ReleaseOption {
+          release,
+          action,
+          action_reason,
+          downloaded_bytes,
+        });
+      }
       output(DetailResult {
         store_url,
         applet: detail.applet,
         releases,
         installed: review.installed.cloned(),
+        restart_required: review
+          .installed
+          .is_some_and(|saved| host.needs_applet_restart(saved)),
         switch_snapshot: review.switch_snapshot,
       })
     }
@@ -369,11 +402,28 @@ async fn install(app: AppHandle, host: &Host, request: InstallQuery) -> Result<V
       StoreChannel::Stable
     },
   };
-  let operation_id = request.operation_id;
-  let applet_id = request.applet_id;
-  let bytes = StoreClient::new(&store_url)?.download(&applet_id, &request.release, move |received_bytes, total_bytes| {
-    let _ = app.emit_to("main", "install-progress", json!({"operation_id":operation_id,"received_bytes":received_bytes,"total_bytes":total_bytes}));
-  }).await?;
+  let operation_id = &request.operation_id;
+  let checkpoint = download_checkpoint(&app, &store_url, &request.release)?;
+  #[cfg(target_os = "ios")]
+  let lease = crate::ios::WakeLease::begin(&app).await;
+  let pause = async {
+    #[cfg(target_os = "ios")]
+    if let Some(lease) = &lease {
+      return lease.expired().await;
+    }
+    std::future::pending::<()>().await;
+  };
+  let download = StoreClient::new(&store_url)?.download_resumable(
+    &request.applet_id, &request.release, &checkpoint, pause, |received_bytes, total_bytes| {
+      let _ = app.emit_to("main", "install-progress", json!({"operation_id":operation_id,"received_bytes":received_bytes,"total_bytes":total_bytes}));
+    },
+  ).await?;
+  let bytes = match download {
+    DownloadOutcome::Verified(bytes) => bytes,
+    DownloadOutcome::Paused { received_bytes } => {
+      return Ok(json!({"status":"paused", "received_bytes":received_bytes}))
+    }
+  };
   let bundles = host.bundles.clone();
   let result = tauri::async_runtime::spawn_blocking(move || {
     if switching {
@@ -393,5 +443,6 @@ async fn install(app: AppHandle, host: &Host, request: InstallQuery) -> Result<V
   })
   .await
   .map_err(|_| "Store installation was interrupted.")??;
-  output(result)
+  let restart_required = host.needs_applet_restart(&result);
+  Ok(json!({"status":"installed", "applet":result, "restart_required":restart_required}))
 }

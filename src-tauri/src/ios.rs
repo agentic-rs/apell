@@ -1,3 +1,7 @@
+mod wake_lease;
+
+pub(crate) use wake_lease::WakeLease;
+
 use objc2::{msg_send, rc::Retained, runtime::AnyObject};
 use objc2_ui_kit::{UIScrollView, UIScrollViewContentInsetAdjustmentBehavior};
 

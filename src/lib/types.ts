@@ -102,6 +102,7 @@ export type StoreReleaseAction =
 export interface StoreReleaseOption extends StoreRelease {
   action: StoreReleaseAction;
   action_reason?: string;
+  downloaded_bytes?: number;
 }
 export interface StoreSwitchSnapshot {
   sha256: string;
@@ -113,6 +114,7 @@ export interface StoreDetail {
   applet: StoreApplet;
   releases: StoreReleaseOption[];
   installed: InstalledApplet | null;
+  restart_required: boolean;
   switch_snapshot?: StoreSwitchSnapshot;
 }
 export interface StoreInstallRequest {
@@ -123,6 +125,9 @@ export interface StoreInstallRequest {
   switch_snapshot?: StoreSwitchSnapshot;
   operation_id: string;
 }
+export type StoreInstallResult =
+  | { status: 'installed'; applet: InstalledApplet; restart_required: boolean }
+  | { status: 'paused'; received_bytes: number };
 export interface BackendEvent {
   session_id: string;
   event: { name: string; payload: unknown };

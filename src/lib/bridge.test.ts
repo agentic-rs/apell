@@ -70,6 +70,7 @@ describe('applet bridge boundary', () => {
       'llm.cancel_login',
       'llm.open_login',
       'applets.install',
+      'applets.restart',
       'store.config',
       'store.set_url',
       'store.catalog',

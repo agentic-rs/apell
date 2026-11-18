@@ -7,6 +7,7 @@ import {
   launchApplet,
   message,
   onInstallProgress,
+  restartApplet,
   setStoreUrl,
 } from '../../lib/tauri';
 import type {
@@ -18,6 +19,8 @@ import type {
   StoreReleaseOption,
 } from '../../lib/types';
 import { recommendedStoreRelease } from '../../lib/storeState';
+
+type StoreOperation = 'save' | 'install' | 'open' | 'restart';
 
 export function useStore(
   onLaunch: (session: AppletSession) => void,
@@ -36,8 +39,9 @@ export function useStore(
   const [catalog_error, setCatalogError] = useState('');
   const [detail_error, setDetailError] = useState('');
   const [status, setStatus] = useState('');
+  const [restart_after_install, setRestartAfterInstall] = useState<string>();
   const [action_error, setActionError] = useState('');
-  const [operation, setOperation] = useState<'save' | 'install' | 'open'>();
+  const [operation, setOperation] = useState<StoreOperation>();
   const [progress, setProgress] = useState<InstallProgress>();
   const scope = useRef({ alive: false, config: 0, catalog: 0, detail: 0, operation: '' });
   const current_url = useRef<string | null>(null);
@@ -117,7 +121,7 @@ export function useStore(
     };
   }, []);
 
-  const run = async (kind: 'save' | 'install' | 'open', action: (id: string) => Promise<void>) => {
+  const run = async (kind: StoreOperation, action: (id: string) => Promise<void>) => {
     if (scope.current.operation) return;
     const id = crypto.randomUUID();
     scope.current.operation = id;
@@ -144,6 +148,7 @@ export function useStore(
     setDetailError('');
     setDetailLoading(false);
     setActionError('');
+    setRestartAfterInstall(undefined);
   };
 
   const saveAddress = (value: string) =>
@@ -170,6 +175,7 @@ export function useStore(
       return;
     const snapshot = detail;
     void run('install', async (operation_id) => {
+      setRestartAfterInstall(undefined);
       setProgress(undefined);
       const stop = await onInstallProgress((event) => {
         if (
@@ -181,7 +187,7 @@ export function useStore(
       }).catch(() => () => {});
       try {
         if (!scope.current.alive) return;
-        await installStoreRelease({
+        const installed = await installStoreRelease({
           store_url: snapshot.store_url,
           applet_id: snapshot.applet.applet_id,
           release,
@@ -190,18 +196,37 @@ export function useStore(
           operation_id,
         });
         if (!scope.current.alive) return;
-        setStatus(
-          `${switching ? 'Switched to this store.' : 'Installed.'} Restart Apell to use this version if the applet is already running.`,
-        );
-        await Promise.all([
-          loadDetail(snapshot.store_url, snapshot.applet.applet_id, release.version),
-          loadCatalog(snapshot.store_url),
-        ]);
+        if (installed.status === 'paused') {
+          setDetail(
+            (current) =>
+              current && {
+                ...current,
+                releases: current.releases.map((option) => ({
+                  ...option,
+                  downloaded_bytes:
+                    option.sha256 === release.sha256 ? installed.received_bytes : undefined,
+                })),
+              },
+          );
+          setStatus('Download paused. Continue when you’re ready.');
+          return;
+        }
+        setStatus(switching ? 'Switched to this store.' : 'Installed.');
+        if (installed.restart_required) setRestartAfterInstall(installed.applet.applet_id);
+        void loadDetail(snapshot.store_url, snapshot.applet.applet_id, release.version);
+        void loadCatalog(snapshot.store_url);
       } finally {
         stop();
       }
     });
   };
+
+  const openInstalled = (applet_id: string, restart: boolean) =>
+    void run(restart ? 'restart' : 'open', async () => {
+      const launch = restart ? restartApplet : launchApplet;
+      const session = await launch(applet_id);
+      if (scope.current.alive) onLaunch(session);
+    });
 
   return {
     config,
@@ -219,6 +244,7 @@ export function useStore(
     catalog_error,
     detail_error,
     status,
+    restart_after_install,
     action_error,
     operation,
     progress,
@@ -229,6 +255,7 @@ export function useStore(
     openDetail: (applet_id: string) => {
       setStatus('');
       setActionError('');
+      setRestartAfterInstall(undefined);
       if (current_url.current && !scope.current.operation)
         void loadDetail(current_url.current, applet_id);
     },
@@ -240,11 +267,8 @@ export function useStore(
         void loadDetail(current_url.current, selected_id);
     },
     openApplet: () => {
-      if (detail?.installed)
-        void run('open', async () => {
-          const session = await launchApplet(detail.applet.applet_id);
-          if (scope.current.alive) onLaunch(session);
-        });
+      if (detail?.installed) openInstalled(detail.applet.applet_id, detail.restart_required);
+      else if (restart_after_install) openInstalled(restart_after_install, true);
     },
   };
 }

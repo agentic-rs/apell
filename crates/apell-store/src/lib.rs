@@ -1,5 +1,6 @@
 pub mod auth;
 mod config;
+mod downloads;
 mod error;
 mod management;
 mod model;
@@ -15,7 +16,6 @@ pub use oidc::{OidcConfig, TrustedPublisher};
 pub use storage::Store;
 
 use axum::{
-  body::Body,
   extract::{DefaultBodyLimit, FromRequest, Multipart, Path, Request, State},
   http::{header, HeaderMap, HeaderValue, StatusCode},
   middleware::{self, Next},
@@ -23,13 +23,11 @@ use axum::{
   routing::{any, get, post},
   Json, Router,
 };
-use futures_util::StreamExt;
 use model::{MAX_ICON_BYTES, MAX_METADATA_BYTES};
 use sha2::{Digest, Sha256};
 use std::{sync::Arc, time::Duration};
 use subtle::ConstantTimeEq;
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
-use tokio_util::io::ReaderStream;
+use tokio::sync::Semaphore;
 use tower_http::services::{ServeDir, ServeFile};
 
 const MAX_REQUEST_BYTES: usize =
@@ -418,7 +416,7 @@ fn upload_error(error: axum::extract::multipart::MultipartError) -> StoreError {
 async fn download(
   State(state): State<AppState>,
   Path((id, version)): Path<(String, String)>,
-  headers: HeaderMap,
+  request: Request,
 ) -> Result<Response> {
   let permit = state
     .downloads
@@ -434,21 +432,22 @@ async fn download(
   .await
   .map_err(|_| StoreError::internal())??;
   let filename = format!("{id}-{}.apel", release.version);
-  file_response(
+  downloads::file_response(
     file,
     release.size_bytes,
     &release.sha256,
     "application/octet-stream",
     Some(&filename),
     permit,
-    &headers,
+    request,
   )
+  .await
 }
 
 async fn icon(
   State(state): State<AppState>,
   Path(file): Path<String>,
-  headers: HeaderMap,
+  request: Request,
 ) -> Result<Response> {
   let hash = file
     .strip_suffix(".png")
@@ -467,53 +466,5 @@ async fn icon(
   })
   .await
   .map_err(|_| StoreError::internal())??;
-  file_response(file, size, &hash, "image/png", None, permit, &headers)
-}
-
-fn file_response(
-  file: std::fs::File,
-  size: u64,
-  hash: &str,
-  content_type: &'static str,
-  filename: Option<&str>,
-  permit: OwnedSemaphorePermit,
-  request_headers: &HeaderMap,
-) -> Result<Response> {
-  let etag = format!("\"{hash}\"");
-  let not_modified = request_headers
-    .get(header::IF_NONE_MATCH)
-    .and_then(|value| value.to_str().ok())
-    == Some(etag.as_str());
-  let mut response = if not_modified {
-    drop(permit);
-    StatusCode::NOT_MODIFIED.into_response()
-  } else {
-    let stream =
-      ReaderStream::with_capacity(tokio::fs::File::from_std(file), 64 * 1024).map(move |chunk| {
-        let _keep_permit_until_body_is_dropped = &permit;
-        chunk
-      });
-    Response::new(Body::from_stream(stream))
-  };
-  let headers = response.headers_mut();
-  headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
-  headers.insert(
-    header::CACHE_CONTROL,
-    HeaderValue::from_static("public, max-age=31536000, immutable"),
-  );
-  headers.insert(
-    header::ETAG,
-    HeaderValue::from_str(&etag).map_err(|_| StoreError::internal())?,
-  );
-  if !not_modified {
-    headers.insert(header::CONTENT_LENGTH, HeaderValue::from(size));
-  }
-  if let Some(filename) = filename {
-    headers.insert(
-      header::CONTENT_DISPOSITION,
-      HeaderValue::from_str(&format!("attachment; filename=\"{filename}\""))
-        .map_err(|_| StoreError::internal())?,
-    );
-  }
-  Ok(response)
+  downloads::file_response(file, size, &hash, "image/png", None, permit, request).await
 }

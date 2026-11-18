@@ -55,6 +55,13 @@ export function Store({
           {state.status}
         </p>
       )}
+      {!state.detail && state.restart_after_install && (
+        <div className="store-form-actions">
+          <button className="store-primary" disabled={!!state.operation} onClick={state.openApplet}>
+            {state.operation === 'restart' ? 'Restarting…' : 'Restart applet'}
+          </button>
+        </div>
+      )}
       {state.action_error && (
         <p className="store-feedback error" role="alert">
           {state.action_error}
@@ -67,6 +74,7 @@ export function Store({
             selected_version={state.selected_version}
             busy={!!state.operation}
             installing={state.operation === 'install'}
+            restarting={state.operation === 'restart'}
             progress={state.progress}
             onVersion={state.setSelectedVersion}
             onInstall={state.install}

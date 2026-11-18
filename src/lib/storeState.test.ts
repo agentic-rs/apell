@@ -44,6 +44,7 @@ const detail: StoreDetail = {
   store_url,
   applet,
   installed,
+  restart_required: false,
   releases: [
     { ...preview, action: 'update' },
     { ...stable, action: 'installed' },

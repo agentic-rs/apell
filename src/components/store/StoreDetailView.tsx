@@ -17,6 +17,7 @@ export function StoreDetailView({
   selected_version,
   busy,
   installing,
+  restarting,
   progress,
   onVersion,
   onInstall,
@@ -27,6 +28,7 @@ export function StoreDetailView({
   selected_version: string;
   busy: boolean;
   installing: boolean;
+  restarting: boolean;
   progress?: InstallProgress;
   onVersion: (version: string) => void;
   onInstall: (release: StoreReleaseOption) => void;
@@ -118,11 +120,13 @@ export function StoreDetailView({
                   >
                     {installing
                       ? 'Installing…'
-                      : can_switch
-                        ? 'Switch to this Store'
-                        : release.action === 'update'
-                          ? `Update to ${release.version}`
-                          : 'Install applet'}
+                      : release.downloaded_bytes !== undefined
+                        ? 'Continue download'
+                        : can_switch
+                          ? 'Switch to this Store'
+                          : release.action === 'update'
+                            ? `Update to ${release.version}`
+                            : 'Install applet'}
                   </button>
                 )}
                 {detail.installed && (
@@ -131,7 +135,13 @@ export function StoreDetailView({
                     disabled={busy}
                     onClick={onOpen}
                   >
-                    {busy && !installing ? 'Opening…' : 'Open applet'}
+                    {detail.restart_required
+                      ? restarting
+                        ? 'Restarting…'
+                        : 'Restart applet'
+                      : busy && !installing
+                        ? 'Opening…'
+                        : 'Open applet'}
                   </button>
                 )}
                 {!detail.installed && !can_install && (
@@ -140,6 +150,12 @@ export function StoreDetailView({
                   </button>
                 )}
               </div>
+              {!installing && !!release.downloaded_bytes && can_install && (
+                <p className="store-action-reason">
+                  {storeSize(release.downloaded_bytes)} of {storeSize(release.size_bytes)}{' '}
+                  downloaded.
+                </p>
+              )}
               {installing && (
                 <div className="store-progress" role="status">
                   <progress
@@ -158,7 +174,11 @@ export function StoreDetailView({
                 <p className="store-action-reason">{release.action_reason}</p>
               )}
               {release.action === 'installed' && (
-                <p className="store-action-reason">This version is installed.</p>
+                <p className="store-action-reason">
+                  {detail.restart_required
+                    ? 'Restart the applet to use the installed version.'
+                    : 'This version is installed.'}
+                </p>
               )}
             </>
           )}

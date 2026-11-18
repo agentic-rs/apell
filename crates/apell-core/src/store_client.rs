@@ -1,6 +1,8 @@
 //! Native, credential-free access to one explicitly configured applet store.
 mod model;
+mod transfer;
 pub use model::{StoreApplet, StoreCatalog, StoreDetail, StoreRelease};
+pub use transfer::{DownloadCheckpoint, DownloadOutcome};
 
 use crate::bundles::{digest, parse};
 use crate::icons::{png_data_url, MAX_ICON_BYTES};
@@ -117,6 +119,17 @@ impl StoreClient {
     selected: &StoreRelease,
     progress: impl Fn(u64, Option<u64>),
   ) -> Result<Vec<u8>, String> {
+    self.review_download(applet_id, selected).await?;
+    let bytes = bounded_body(
+      self.response(&selected.download_url).await?,
+      selected.size_bytes as usize,
+      |received, _| progress(received, Some(selected.size_bytes)),
+    )
+    .await?;
+    verify_download(bytes, applet_id, selected).await
+  }
+
+  async fn review_download(&self, applet_id: &str, selected: &StoreRelease) -> Result<(), String> {
     selected.validate(applet_id)?;
     let detail = self.detail(applet_id).await?;
     let current = detail
@@ -127,39 +140,7 @@ impl StoreClient {
     if current != selected {
       return Err("The selected release changed. Review its details again.".into());
     }
-    let path = format!(
-      "/api/v1/applets/{applet_id}/versions/{}/download",
-      selected.version
-    );
-    let bytes = bounded_body(
-      self.response(&path).await?,
-      selected.size_bytes as usize,
-      |received, _| progress(received, Some(selected.size_bytes)),
-    )
-    .await?;
-    if bytes.len() as u64 != selected.size_bytes || digest(&bytes) != selected.sha256 {
-      return Err("The downloaded package does not match the selected release.".into());
-    }
-    let id = applet_id.to_owned();
-    let release = selected.clone();
-    tokio::task::spawn_blocking(move || {
-      let package = parse(&bytes)?;
-      let manifest = package.manifest;
-      if manifest.applet_id != id
-        || manifest.version != release.version
-        || manifest.api_version != release.api_version
-        || manifest.permissions != release.permissions
-        || manifest.network != release.network
-        || manifest.lib.is_some() != release.has_backend
-      {
-        return Err(
-          "The package identity or permissions do not match the reviewed release.".into(),
-        );
-      }
-      Ok(bytes)
-    })
-    .await
-    .map_err(|_| "Package validation was interrupted.".to_owned())?
+    Ok(())
   }
 
   pub async fn icon(&self, icon_url: &str) -> Result<String, String> {
@@ -170,6 +151,34 @@ impl StoreClient {
     }
     png_data_url(&bytes)
   }
+}
+
+async fn verify_download(
+  bytes: Vec<u8>,
+  applet_id: &str,
+  selected: &StoreRelease,
+) -> Result<Vec<u8>, String> {
+  if bytes.len() as u64 != selected.size_bytes || digest(&bytes) != selected.sha256 {
+    return Err("The downloaded package does not match the selected release.".into());
+  }
+  let id = applet_id.to_owned();
+  let release = selected.clone();
+  tokio::task::spawn_blocking(move || {
+    let package = parse(&bytes)?;
+    let manifest = package.manifest;
+    if manifest.applet_id != id
+      || manifest.version != release.version
+      || manifest.api_version != release.api_version
+      || manifest.permissions != release.permissions
+      || manifest.network != release.network
+      || manifest.lib.is_some() != release.has_backend
+    {
+      return Err("The package identity or permissions do not match the reviewed release.".into());
+    }
+    Ok(bytes)
+  })
+  .await
+  .map_err(|_| "Package validation was interrupted.".to_owned())?
 }
 
 async fn bounded_body(

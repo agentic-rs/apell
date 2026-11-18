@@ -1,6 +1,5 @@
 use super::super::*;
 use std::{
-  collections::HashMap,
   io::{Cursor, Write},
   sync::{Arc, Mutex},
 };
@@ -62,6 +61,7 @@ pub fn detail(release: &StoreRelease) -> StoreDetail {
   }
 }
 
+#[derive(Clone)]
 pub struct Reply {
   status: u16,
   headers: Vec<(String, String)>,
@@ -97,8 +97,8 @@ impl MockStore {
     let origin = format!("http://{}", listener.local_addr().unwrap());
     let requests = Arc::new(Mutex::new(Vec::new()));
     let captured = requests.clone();
-    let routes: HashMap<_, _> = routes.into_iter().collect();
     let task = tokio::spawn(async move {
+      let mut routes = routes;
       loop {
         let (mut stream, _) = listener.accept().await.unwrap();
         let mut request = Vec::new();
@@ -116,7 +116,14 @@ impl MockStore {
         let path = request.split_whitespace().nth(1).unwrap_or("").to_owned();
         captured.lock().unwrap().push(request);
         let missing = Reply::status(404, Vec::new());
-        let reply = routes.get(&path).unwrap_or(&missing);
+        let reply = match routes.iter().position(|(route, _)| route == &path) {
+          // Repeated routes return their queued replies, then retain the last.
+          Some(index) if routes[index + 1..].iter().any(|(route, _)| route == &path) => {
+            routes.remove(index).1
+          }
+          Some(index) => routes[index].1.clone(),
+          None => missing,
+        };
         let mut headers = format!("HTTP/1.1 {} Status\r\nConnection: close\r\n", reply.status);
         if !reply
           .headers

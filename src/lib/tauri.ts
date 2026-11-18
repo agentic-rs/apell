@@ -29,6 +29,7 @@ import type {
   StoreCatalog,
   StoreDetail,
   StoreInstallRequest,
+  StoreInstallResult,
 } from './types';
 
 declare global {
@@ -57,7 +58,7 @@ export const getStoreDetail = (store_url: string, applet_id: string) =>
 export const getStoreIcon = (store_url: string, icon_url: string) =>
   shellCall<string>('store.icon', { store_url, icon_url });
 export const installStoreRelease = (request: StoreInstallRequest) =>
-  shellCall<InstalledApplet>('store.install', request);
+  shellCall<StoreInstallResult>('store.install', request);
 export const installBundle = (
   params:
     | { bundle_base64: string }
@@ -76,6 +77,8 @@ export const updateApplet = (applet_id: string) =>
 export const removeApplet = (applet_id: string) => shellCall<void>('applets.remove', { applet_id });
 export const launchApplet = (applet_id: string) =>
   shellCall<AppletSession>('applets.launch', { applet_id });
+export const restartApplet = (applet_id: string) =>
+  shellCall<AppletSession>('applets.restart', { applet_id });
 export const closeApplet = (session_id: string, view_id: string) =>
   shellCall<void>('applets.close', { session_id, view_id });
 export const reloadApplet = (session_id: string, view_id: string) =>

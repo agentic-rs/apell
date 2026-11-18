@@ -97,8 +97,13 @@ pub async fn shell_command(
       host.attach_view(string(&params, "session_id")?, string(&params, "view_id")?)?,
     )
     .map_err(|_| "Could not encode applet attachment.".into()),
-    "applets.launch" => {
-      let attachment = crate::applets::launch(app, string(&params, "applet_id")?).await?;
+    "applets.launch" | "applets.restart" => {
+      let attachment = crate::applets::launch(
+        app,
+        string(&params, "applet_id")?,
+        method == "applets.restart",
+      )
+      .await?;
       serde_json::to_value(attachment).map_err(|_| "Could not encode applet attachment.".into())
     }
     "applets.close" => {

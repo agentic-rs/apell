@@ -237,7 +237,7 @@ Install a local `.apel` file from the **+** sheet. For GitHub distribution, atta
 
 A GitHub install records the numeric repository ID, repository name, stable asset name, applet ID, and explicit tag when selected. **+ → GitHub updates → Update** follows that saved tag or latest stable selection and checks its binding before switching versions. A file install accepts updates from a file. Installing changed local content over a GitHub or Store applet clears its remote update source. Versions cannot decrease. Stable releases with changed bytes must advance the applet version; an already installed tagged prerelease can accept rebuilt content at the same version while it remains a prerelease. An identical reinstall keeps the existing source.
 
-An update makes the new package available for the next run. If the applet already has a run in this Apell process, it keeps its current code and assets across close, reopen, and reload. Restart Apell to start that applet with the updated package. Previously installed API-1 JSON applets can still load from their existing cache. New installs require `.apel` packages.
+An update makes the new package available for the next run. If the applet already has a run in this Apell process, it keeps its current code and assets across close, reopen, and reload. For Store installs, choose **Restart applet** on its Store page to open the updated package without restarting Apell. Previously installed API-1 JSON applets can still load from their existing cache. New installs require `.apel` packages.
 
 ## Current scope
 
