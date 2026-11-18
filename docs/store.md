@@ -20,18 +20,32 @@ Stable releases are recommended when available. Preview releases can be selected
 explicitly. **Updates** shows newer releases for applets installed from the
 selected store. Review an update's permissions, including newly declared access,
 then choose **Update**. Updates are manual, and existing applet data is retained.
-A running applet keeps its current backend and assets until Apell restarts.
+If the old version is running, choose **Restart applet** after installing to
+open the new package and backend. This leaves Apell and other applets running.
 
 Each store installation records the store address, applet ID, and stable or preview
 channel. Changing the configured store does not change installed applets' update
-sources. Existing file or GitHub installations with the same applet ID remain on
-their original source; use their existing update flow. Source migration and
-automatic background updates are not included.
+sources. To move an applet from a file, a GitHub release, or another store, open its
+page, choose a Store release, and confirm **Switch to this Store**. This keeps the
+applet's saved data and changes its source for future updates. The selected release
+can access that data, including secure storage if declared; remembered device
+permissions from the old source do not carry over. A source switch cannot
+downgrade an installed applet. Automatic background updates are not included.
+
+If an install download is interrupted, **Continue download** retries the
+reviewed release from the last saved byte when the Store supports byte ranges.
+Apell keeps one partial package in its local cache, including across app
+restarts. If a Store cannot resume the transfer, Apell downloads the package
+again and checks the full checksum before installing. On iOS, a download you
+start can keep going while the phone is locked for as long as iOS grants
+background time. If iOS pauses Apell, reopen it to continue.
 
 The native host rechecks the reviewed release before downloading, then verifies
 the package size, checksum, applet identity, version, and declared capabilities.
 The installation also checks that the installed package has not changed since
-review. Failed or stale updates leave the previous installation intact.
+review. A source switch checks the previous source and whether the applet had
+been removed, including when it will restore retained data. Failed or stale
+operations leave the previous installation intact.
 
 ## Accounts and package ownership
 

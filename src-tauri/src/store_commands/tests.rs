@@ -1,5 +1,5 @@
 use super::*;
-use apell_core::bundles::{GitHubSource, Manifest};
+use apell_core::bundles::{GitHubSource, Manifest, UnavailableApplet};
 
 fn release(version: &str) -> StoreRelease {
   StoreRelease {
@@ -38,24 +38,56 @@ fn installed(version: &str) -> InstalledApplet {
   }
 }
 fn action(release: &StoreRelease, saved: Option<&InstalledApplet>) -> ReleaseAction {
-  release_action("https://store.example", "sample", release, saved, None).0
+  let mut report = empty_report();
+  report.applets.extend(saved.cloned());
+  release_action(
+    release,
+    &review_install(&report, "https://store.example", "sample"),
+  )
+  .0
 }
 
-#[test]
-fn reinstall_is_offered_only_by_the_store_that_owns_the_saved_data() {
-  let mut report = AppletListReport {
+fn empty_report() -> AppletListReport {
+  AppletListReport {
     applets: vec![],
     unavailable: vec![],
-    retained_sources: [("sample".into(), installed("1.0.0").source)].into(),
-  };
-  assert!(blocked_install_reason(&report, "https://store.example", "sample").is_none());
-  assert!(blocked_install_reason(&report, "https://other.example", "sample").is_some());
-  report.retained_sources.insert("sample".into(), None);
-  assert!(blocked_install_reason(&report, "https://store.example", "sample").is_some());
+    retained: Default::default(),
+  }
 }
 
 #[test]
-fn release_choices_preserve_source_ownership_and_never_offer_downgrades() {
+fn retained_data_requires_confirmation_when_reinstalling_from_another_source() {
+  let mut report = empty_report();
+  let selected = release("1.0.0");
+  let snapshot = StoreSwitchSnapshot {
+    sha256: "a".repeat(64),
+    source: installed("1.0.0").source,
+    removed: true,
+  };
+  report.retained.insert("sample".into(), snapshot.clone());
+
+  let original = review_install(&report, "https://store.example", "sample");
+  assert_eq!(
+    release_action(&selected, &original).0,
+    ReleaseAction::Install
+  );
+  assert!(!checked_switch(&selected, &original, None, None).unwrap());
+
+  let different = review_install(&report, "https://other.example", "sample");
+  assert_eq!(
+    release_action(&selected, &different).0,
+    ReleaseAction::SwitchSource
+  );
+  assert!(checked_switch(&selected, &different, None, None).is_err());
+  assert!(checked_switch(&selected, &different, None, Some(&snapshot)).unwrap());
+
+  report.retained.get_mut("sample").unwrap().source = None;
+  let stale = review_install(&report, "https://other.example", "sample");
+  assert!(checked_switch(&selected, &stale, None, Some(&snapshot)).is_err());
+}
+
+#[test]
+fn release_choices_keep_ordinary_updates_immutable_and_never_offer_downgrades() {
   let selected = release("1.0.0");
   assert_eq!(action(&selected, None), ReleaseAction::Install);
   assert_eq!(
@@ -69,17 +101,6 @@ fn release_choices_preserve_source_ownership_and_never_offer_downgrades() {
   assert_eq!(
     action(&selected, Some(&installed("2.0.0"))),
     ReleaseAction::Older
-  );
-  assert_eq!(
-    release_action(
-      "https://store.example",
-      "sample",
-      &selected,
-      None,
-      Some("Unavailable")
-    )
-    .0,
-    ReleaseAction::Conflict
   );
   let mut saved = installed("1.0.0");
   saved.sha256 = "b".repeat(64);
@@ -101,10 +122,44 @@ fn release_choices_preserve_source_ownership_and_never_offer_downgrades() {
       channel: StoreChannel::Stable,
     })),
   ] {
-    saved = installed("0.9.0");
+    saved = installed("1.0.0");
+    saved.sha256 = "b".repeat(64);
     saved.source = source;
+    assert_eq!(action(&selected, Some(&saved)), ReleaseAction::SwitchSource);
+    saved.manifest.version = "2.0.0".into();
+    assert_eq!(action(&selected, Some(&saved)), ReleaseAction::Older);
+    saved.manifest.version = "legacy".into();
     assert_eq!(action(&selected, Some(&saved)), ReleaseAction::Conflict);
   }
+}
+
+#[test]
+fn source_switch_requires_the_reviewed_active_package_and_cannot_replace_a_broken_one() {
+  let mut report = empty_report();
+  let mut saved = installed("1.0.0");
+  saved.source = None;
+  report.applets.push(saved.clone());
+  let selected = release("1.0.0");
+  let review = review_install(&report, "https://store.example", "sample");
+  let snapshot = review.switch_snapshot.clone().unwrap();
+  assert!(checked_switch(&selected, &review, None, Some(&snapshot)).is_err());
+  assert!(checked_switch(&selected, &review, Some(&saved.sha256), None).is_err());
+  assert!(checked_switch(&selected, &review, Some(&saved.sha256), Some(&snapshot)).unwrap());
+  report.applets[0].source = installed("1.0.0").source;
+  let stale = review_install(&report, "https://store.example", "sample");
+  assert!(checked_switch(&selected, &stale, Some(&saved.sha256), Some(&snapshot)).is_err());
+
+  report.applets.clear();
+  report.unavailable.push(UnavailableApplet {
+    applet_id: "sample".into(),
+    error: "Broken package".into(),
+  });
+  let broken = review_install(&report, "https://store.example", "sample");
+  assert_eq!(
+    release_action(&selected, &broken).0,
+    ReleaseAction::Conflict
+  );
+  assert!(checked_switch(&selected, &broken, None, Some(&snapshot)).is_err());
 }
 
 #[test]

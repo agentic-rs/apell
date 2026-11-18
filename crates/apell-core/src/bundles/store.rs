@@ -33,7 +33,17 @@ pub struct AppletListReport {
   pub applets: Vec<InstalledApplet>,
   pub unavailable: Vec<UnavailableApplet>,
   #[serde(skip)]
-  pub retained_sources: BTreeMap<String, Option<PackageSource>>,
+  pub retained: BTreeMap<String, StoreSwitchSnapshot>,
+}
+
+/// Exact ownership and package state reviewed before changing sources.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct StoreSwitchSnapshot {
+  pub sha256: String,
+  #[serde(deserialize_with = "Option::deserialize")]
+  pub source: Option<PackageSource>,
+  pub removed: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -52,6 +62,14 @@ struct PackageRecord {
 }
 
 impl PackageRecord {
+  fn switch_snapshot(&self) -> StoreSwitchSnapshot {
+    StoreSwitchSnapshot {
+      sha256: self.sha256.clone(),
+      source: self.source.clone(),
+      removed: self.removed,
+    }
+  }
+
   fn write(&self, directory: &Path) -> Result<(), String> {
     let pointer = serde_json::to_vec(self).map_err(|_| "Could not encode package source.")?;
     let path = directory.join("active");
@@ -82,6 +100,7 @@ enum InstallGuard<'a> {
   Any,
   Update(&'a str),
   StoreSnapshot(Option<&'a str>),
+  StoreSwitch(&'a StoreSwitchSnapshot),
 }
 
 pub struct BundleStore {
@@ -180,6 +199,26 @@ impl BundleStore {
     )
   }
 
+  /// Move an applet and its retained data to a different, explicitly reviewed
+  /// Store source. The release must still match the reviewed bytes.
+  pub fn switch_to_store_release(
+    &self,
+    bytes: &[u8],
+    expected_hash: &str,
+    source: StoreSource,
+    expected: &StoreSwitchSnapshot,
+  ) -> Result<InstalledApplet, String> {
+    if !valid_hash(&expected.sha256) {
+      return Err("Invalid installed package snapshot.".into());
+    }
+    self.publish(
+      bytes,
+      Some(expected_hash),
+      Some(source.into()),
+      InstallGuard::StoreSwitch(expected),
+    )
+  }
+
   fn publish(
     &self,
     bytes: &[u8],
@@ -208,8 +247,29 @@ impl BundleStore {
     let _lock = self.lock_storage()?;
     let directory = self.root.join(id);
     let record = self.record(id)?;
+    let switch_source = if let InstallGuard::StoreSwitch(expected) = guard {
+      let current = record
+        .as_ref()
+        .ok_or("The applet no longer has an installation source.")?;
+      if &current.switch_snapshot() != expected {
+        return Err(
+          "The installed applet changed. Reopen its store page before switching sources.".into(),
+        );
+      }
+      if current
+        .source
+        .as_ref()
+        .zip(source.as_ref())
+        .is_some_and(|(old, new)| old.same_identity(new))
+      {
+        return Err("The applet already uses this Store source.".into());
+      }
+      true
+    } else {
+      false
+    };
     let retained = record.as_ref().filter(|record| record.removed);
-    if let Some(retained) = retained {
+    if let Some(retained) = retained.filter(|_| !switch_source) {
       let same_source = match (&retained.source, &source) {
         (None, None) => true,
         (Some(old), Some(new)) => old.same_identity(new),
@@ -264,10 +324,11 @@ impl BundleStore {
     }
     if let Some(old) = previous {
       if let Some(incoming) = &source {
-        if old
-          .source
-          .as_ref()
-          .is_none_or(|prior| !prior.same_identity(incoming))
+        if !switch_source
+          && old
+            .source
+            .as_ref()
+            .is_none_or(|prior| !prior.same_identity(incoming))
         {
           return Err("This applet ID belongs to a different installation source.".into());
         }
@@ -282,7 +343,7 @@ impl BundleStore {
           semver::Version::parse(&manifest.version).map_err(|_| "Invalid package version.")?;
         match next.cmp_precedence(&prior) {
           std::cmp::Ordering::Less => return Err("A newer version is already installed.".into()),
-          std::cmp::Ordering::Equal => {
+          std::cmp::Ordering::Equal if !switch_source => {
             if let Some(incoming) = &source {
               let prior = old
                 .source
@@ -293,6 +354,8 @@ impl BundleStore {
           }
           _ => {}
         }
+      } else if switch_source {
+        return Err("The installed applet version cannot be compared to the Store release.".into());
       }
     }
     let active = PackageRecord {
@@ -353,7 +416,7 @@ impl BundleStore {
     let mut report = AppletListReport {
       applets: Vec::new(),
       unavailable: Vec::new(),
-      retained_sources: BTreeMap::new(),
+      retained: BTreeMap::new(),
     };
     for id in self.ids()? {
       let result = self.record(&id).and_then(|record| match record {
@@ -361,7 +424,9 @@ impl BundleStore {
           .read_active(&active)
           .map(|bundle| Some(active.installed(&bundle))),
         Some(retained) => {
-          report.retained_sources.insert(id.clone(), retained.source);
+          report
+            .retained
+            .insert(id.clone(), retained.switch_snapshot());
           Ok(None)
         }
         None => Ok(None),

@@ -86,6 +86,16 @@ command exits. Use `appell dev --list` to see available targets. Use
 specific target UDID to run unattended. From outside the checkout, pass
 `--project PATH` to select the Apell source directory.
 
+Pass `--install FILE.apel` to install a local applet as the shell starts. Paths
+are relative to your terminal, including when using `--project`. Repeat the
+flag for multiple packages (up to 16). Apell validates them and reports the
+result of each install. Local development builds keep applet data and follow
+the same version and source rules as installing from a file in the shell.
+
+```sh
+apell dev --target 'Apell iPhone 16 Pro' --install ./dist/my-applet.apel
+```
+
 For a physical iPhone, sign in to your Apple Account in Xcode, pair and unlock
 the phone, and enable Developer Mode. Select your team (a Personal Team works)
 under **Signing & Capabilities** in the generated Xcode project and enable
@@ -113,12 +123,10 @@ pnpm tauri android build --debug --target aarch64
 
 Choose a target supported by the local toolchain. Physical iOS devices require local signing setup. Generated Xcode and Gradle projects under `src-tauri/gen/` are ignored because they can contain machine paths and signing identities; regenerate them with the init commands.
 
-After each completed app change, update the running simulator as well as building it. On Apple Silicon with one simulator booted:
+After each completed app change, update the dedicated simulator as well as building it. Select it explicitly if several simulators are running:
 
 ```sh
-pnpm tauri ios build --debug --target aarch64-sim --ci
-xcrun simctl install booted src-tauri/gen/apple/build/arm64-sim/Apell.app
-xcrun simctl launch --terminate-running-process booted dev.apell.shell
+apell dev --target 'Apell iPhone 16 Pro'
 ```
 
 Verify the installed executable matches the build before reporting the simulator updated. Reinstalling the shell retains applet data. If the bundled Companion changed, choose **+ → Update Companion**. If Companion had already started, restart Apell before checking the new version.
@@ -229,7 +237,7 @@ Install a local `.apel` file from the **+** sheet. For GitHub distribution, atta
 
 A GitHub install records the numeric repository ID, repository name, stable asset name, applet ID, and explicit tag when selected. **+ → GitHub updates → Update** follows that saved tag or latest stable selection and checks its binding before switching versions. A file install accepts updates from a file. Installing changed local content over a GitHub or Store applet clears its remote update source. Versions cannot decrease. Stable releases with changed bytes must advance the applet version; an already installed tagged prerelease can accept rebuilt content at the same version while it remains a prerelease. An identical reinstall keeps the existing source.
 
-An update makes the new package available for the next run. If the applet already has a run in this Apell process, it keeps its current code and assets across close, reopen, and reload. Restart Apell to start that applet with the updated package. Previously installed API-1 JSON applets can still load from their existing cache. New installs require `.apel` packages.
+An update makes the new package available for the next run. If the applet already has a run in this Apell process, it keeps its current code and assets across close, reopen, and reload. For Store installs, choose **Restart applet** on its Store page to open the updated package without restarting Apell. Previously installed API-1 JSON applets can still load from their existing cache. New installs require `.apel` packages.
 
 ## Current scope
 

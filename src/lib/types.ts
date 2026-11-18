@@ -97,24 +97,37 @@ export interface StoreCatalog {
   store_url: string;
   applets: StoreCatalogEntry[];
 }
-export type StoreReleaseAction = 'install' | 'update' | 'installed' | 'older' | 'conflict';
+export type StoreReleaseAction =
+  'install' | 'update' | 'switch_source' | 'installed' | 'older' | 'conflict';
 export interface StoreReleaseOption extends StoreRelease {
   action: StoreReleaseAction;
   action_reason?: string;
+  downloaded_bytes?: number;
+}
+export interface StoreSwitchSnapshot {
+  sha256: string;
+  source: PackageSource | null;
+  removed: boolean;
 }
 export interface StoreDetail {
   store_url: string;
   applet: StoreApplet;
   releases: StoreReleaseOption[];
   installed: InstalledApplet | null;
+  restart_required: boolean;
+  switch_snapshot?: StoreSwitchSnapshot;
 }
 export interface StoreInstallRequest {
   store_url: string;
   applet_id: string;
   release: StoreRelease;
   expected_installed_sha256: string | null;
+  switch_snapshot?: StoreSwitchSnapshot;
   operation_id: string;
 }
+export type StoreInstallResult =
+  | { status: 'installed'; applet: InstalledApplet; restart_required: boolean }
+  | { status: 'paused'; received_bytes: number };
 export interface BackendEvent {
   session_id: string;
   event: { name: string; payload: unknown };

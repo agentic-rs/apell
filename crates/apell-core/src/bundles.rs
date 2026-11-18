@@ -7,7 +7,9 @@ pub use apell_package::{
 };
 pub use source::{GitHubSource, PackageSource, StoreChannel, StoreSource};
 use std::{io::Read, path::Path};
-pub use store::{AppletListReport, BundleStore, InstalledApplet, UnavailableApplet};
+pub use store::{
+  AppletListReport, BundleStore, InstalledApplet, StoreSwitchSnapshot, UnavailableApplet,
+};
 
 fn read_version(path: &Path, expected_hash: &str) -> Result<Vec<u8>, String> {
   let file = std::fs::File::open(path).map_err(|_| "Could not read installed bundle.")?;

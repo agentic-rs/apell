@@ -32,10 +32,17 @@ fn removal_keeps_only_the_binding_and_accepts_a_fresh_install_from_its_source() 
     let report = reopened.list_report().unwrap();
     assert!(report.unavailable.is_empty());
     assert_eq!(report.applets[0].manifest.applet_id, "other");
-    assert_eq!(report.retained_sources.get("sample"), Some(original));
+    assert_eq!(
+      report.retained.get("sample"),
+      Some(&StoreSwitchSnapshot {
+        sha256: digest(&next),
+        source: original.clone(),
+        removed: true,
+      })
+    );
     assert!(serde_json::to_value(report)
       .unwrap()
-      .get("retained_sources")
+      .get("retained")
       .is_none());
     assert_eq!(fs::read_dir(dir.path().join("sample")).unwrap().count(), 1);
 
@@ -79,9 +86,75 @@ fn removal_keeps_only_the_binding_and_accepts_a_fresh_install_from_its_source() 
         .install_with_source(&first, None, original.clone())
         .unwrap();
     }
-    assert!(reopened.list_report().unwrap().retained_sources.is_empty());
+    assert!(reopened.list_report().unwrap().retained.is_empty());
     assert!(reopened.load("sample").is_ok());
   }
+}
+
+#[test]
+fn a_store_source_switch_requires_the_reviewed_active_or_retained_snapshot() {
+  let dir = tempfile::tempdir().unwrap();
+  let store = BundleStore::new(dir.path().into());
+  let current = package("sample", "2.0.0");
+  let published = archive(&[
+    ("manifest.json", &manifest("sample", "2.0.0")),
+    ("index.html", b"<h1>Store version</h1>"),
+  ]);
+  let published_hash = digest(&published);
+  let older = package("sample", "1.0.0");
+  let snapshot = StoreSwitchSnapshot {
+    sha256: digest(&current),
+    source: None,
+    removed: false,
+  };
+  let destination = store_source(StoreChannel::Stable);
+  store.install(&current, &snapshot.sha256).unwrap();
+  assert!(store
+    .install_store_release(
+      &current,
+      &snapshot.sha256,
+      destination.clone(),
+      Some(&snapshot.sha256)
+    )
+    .is_err());
+  assert!(store
+    .switch_to_store_release(&older, &digest(&older), destination.clone(), &snapshot)
+    .is_err());
+  let switched = store
+    .switch_to_store_release(&published, &published_hash, destination.clone(), &snapshot)
+    .unwrap();
+  assert_eq!(switched.sha256, published_hash);
+  assert_eq!(switched.source, Some(destination.clone().into()));
+  let other_store = StoreSource {
+    store_url: "https://other.example".into(),
+    ..destination.clone()
+  };
+  let active = StoreSwitchSnapshot {
+    sha256: switched.sha256,
+    source: switched.source,
+    removed: false,
+  };
+  assert!(store
+    .switch_to_store_release(&current, &snapshot.sha256, destination, &active)
+    .is_err());
+  assert!(store
+    .switch_to_store_release(&current, &snapshot.sha256, other_store.clone(), &snapshot)
+    .is_err());
+  store.remove("sample", || Ok(())).unwrap();
+  assert!(store
+    .switch_to_store_release(&current, &snapshot.sha256, other_store.clone(), &active)
+    .is_err());
+  let reviewed = store
+    .list_report()
+    .unwrap()
+    .retained
+    .remove("sample")
+    .unwrap();
+  let reinstalled = store
+    .switch_to_store_release(&current, &snapshot.sha256, other_store.clone(), &reviewed)
+    .unwrap();
+  assert_eq!(reinstalled.source, Some(other_store.into()));
+  assert!(store.list_report().unwrap().retained.is_empty());
 }
 
 #[test]

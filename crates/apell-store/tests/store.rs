@@ -192,6 +192,137 @@ async fn publish_catalog_download_and_conditional_request_keep_identity() {
     .is_empty());
 }
 
+#[tokio::test]
+async fn package_download_resumes_only_the_matching_representation() {
+  let (_root, app) = app();
+  let bytes = package("1.2.3", "<h1>Sample</h1>");
+  let response = app.clone().oneshot(publish_request(&bytes)).await.unwrap();
+  assert_eq!(response.status(), StatusCode::CREATED);
+  let url = "/api/v1/applets/sample/versions/1.2.3/download";
+  let size = bytes.len();
+  let etag = format!("\"{}\"", apell_package::digest(&bytes));
+  let head = app
+    .clone()
+    .oneshot(
+      Request::head(url)
+        .header(header::RANGE, "bytes=1-5")
+        .body(Body::empty())
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+  assert_eq!(head.status(), StatusCode::OK);
+  assert_eq!(head.headers()[header::CONTENT_LENGTH], size.to_string());
+  assert_eq!(head.headers()[header::ACCEPT_RANGES], "bytes");
+  assert!(!head.headers().contains_key(header::CONTENT_RANGE));
+  assert!(head
+    .into_body()
+    .collect()
+    .await
+    .unwrap()
+    .to_bytes()
+    .is_empty());
+
+  let offset = size / 2;
+  let resumed = app
+    .clone()
+    .oneshot(
+      Request::get(url)
+        .header(header::RANGE, format!("bytes={offset}-"))
+        .header(header::IF_RANGE, &etag)
+        .body(Body::empty())
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+  assert_eq!(resumed.status(), StatusCode::PARTIAL_CONTENT);
+  assert_eq!(
+    resumed.headers()[header::CONTENT_RANGE],
+    format!("bytes {offset}-{}/{size}", size - 1)
+  );
+  assert_eq!(
+    resumed.headers()[header::CONTENT_LENGTH],
+    (size - offset).to_string()
+  );
+  assert_eq!(resumed.headers()[header::ETAG], etag);
+  let mut combined = bytes[..offset].to_vec();
+  combined.extend_from_slice(&resumed.into_body().collect().await.unwrap().to_bytes());
+  assert_eq!(combined, bytes);
+
+  for validator in ["\"stale\"".to_owned(), format!("W/{etag}")] {
+    let full = app
+      .clone()
+      .oneshot(
+        Request::get(url)
+          .header(header::RANGE, "bytes=1-5")
+          .header(header::IF_RANGE, validator)
+          .body(Body::empty())
+          .unwrap(),
+      )
+      .await
+      .unwrap();
+    assert_eq!(full.status(), StatusCode::OK);
+    assert!(!full.headers().contains_key(header::CONTENT_RANGE));
+    assert_eq!(full.into_body().collect().await.unwrap().to_bytes(), bytes);
+  }
+
+  let suffix = app
+    .clone()
+    .oneshot(
+      Request::get(url)
+        .header(header::RANGE, "bytes=-8")
+        .body(Body::empty())
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+  assert_eq!(suffix.status(), StatusCode::PARTIAL_CONTENT);
+  assert_eq!(
+    suffix.headers()[header::CONTENT_RANGE],
+    format!("bytes {}-{}/{size}", size - 8, size - 1)
+  );
+  assert_eq!(
+    suffix.into_body().collect().await.unwrap().to_bytes(),
+    &bytes[size - 8..]
+  );
+
+  let out_of_bounds = app
+    .clone()
+    .oneshot(
+      Request::get(url)
+        .header(header::RANGE, format!("bytes={size}-"))
+        .body(Body::empty())
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+  assert_eq!(out_of_bounds.status(), StatusCode::RANGE_NOT_SATISFIABLE);
+  assert_eq!(
+    out_of_bounds.headers()[header::CONTENT_RANGE],
+    format!("bytes */{size}")
+  );
+  assert!(out_of_bounds
+    .into_body()
+    .collect()
+    .await
+    .unwrap()
+    .to_bytes()
+    .is_empty());
+
+  let unchanged = app
+    .oneshot(
+      Request::get(url)
+        .header(header::RANGE, "bytes=1-5")
+        .header(header::IF_NONE_MATCH, &etag)
+        .body(Body::empty())
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+  assert_eq!(unchanged.status(), StatusCode::NOT_MODIFIED);
+  assert!(!unchanged.headers().contains_key(header::CONTENT_RANGE));
+}
+
 #[test]
 fn repeated_uploads_are_idempotent_and_versions_are_immutable() {
   let root = tempfile::tempdir().unwrap();

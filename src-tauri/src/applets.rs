@@ -1,6 +1,6 @@
 use crate::host::{Host, Session};
 use crate::permissions::{GrantSource, ManagedPermission, PermissionMode};
-use apell_core::bundles::{Bundle, Manifest};
+use apell_core::bundles::{Bundle, InstalledApplet, Manifest};
 use apell_runtime::{HostError, HostEvents, HostServices, RuntimeHandle, ServiceFuture};
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -12,8 +12,19 @@ use tauri::{AppHandle, Emitter, Manager};
 
 struct RunningApplet {
   bundle: Arc<Bundle>,
+  sha256: String,
   backend: Option<RuntimeHandle>,
   grant_source: GrantSource,
+}
+
+impl RunningApplet {
+  fn is_stopped(&self) -> bool {
+    self.backend.as_ref().is_some_and(RuntimeHandle::is_stopped)
+  }
+
+  fn matches_install(&self, installed: &InstalledApplet) -> bool {
+    self.sha256 == installed.sha256 && self.grant_source == GrantSource::from(installed)
+  }
 }
 
 const BACKEND_STOPPED: &str = "apell:stopped";
@@ -197,15 +208,22 @@ impl Host {
     Ok(Some(run))
   }
 
-  pub async fn remove_applet(
+  pub(crate) fn needs_applet_restart(&self, installed: &InstalledApplet) -> bool {
+    self.running.lock().is_ok_and(|running| {
+      running.runs.values().any(|run| {
+        run.bundle.manifest.applet_id == installed.manifest.applet_id
+          && !run.is_stopped()
+          && !run.matches_install(installed)
+      })
+    })
+  }
+
+  // Callers hold run_gate until they finish removing or replacing the applet.
+  async fn stop_applet_locked(
     &self,
     applet_id: &str,
     on_stopped: impl FnOnce(&str),
   ) -> Result<(), String> {
-    // An earlier download must finish publishing before removal. Prevent
-    // launch from attaching to the retiring run or starting a replacement.
-    let _install = self.store_gate.lock().await;
-    let _launch = self.run_gate.lock().await;
     let session_id = self
       .running
       .lock()
@@ -219,6 +237,19 @@ impl Host {
         }
       }
     }
+    Ok(())
+  }
+
+  pub async fn remove_applet(
+    &self,
+    applet_id: &str,
+    on_stopped: impl FnOnce(&str),
+  ) -> Result<(), String> {
+    // An earlier download must finish publishing before removal. Prevent
+    // launch from attaching to the retiring run or starting a replacement.
+    let _install = self.store_gate.lock().await;
+    let _launch = self.run_gate.lock().await;
+    self.stop_applet_locked(applet_id, on_stopped).await?;
     let grants = self.grants.clone();
     let store = self.bundles.clone();
     let id = applet_id.to_owned();
@@ -382,7 +413,7 @@ impl HostServices for Services {
   }
 }
 
-pub async fn launch(app: AppHandle, applet_id: &str) -> Result<Attachment, String> {
+pub async fn launch(app: AppHandle, applet_id: &str, restart: bool) -> Result<Attachment, String> {
   let host = app.state::<Host>();
   let _gate = host.run_gate.lock().await;
   // The interpreter may have finished before its forwarding task gets the
@@ -393,25 +424,28 @@ pub async fn launch(app: AppHandle, applet_id: &str) -> Result<Attachment, Strin
     .map_err(|_| "Applet state is unavailable.")?
     .runs
     .iter()
-    .filter(|(_, run)| run.backend.as_ref().is_some_and(RuntimeHandle::is_stopped))
+    .filter(|(_, run)| run.is_stopped())
     .map(|(id, _)| id.clone())
     .collect();
   for id in stopped {
     retire_backend(&app, &host, &id)?;
   }
-  {
+  let existing = {
     let running = host
       .running
       .lock()
       .map_err(|_| "Applet state is unavailable.")?;
-    if let Some(id) = running.session_for(applet_id) {
-      drop(running);
-      return host.attach_run(&id);
-    }
-    if running.runs.len() >= 8 {
+    let existing = running.session_for(applet_id);
+    if existing.is_none() && running.runs.len() >= 8 {
       return Err(
         "Eight applets are already running. Restart Apell before opening another applet.".into(),
       );
+    }
+    existing
+  };
+  if let Some(id) = &existing {
+    if !restart {
+      return host.attach_run(id);
     }
   }
   let store = host.bundles.clone();
@@ -420,6 +454,23 @@ pub async fn launch(app: AppHandle, applet_id: &str) -> Result<Attachment, Strin
     tauri::async_runtime::spawn_blocking(move || store.load_with_metadata(&id))
       .await
       .map_err(|_| "Could not load the applet package.")??;
+  if let Some(id) = existing {
+    // Validate the replacement before stopping anything. Another shell action
+    // may already have restarted it since the Store displayed the offer.
+    let already_current = host
+      .running
+      .lock()
+      .map_err(|_| "Applet state is unavailable.")?
+      .runs
+      .get(&id)
+      .is_some_and(|run| !run.is_stopped() && run.matches_install(&installed));
+    if already_current {
+      return host.attach_run(&id);
+    }
+    host
+      .stop_applet_locked(applet_id, |session_id| notify_stopped(&app, session_id))
+      .await?;
+  }
   let bundle = Arc::new(bundle);
   let grant_source = GrantSource::from(&installed);
   let session_id = uuid::Uuid::new_v4().to_string();
@@ -515,6 +566,7 @@ pub async fn launch(app: AppHandle, applet_id: &str) -> Result<Attachment, Strin
     session_id.clone(),
     RunningApplet {
       bundle,
+      sha256: installed.sha256,
       backend,
       grant_source,
     },
@@ -576,6 +628,7 @@ mod tests {
       session_id.into(),
       RunningApplet {
         bundle,
+        sha256: installed.sha256.clone(),
         backend: None,
         grant_source: GrantSource::from(&installed),
       },
@@ -894,19 +947,29 @@ mod tests {
     assert_eq!(host.sessions.lock().unwrap().len(), 2);
   }
 
-  #[test]
-  fn retiring_an_interpreter_revokes_only_its_run_and_view() {
+  #[tokio::test]
+  async fn restarting_an_applet_revokes_only_its_run_and_view_and_keeps_data() {
     let (_directory, host) = fixture();
     let old = host.attach_run(RUN).unwrap();
     let run_session = host.session(RUN, "llm.generate").unwrap();
     let view_session = host.session(&old.view_id, "llm.generate").unwrap();
     let database_handle = database(&host, RUN);
+    host
+      .config
+      .dispatch(APPLET, "config.set", json!({"key":"theme","value":"dark"}))
+      .unwrap();
+    assert!(!host.needs_applet_restart(&host.bundles.installed(APPLET).unwrap()));
     install(&host, "neighbor", "1.0.0");
     seed_run(&host, "neighbor-run", "neighbor");
     install(&host, "neighbor", "2.0.0");
     install(&host, APPLET, "2.0.0");
+    assert!(host.needs_applet_restart(&host.bundles.installed(APPLET).unwrap()));
 
-    assert!(host.retire_run(RUN).unwrap().is_some());
+    let _launch = host.run_gate.lock().await;
+    host
+      .stop_applet_locked(APPLET, |id| assert_eq!(id, RUN))
+      .await
+      .unwrap();
     assert!(*run_session.cancellation.borrow() && *view_session.cancellation.borrow());
     assert!(host.view_bundle(&old.view_id).is_err());
     assert!(host.resume_view().unwrap().is_none());
@@ -927,10 +990,53 @@ mod tests {
     seed_run(&host, "reopened", APPLET);
     let reopened = host.attach_run("reopened").unwrap();
     assert_eq!(reopened.manifest.version, "2.0.0");
+    assert!(!host.needs_applet_restart(&host.bundles.installed(APPLET).unwrap()));
+    assert_eq!(
+      host
+        .config
+        .dispatch(APPLET, "config.get", json!({"key":"theme"}))
+        .unwrap(),
+      json!({"found":true,"value":"dark"})
+    );
     assert!(host.retire_run(RUN).unwrap().is_none());
     assert!(host.retire_run("neighbor-run").unwrap().is_some());
     host.require_view("reopened", &reopened.view_id).unwrap();
     assert_eq!(host.running.lock().unwrap().runs.len(), 1);
     assert_eq!(host.sessions.lock().unwrap().len(), 2);
+  }
+
+  #[test]
+  fn moving_identical_bytes_to_the_store_requires_an_applet_restart() {
+    use apell_core::bundles::{StoreChannel, StoreSource, StoreSwitchSnapshot};
+
+    let (_directory, host) = fixture();
+    let installed = host.bundles.installed(APPLET).unwrap();
+    let bytes = fs::read(
+      host
+        .root
+        .join("bundles")
+        .join(APPLET)
+        .join(format!("{}.apel", installed.sha256)),
+    )
+    .unwrap();
+    let updated = host
+      .bundles
+      .switch_to_store_release(
+        &bytes,
+        &installed.sha256,
+        StoreSource {
+          store_url: "https://store.example".into(),
+          applet_id: APPLET.into(),
+          channel: StoreChannel::Stable,
+        },
+        &StoreSwitchSnapshot {
+          sha256: installed.sha256.clone(),
+          source: installed.source,
+          removed: false,
+        },
+      )
+      .unwrap();
+    assert_eq!(updated.sha256, installed.sha256);
+    assert!(host.needs_applet_restart(&updated));
   }
 }

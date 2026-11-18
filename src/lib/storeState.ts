@@ -1,4 +1,10 @@
-import type { StoreCatalogEntry, StoreDetail, StoreRelease, InstalledApplet } from './types';
+import type {
+  StoreCatalogEntry,
+  StoreDetail,
+  StoreRelease,
+  InstalledApplet,
+  PackageSource,
+} from './types';
 
 const permission_names: Record<string, string> = {
   sqlite: 'Local database',
@@ -20,6 +26,12 @@ const permission_names: Record<string, string> = {
 };
 
 export const permissionName = (permission: string) => permission_names[permission] ?? permission;
+
+export function storeSourceLabel(source: PackageSource | null): string {
+  if (source?.kind === 'github') return `GitHub (${source.repository})`;
+  if (source?.kind === 'store') return source.store_url;
+  return 'a local file';
+}
 
 export function matchingStoreApplets(
   applets: StoreCatalogEntry[],

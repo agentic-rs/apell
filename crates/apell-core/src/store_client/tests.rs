@@ -142,6 +142,144 @@ async fn downloads_verify_raw_bytes_and_report_progress() {
 }
 
 #[tokio::test]
+async fn interrupted_download_resumes_the_reviewed_range_and_rejects_bad_ranges() {
+  let bytes = package("sample", "1.0.0", &["sqlite"]);
+  let selected = release(&bytes, "1.0.0");
+  let size = bytes.len();
+  let middle = size / 2;
+  let etag = format!("\"{}\"", selected.sha256);
+  let path = &selected.download_url;
+  let server = MockStore::new(vec![
+    (
+      "/api/v1/applets/sample".into(),
+      Reply::json(&detail(&selected)),
+    ),
+    (
+      path.clone(),
+      Reply::ok(bytes[..middle].to_vec()).header("Content-Length", &size.to_string()),
+    ),
+    (
+      path.clone(),
+      Reply::status(206, bytes[middle..].to_vec())
+        .header(
+          "Content-Range",
+          &format!("bytes {middle}-{}/{size}", size - 1),
+        )
+        .header("ETag", "\"different\""),
+    ),
+    (
+      path.clone(),
+      Reply::status(206, bytes[middle..].to_vec())
+        .header(
+          "Content-Range",
+          &format!("bytes {middle}-{}/{size}", size - 1),
+        )
+        .header("ETag", &etag),
+    ),
+  ])
+  .await;
+  let client = StoreClient::new(&server.origin).unwrap();
+  let cache = tempfile::tempdir().unwrap();
+  let checkpoint = DownloadCheckpoint::new(cache.path(), &server.origin, &selected);
+  let result = client
+    .download_resumable(
+      "sample",
+      &selected,
+      &checkpoint,
+      std::future::pending(),
+      |_, _| {},
+    )
+    .await
+    .unwrap();
+  assert!(
+    matches!(result, DownloadOutcome::Paused { received_bytes } if received_bytes == middle as u64)
+  );
+  assert!(client
+    .download_resumable(
+      "sample",
+      &selected,
+      &checkpoint,
+      std::future::pending(),
+      |_, _| {}
+    )
+    .await
+    .err()
+    .unwrap()
+    .contains("invalid download range"));
+  assert_eq!(checkpoint.received(size as u64).await, middle as u64);
+  let result = client
+    .download_resumable(
+      "sample",
+      &selected,
+      &checkpoint,
+      std::future::pending(),
+      |_, _| {},
+    )
+    .await
+    .unwrap();
+  assert!(matches!(result, DownloadOutcome::Verified(downloaded) if downloaded == bytes));
+  assert_eq!(checkpoint.received(size as u64).await, 0);
+  let requests = server.requests.lock().unwrap();
+  assert!(requests
+    .last()
+    .unwrap()
+    .contains(&format!("range: bytes={middle}-")));
+  assert!(requests
+    .last()
+    .unwrap()
+    .contains(&format!("if-range: {etag}")));
+}
+
+#[tokio::test]
+async fn expired_background_time_keeps_bytes_and_old_stores_restart_the_body() {
+  let bytes = package("sample", "1.0.0", &["sqlite"]);
+  let selected = release(&bytes, "1.0.0");
+  let server = MockStore::release(&selected, bytes.clone()).await;
+  let client = StoreClient::new(&server.origin).unwrap();
+  let cache = tempfile::tempdir().unwrap();
+  let checkpoint = DownloadCheckpoint::new(cache.path(), &server.origin, &selected);
+  let pause = tokio::sync::Notify::new();
+  let result = client
+    .download_resumable(
+      "sample",
+      &selected,
+      &checkpoint,
+      pause.notified(),
+      |received, _| {
+        if received == 0 && server.requests.lock().unwrap().len() == 2 {
+          pause.notify_one();
+        }
+      },
+    )
+    .await
+    .unwrap();
+  assert!(matches!(
+    result,
+    DownloadOutcome::Paused { received_bytes: 0 }
+  ));
+  // Simulate a checkpoint written by an earlier interrupted request.
+  checkpoint.prepare_for_test(&bytes[..8]).await;
+  let result = client
+    .download_resumable(
+      "sample",
+      &selected,
+      &checkpoint,
+      std::future::pending(),
+      |_, _| {},
+    )
+    .await
+    .unwrap();
+  assert!(matches!(result, DownloadOutcome::Verified(downloaded) if downloaded == bytes));
+  assert!(server
+    .requests
+    .lock()
+    .unwrap()
+    .last()
+    .unwrap()
+    .contains("range: bytes=8-"));
+}
+
+#[tokio::test]
 async fn selected_snapshot_must_remain_available_and_unchanged() {
   let bytes = package("sample", "1.0.0", &["sqlite"]);
   let selected = release(&bytes, "1.0.0");

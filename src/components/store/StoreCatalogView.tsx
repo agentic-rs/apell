@@ -130,7 +130,9 @@ export function StoreCatalogView({
                       {applet.update_available && !applet.source_conflict ? (
                         <span className="store-badge">Update available</span>
                       ) : applet.installed ? (
-                        <span className="store-badge store-badge-muted">Installed</span>
+                        <span className="store-badge store-badge-muted">
+                          {applet.source_conflict ? 'Installed from another source' : 'Installed'}
+                        </span>
                       ) : recommended.prerelease ? (
                         <span className="store-badge store-badge-preview">Preview</span>
                       ) : null}

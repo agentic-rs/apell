@@ -68,6 +68,9 @@ pub async fn shell_command(
     "store.config" | "store.set_url" | "store.catalog" | "store.detail" | "store.icon"
     | "store.install" => crate::store_commands::dispatch(app, &host, &method, params).await,
     "applets.list" => {
+      // The first library load must observe any pending developer installs.
+      #[cfg(all(target_os = "ios", debug_assertions))]
+      let _gate = host.store_gate.lock().await;
       let store = host.bundles.clone();
       blocking(move || {
         serde_json::to_value(store.list_report()?).map_err(|_| "Could not encode applets.".into())
@@ -94,8 +97,13 @@ pub async fn shell_command(
       host.attach_view(string(&params, "session_id")?, string(&params, "view_id")?)?,
     )
     .map_err(|_| "Could not encode applet attachment.".into()),
-    "applets.launch" => {
-      let attachment = crate::applets::launch(app, string(&params, "applet_id")?).await?;
+    "applets.launch" | "applets.restart" => {
+      let attachment = crate::applets::launch(
+        app,
+        string(&params, "applet_id")?,
+        method == "applets.restart",
+      )
+      .await?;
       serde_json::to_value(attachment).map_err(|_| "Could not encode applet attachment.".into())
     }
     "applets.close" => {
