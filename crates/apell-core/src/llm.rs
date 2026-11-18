@@ -2,6 +2,7 @@ mod generated;
 mod media;
 mod platform;
 mod provider;
+pub mod speech_api;
 mod sse;
 mod tokn_config;
 mod types;

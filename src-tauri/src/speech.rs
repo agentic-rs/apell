@@ -1,10 +1,15 @@
-//! One bounded, cancellable on-device speech job across all applets.
+//! One cancellable speech job across all applets.
+mod system;
+
 use crate::host::{string, Host, Session};
+use crate::provider_commands::{snapshot, ModelRoute};
+use apell_core::llm::LlmTarget;
 use serde_json::{json, Value};
 use std::sync::{
   atomic::{AtomicBool, AtomicU32, Ordering},
   Arc, Mutex,
 };
+use tauri::{AppHandle, Manager};
 use uuid::Uuid;
 
 #[derive(Default)]
@@ -68,6 +73,7 @@ impl SpeechJobs {
 }
 
 pub async fn dispatch(
+  app: &AppHandle,
   host: &Host,
   owner: &str,
   session: Session,
@@ -90,6 +96,7 @@ pub async fn dispatch(
   }
   if method == "speech.status" {
     let status = host.speech.status();
+    let system_reason = system::unavailable_reason();
     let active = host
       .speech_jobs
       .active
@@ -97,7 +104,8 @@ pub async fn dispatch(
       .map_err(|_| "Speech service unavailable.")?;
     let own_job = active.as_ref().filter(|job| job.owner == owner);
     return Ok(
-      json!({"model_ready":status.ready,"model_size_bytes":status.total_bytes,
+      json!({"system_available":system_reason.is_none(), "system_unavailable_reason":system_reason,
+      "api_available":api_allowed(&session.manifest), "model_ready":status.ready,"model_size_bytes":status.total_bytes,
       "busy":active.is_some(),"progress":own_job.map(|job|job.progress.load(Ordering::Relaxed)).unwrap_or(0),
       "stage":own_job.map(|job|job.stage).unwrap_or(if active.is_some() {"busy"} else {"idle"})}),
     );
@@ -116,8 +124,7 @@ pub async fn dispatch(
   let job = guard.job.clone();
   let mut cancellation = session.cancellation.subscribe();
   let watcher_job = job.clone();
-  let files = host.files.clone();
-  let speech = host.speech.clone();
+  let app = app.clone();
   let method = method.to_owned();
   let _cancel_on_drop = CancelOnDrop(job.cancel.clone());
   // The task, rather than its awaiting bridge request, owns the permit. Dropping
@@ -129,7 +136,7 @@ pub async fn dispatch(
       }
       watcher_job.cancel.store(true, Ordering::SeqCst);
     });
-    let result = run_job(files, speech, session, &method, params, job.clone()).await;
+    let result = run_job(app, session, &method, params, job.clone()).await;
     watcher.abort();
     let cancelled = job.cancel.load(Ordering::SeqCst);
     drop(guard);
@@ -143,14 +150,22 @@ pub async fn dispatch(
   .map_err(|_| "Speech job stopped unexpectedly.".to_string())?
 }
 
+fn api_allowed(manifest: &apell_core::bundles::Manifest) -> bool {
+  manifest.network
+    && ["llm", "fs"]
+      .iter()
+      .all(|permission| manifest.permissions.iter().any(|p| p == *permission))
+}
+
 async fn run_job(
-  files: Arc<apell_core::filesystem::FileStore>,
-  speech: Arc<apell_speech::SpeechService>,
+  app: AppHandle,
   session: Session,
   method: &str,
   params: Value,
   job: Arc<Job>,
 ) -> Result<Value, String> {
+  let host = app.state::<Host>();
+  let speech = host.speech.clone();
   if method == "speech.download_model" {
     let progress = job.clone();
     speech
@@ -166,14 +181,67 @@ async fn run_job(
   let relative = string(&params, "path")?.to_owned();
   let language = match params.get("language") {
     None | Some(Value::Null) => None,
-    Some(Value::String(value)) if value.len() <= 16 => Some(value.clone()),
+    Some(Value::String(value))
+      if !value.is_empty()
+        && value.len() <= 16
+        && value
+          .bytes()
+          .all(|b| b.is_ascii_alphanumeric() || b == b'-') =>
+    {
+      Some(value.clone())
+    }
     _ => return Err("Invalid language selection.".into()),
   };
-  tauri::async_runtime::spawn_blocking(move || {
-    let path = files.native_path(&session.manifest.applet_id, &relative, false)?;
-    if !path.is_file() {
-      return Err("Select an audio file to transcribe.".into());
+  let files = host.files.clone();
+  let applet_id = session.manifest.applet_id.clone();
+  let path =
+    crate::commands::blocking(move || files.native_path(&applet_id, &relative, false)).await?;
+  if !path.is_file() {
+    return Err("Select an audio file to transcribe.".into());
+  }
+  match params.get("provider") {
+    Some(value) if value == "system" => {
+      return crate::commands::blocking(move || {
+        system::transcribe(&path, language.as_deref(), &job.cancel)
+      })
+      .await;
     }
+    Some(value) if value == "api" => {
+      if !api_allowed(&session.manifest) {
+        return Err("API transcription requires network, model and file access.".into());
+      }
+      let target = LlmTarget {
+        connection_id: string(&params, "connection_id")?.into(),
+        model_id: string(&params, "model_id")?.into(),
+      };
+      let operation = async {
+        let route = ModelRoute::Selected(&target);
+        let connection = route.resolve(&*host.settings.lock().await)?;
+        if !apell_core::llm::speech_api::supports(&connection.provider_id) {
+          return Err("Choose an OpenAI or OpenAI-compatible transcription connection.".into());
+        }
+        let chosen = snapshot(&app, &host, route).await?;
+        let account = chosen.account?;
+        apell_core::llm::speech_api::transcribe(
+          &path,
+          language.as_deref(),
+          &chosen.config,
+          account.as_ref(),
+        )
+        .await
+      };
+      let cancelled = async {
+        while !job.cancel.load(Ordering::SeqCst) {
+          tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+      };
+      return tokio::select! { biased; _ = cancelled => Err("Speech operation cancelled.".into()), result = operation => result };
+    }
+    None => {}
+    Some(value) if value == "downloaded" => {}
+    _ => return Err("Unknown speech recognizer.".into()),
+  }
+  tauri::async_runtime::spawn_blocking(move || {
     let progress = job.clone();
     let transcript = speech.transcribe(
       &path,
@@ -192,6 +260,24 @@ async fn run_job(
 #[cfg(test)]
 mod tests {
   use super::*;
+  #[test]
+  fn remote_transcription_requires_network_files_and_model_access() {
+    let mut manifest: apell_core::bundles::Manifest = serde_json::from_value(json!({
+      "schema_version":1, "api_version":2, "applet_id":"fixture", "name":"Fixture",
+      "version":"1.0.0", "permissions":["speech","llm","fs"], "network":true
+    }))
+    .unwrap();
+    assert!(api_allowed(&manifest));
+    manifest.network = false;
+    assert!(!api_allowed(&manifest));
+    manifest.network = true;
+    for permission in ["llm", "fs"] {
+      let mut missing = manifest.clone();
+      missing.permissions.retain(|value| value != permission);
+      assert!(!api_allowed(&missing));
+    }
+  }
+
   #[test]
   fn speech_jobs_are_exclusive_and_release_on_failure_or_completion() {
     let jobs = Arc::new(SpeechJobs::default());

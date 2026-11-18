@@ -6,7 +6,7 @@
   },
   "bundle": {
     "iOS": {
-      "frameworks": ["Accelerate"]
+      "frameworks": ["Accelerate", "Speech"]
     }
   }
 }

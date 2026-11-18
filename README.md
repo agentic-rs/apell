@@ -245,7 +245,7 @@ Applets can send private images, PDFs, or WAV/MP3 audio as user message attachme
 
 ## Recorder applet services
 
-The host supports microphone recording, audio import, and playback on iOS, Android, and macOS through the `audio` permission. File sharing is available on iOS and Android. The `speech` permission provides offline Whisper transcription and language detection after an explicit multilingual model download. Audio stays on the device. See [the audio and speech contract](docs/architecture.md#audio-and-offline-speech) for methods, formats, lifecycle, and limits.
+The host supports microphone recording, audio import, and playback on iOS, Android, and macOS through the `audio` permission. File sharing is available on iOS and Android. The `speech` permission provides offline Whisper transcription after a multilingual model download, and system speech recognition on iOS and macOS. Applets can also send recordings to a selected transcription API using the host’s saved model connection when granted `llm`, `fs`, and network access. See [the audio and speech contract](docs/architecture.md#audio-and-offline-speech) for methods, formats, lifecycle, and limits.
 
 Applets can take a still photo, import one selected photo, or request a foreground location fix on iOS and Android. macOS supports selecting an image file through the same photo API. See [the camera, photo library, and location contract](docs/architecture.md#camera-photo-library-and-location) for SDK calls and permission behavior.
 

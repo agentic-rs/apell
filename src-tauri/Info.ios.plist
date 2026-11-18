@@ -6,6 +6,8 @@
   <string>Take photos in Apell applets and scan QR codes to import settings.</string>
   <key>NSLocationWhenInUseUsageDescription</key>
   <string>Get your current location when an open Apell applet requests it.</string>
+  <key>NSSpeechRecognitionUsageDescription</key>
+  <string>Transcribe recordings when you select system speech recognition in an Apell applet.</string>
   <key>NSMicrophoneUsageDescription</key>
   <string>Record audio when you start a recording in an Apell applet.</string>
   <key>UIApplicationSceneManifest</key>

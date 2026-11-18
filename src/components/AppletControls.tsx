@@ -27,7 +27,7 @@ const offline_status: Record<string, string> = {
   websocket: 'Off',
   llm: 'Local only',
   resources: 'Local only',
-  speech: 'Installed model only',
+  speech: 'On-device only',
 };
 
 const mode_labels: Record<PermissionMode, string> = {

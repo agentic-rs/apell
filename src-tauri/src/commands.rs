@@ -231,7 +231,7 @@ pub async fn service_call(
     return crate::media::dispatch(app.clone(), &host, &session_id, session, &method, params).await;
   }
   if method.starts_with("speech.") {
-    return crate::speech::dispatch(&host, &session_id, session, &method, params).await;
+    return crate::speech::dispatch(&app, &host, &session_id, session, &method, params).await;
   }
   if matches!(
     method.split('.').next(),

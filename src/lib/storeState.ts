@@ -13,7 +13,7 @@ const permission_names: Record<string, string> = {
   crypto: 'Secure randomness',
   runtime: 'Background tasks',
   audio: 'Microphone and audio',
-  speech: 'On-device transcription',
+  speech: 'Speech transcription',
   camera: 'Camera',
   location: 'Location',
   photos: 'Photo library',

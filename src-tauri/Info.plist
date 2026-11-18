@@ -3,6 +3,8 @@
 <plist version="1.0">
 <!-- Used by the macOS bundle and Tauri's development-binary metadata. -->
 <dict>
+  <key>NSSpeechRecognitionUsageDescription</key>
+  <string>Transcribe recordings when you select system speech recognition in an Apell applet.</string>
   <key>NSMicrophoneUsageDescription</key>
   <string>Apell records audio when you allow an applet to use the microphone.</string>
 </dict>

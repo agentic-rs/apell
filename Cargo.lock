@@ -68,6 +68,7 @@ dependencies = [
  "apell-speech",
  "base64 0.22.1",
  "block2",
+ "cc",
  "core-foundation",
  "core-graphics",
  "getrandom 0.3.4",
