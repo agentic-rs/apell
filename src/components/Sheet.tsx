@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
+import { useBackAction } from '../lib/backNavigation';
 import { Icon } from './Icon';
 
 interface SheetProps {
@@ -17,6 +18,7 @@ export function Sheet({ open, title, onClose, dismissible = true, children }: Sh
   close.current = () => {
     if (dismissible) onClose();
   };
+  useBackAction(100, open, () => close.current());
   useEffect(() => {
     if (!open || !panel.current) return;
     const element = panel.current;

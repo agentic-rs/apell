@@ -22,6 +22,7 @@ import type {
   NativeConnectionDraft,
 } from '../../lib/types';
 import { Icon } from '../Icon';
+import { useBackAction } from '../../lib/backNavigation';
 import { ApiKeyField } from './ApiKeyField';
 import { ModelPicker } from './ModelPicker';
 import {
@@ -57,9 +58,16 @@ export function ConnectionEditor(props: EditorProps) {
   const [native_draft, setNativeDraft] = useState<NativeConnectionDraft>();
   const [staged_login, setStagedLogin] = useState(false);
   const [busy, setBusy] = useState('');
+  const back_disabled = ['save', 'activate', 'delete'].includes(busy);
   const [status, setStatus] = useState('');
   const [failed, setFailed] = useState(false);
   const [confirm_delete, setConfirmDelete] = useState(false);
+  const goBack = () => {
+    if (back_disabled) return;
+    if (confirm_delete) setConfirmDelete(false);
+    else props.onBack();
+  };
+  useBackAction(25, true, goBack);
   const scope = useRef(new OperationScope());
   const drafts = useRef(new DraftSession(createConnectionDraft, discardConnectionDraft));
   const login_operation = useRef<Operation | undefined>(undefined);
@@ -209,12 +217,7 @@ export function ConnectionEditor(props: EditorProps) {
   return (
     <section className="settings connection-editor panel" aria-busy={!!busy}>
       <div className="settings-heading">
-        <button
-          type="button"
-          className="text-button"
-          disabled={['save', 'activate', 'delete'].includes(busy)}
-          onClick={props.onBack}
-        >
+        <button type="button" className="text-button" disabled={back_disabled} onClick={goBack}>
           <Icon name="back" /> Connections
         </button>
         {active && <span className="connection-badge">Active</span>}

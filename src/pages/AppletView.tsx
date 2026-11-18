@@ -5,6 +5,7 @@ import type { AppletSession } from '../lib/types';
 import { AppletControls } from '../components/AppletControls';
 import { LlmModelPicker } from '../components/LlmModelPicker';
 import { AppletModelChooser, type ModelChoice } from '../lib/modelChoice';
+import { useBackAction } from '../lib/backNavigation';
 
 export function AppletView({
   session,
@@ -154,6 +155,12 @@ export function AppletView({
       setAction(null);
     }
   };
+
+  // Use the same scoped close as the visible control. The backend remains
+  // available for a later reopening, and modal sheets handle Back first.
+  useBackAction(50, true, () => {
+    if (!choice) void run('close');
+  });
 
   return (
     <section className="applet-view">

@@ -38,7 +38,8 @@ zeroize = "1"
 [target.'cfg(target_os = "ios")'.dependencies]
 block2 = "0.6"
 objc2 = { version = "0.6", default-features = false, features = ["std"] }
-objc2-ui-kit = { version = "0.3", default-features = false, features = ["std", "block2", "UIApplication", "UIResponder", "UIScrollView", "UIView"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSObject"] }
+objc2-ui-kit = { version = "0.3", default-features = false, features = ["std", "block2", "objc2-core-foundation", "UIApplication", "UIGeometry", "UIGestureRecognizer", "UIPanGestureRecognizer", "UIResponder", "UIScreenEdgePanGestureRecognizer", "UIScrollView", "UIView"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = "0.6"

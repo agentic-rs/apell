@@ -30,6 +30,18 @@ pub fn available() -> bool {
   cfg!(any(target_os = "ios", target_os = "android"))
 }
 
+/// Leave the root shell task without finishing its activity or traversing the
+/// WebView's history. Only the trusted shell can request this native action.
+#[cfg(target_os = "android")]
+pub fn background_task<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+  app
+    .state::<Sensors<R>>()
+    .0
+    .run_mobile_plugin::<Value>("backgroundTask", serde_json::json!({}))
+    .map(|_| ())
+    .map_err(|_| "Could not leave the Apell task.".into())
+}
+
 pub enum Command {
   Run,
   Cancel,

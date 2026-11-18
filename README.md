@@ -86,6 +86,11 @@ command exits. Use `appell dev --list` to see available targets. Use
 specific target UDID to run unattended. From outside the checkout, pass
 `--project PATH` to select the Apell source directory.
 
+On iOS, swipe right from the left edge to go back. On Android, use system
+Back. It dismisses the top sheet, returns one screen, or closes an open
+applet view while keeping its backend running. At the library, Android
+returns to the previous task or Home; the iOS swipe does nothing.
+
 Pass `--install FILE.apel` to install a local applet as the shell starts. Paths
 are relative to your terminal, including when using `--project`. Repeat the
 flag for multiple packages (up to 16). Apell validates them and reports the

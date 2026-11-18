@@ -7,14 +7,27 @@ import { closeApplet, reloadApplet, currentApplet, nativeAvailable } from './lib
 import type { AppletSession } from './lib/types';
 import { Icon } from './components/Icon';
 import { useViewportHeight } from './lib/useViewportHeight';
+import { BackNavigation, useBackAction, useBackNavigation } from './lib/backNavigation';
 
 export default function App() {
+  return (
+    <BackNavigation>
+      <Shell />
+    </BackNavigation>
+  );
+}
+
+function Shell() {
   useViewportHeight();
   const [tab, setTab] = useState<'library' | 'store' | 'settings'>('library');
   const [install_open, setInstallOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [session, setSession] = useState<AppletSession | null>(null);
   const [starting, setStarting] = useState(nativeAvailable());
+  const back = useBackNavigation();
+  useBackAction(0, starting || tab !== 'library' || busy, () => {
+    if (!starting && !busy) setTab('library');
+  });
   useEffect(() => {
     if (!nativeAvailable()) return;
     let disposed = false;
@@ -52,9 +65,9 @@ export default function App() {
           {tab !== 'library' && (
             <button
               className="icon-button"
-              aria-label="Back to applets"
+              aria-label="Go back"
               disabled={busy}
-              onClick={() => setTab('library')}
+              onClick={() => back?.goBack()}
             >
               <Icon name="back" />
             </button>

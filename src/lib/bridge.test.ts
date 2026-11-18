@@ -75,6 +75,7 @@ describe('applet bridge boundary', () => {
       'store.set_url',
       'store.catalog',
       'store.detail',
+      'navigation.background',
       'store.icon',
       'store.install',
       'permissions.list',

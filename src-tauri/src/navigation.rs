@@ -35,8 +35,10 @@ pub fn allowed(url: &Url, origins: &[String]) -> bool {
 
 pub fn bootstrap(host_key: &str, origins: &[String]) -> Result<String, serde_json::Error> {
   Ok(format!(
-    "if(window===window.top && {}.includes(location.protocol+'//'+location.host)){{Object.defineProperty(window,'__APELL_HOST_KEY__',{{value:{}}});}}",
-    serde_json::to_string(origins)?, serde_json::to_string(host_key)?,
+    "if(window===window.top && {}.includes(location.protocol+'//'+location.host)){{Object.defineProperties(window,{{__APELL_HOST_KEY__:{{value:{}}},__APELL_PLATFORM__:{{value:{}}}}});}}",
+    serde_json::to_string(origins)?,
+    serde_json::to_string(host_key)?,
+    serde_json::to_string(std::env::consts::OS)?,
   ))
 }
 
