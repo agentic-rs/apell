@@ -34,6 +34,10 @@ export class BackActions {
     next.run();
     return true;
   }
+
+  hasHigherPriority(priority: number): boolean {
+    return this.actions.some((action) => action.priority > priority);
+  }
 }
 
 const BackContext = createContext<BackActions | null>(null);

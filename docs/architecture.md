@@ -36,6 +36,31 @@ A guest command's reply is delivered to the requesting view while it remains att
 
 A trap, fuel exhaustion, or another terminal interpreter failure retires that run and closes its service scopes. The shell shows a stopped-backend message when attached. Close and reopen the applet to create a new run from the installed package; other healthy runs retain their state and pinned versions.
 
+### Applet Back navigation
+
+On iOS and Android, native Back dismisses the topmost Apell sheet first. Then
+the shell asks the attached applet view whether it can go back. Use
+`onBack` from `@apell/sdk` to register a handler for your router or view state:
+
+```ts
+import { onBack } from '@apell/sdk';
+
+const unsubscribe = onBack(() => {
+  if (dismissTopOverlay()) return true;
+  if (!canGoBackInsideApplet()) return false;
+  goBackInsideApplet();
+  return true;
+});
+// Call unsubscribe when disposing the view or its navigation controller.
+```
+
+Return `true` after handling Back or deciding to stay put. Return `false`
+only at the applet root, where Apell closes the view and keeps the backend
+running. A promise is allowed, but respond within one second. A timeout or
+handler error leaves the view open. Only the latest registration is active.
+No manifest permission is needed. Applets without a handler retain the default
+close behavior. The title bar’s **Close** button always closes the view directly.
+
 ## Package format and installation
 
 An `.apel` is a ZIP32 archive. `manifest.json` and a non-empty UTF-8 `index.html` are required at the root. Reference other frontend assets relative to the entry document. The optional `lib` field names a contained WebAssembly module under `lib/`. Companion declares its backend in this manifest.

@@ -1,6 +1,7 @@
 import {
   applet,
   llm,
+  onBack,
   type LlmConfiguration,
   type LlmTarget,
 } from '../../../packages/applet-sdk/src';
@@ -107,9 +108,11 @@ const renderedMessages: {
   article: HTMLElement;
   text: HTMLParagraphElement;
 }[] = [];
+const stopBack = onBack(() => composer.dismissMenu() || history.dismiss());
 window.addEventListener(
   'pagehide',
   () => {
+    stopBack();
     messageMedia.dispose();
     composer.dispose();
     history.dispose();

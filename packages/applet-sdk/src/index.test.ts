@@ -57,7 +57,10 @@ describe('applet bridge', () => {
 
   it('binds only the parent port and keeps identity out of requests', async () => {
     const sdk = await import('./index');
-    expect(windowMock.parent.postMessage).toHaveBeenCalledWith({ type: 'apell:ready' }, '*');
+    expect(windowMock.parent.postMessage).toHaveBeenCalledWith(
+      { type: 'apell:ready', navigation_back: true },
+      '*',
+    );
     connect({});
     expect(channel.start).not.toHaveBeenCalled();
     connect();
@@ -78,6 +81,93 @@ describe('applet bridge', () => {
     await expect(response).resolves.toEqual({ database_handle: 'opaque' });
     connect();
     expect(channel.start).toHaveBeenCalledOnce();
+  });
+
+  it('handles Back only from the bound port and lets the current handler report the root', async () => {
+    const sdk = await import('./index');
+    const stale = vi.fn(() => true);
+    const remove_stale = sdk.onBack(stale);
+    const handler = vi.fn().mockReturnValueOnce(true).mockReturnValueOnce(false);
+    const remove = sdk.onBack(handler);
+    remove_stale();
+    connect();
+
+    const elsewhere = new Event('message');
+    Object.defineProperties(elsewhere, {
+      source: { value: windowMock.parent },
+      data: { value: { type: 'navigation_back', request_id: 'unscoped' } },
+    });
+    windowMock.dispatchEvent(elsewhere);
+    receive({ type: 'navigation_back', request_id: '' });
+    expect(handler).not.toHaveBeenCalled();
+    expect(channel.postMessage).not.toHaveBeenCalled();
+
+    receive({ type: 'navigation_back', request_id: 'detail' });
+    await vi.waitFor(() =>
+      expect(channel.postMessage).toHaveBeenNthCalledWith(1, {
+        type: 'navigation_back_result',
+        request_id: 'detail',
+        handled: true,
+      }),
+    );
+    receive({ type: 'navigation_back', request_id: 'root' });
+    await vi.waitFor(() =>
+      expect(channel.postMessage).toHaveBeenNthCalledWith(2, {
+        type: 'navigation_back_result',
+        request_id: 'root',
+        handled: false,
+      }),
+    );
+    expect(stale).not.toHaveBeenCalled();
+
+    remove();
+    receive({ type: 'navigation_back', request_id: 'no-handler' });
+    expect(channel.postMessage).toHaveBeenNthCalledWith(3, {
+      type: 'navigation_back_result',
+      request_id: 'no-handler',
+      handled: false,
+    });
+  });
+
+  it('does not replay pending Back or close the view after a handler fails or is replaced', async () => {
+    const sdk = await import('./index');
+    connect();
+    let resolve!: (value: boolean) => void;
+    const handler = vi.fn(
+      () =>
+        new Promise<boolean>((finish) => {
+          resolve = finish;
+        }),
+    );
+    sdk.onBack(handler);
+    receive({ type: 'navigation_back', request_id: 'first' });
+    receive({ type: 'navigation_back', request_id: 'first' });
+    receive({ type: 'navigation_back', request_id: 'while-pending' });
+    expect(handler).toHaveBeenCalledOnce();
+    expect(channel.postMessage).toHaveBeenCalledExactlyOnceWith({
+      type: 'navigation_back_result',
+      request_id: 'while-pending',
+      handled: true,
+    });
+    sdk.onBack(async () => {
+      throw new Error('navigation failed');
+    });
+    resolve(false);
+    await vi.waitFor(() =>
+      expect(channel.postMessage).toHaveBeenNthCalledWith(2, {
+        type: 'navigation_back_result',
+        request_id: 'first',
+        handled: true,
+      }),
+    );
+    receive({ type: 'navigation_back', request_id: 'failure' });
+    await vi.waitFor(() =>
+      expect(channel.postMessage).toHaveBeenNthCalledWith(3, {
+        type: 'navigation_back_result',
+        request_id: 'failure',
+        handled: true,
+      }),
+    );
   });
 
   it.each([

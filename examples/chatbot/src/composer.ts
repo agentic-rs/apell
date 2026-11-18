@@ -77,7 +77,7 @@ export function createComposerMedia(
   let focusFrame = 0;
   let menuOpen = false;
   const nativePopover = typeof attachmentMenu.showPopover === 'function';
-  if (nativePopover) attachmentMenu.setAttribute('popover', 'auto');
+  if (nativePopover) attachmentMenu.setAttribute('popover', 'manual');
 
   function closeMenu(restoreFocus = false) {
     if (!menuOpen) return;
@@ -116,7 +116,7 @@ export function createComposerMedia(
     (photo.disabled ? audio : photo).focus();
   }
 
-  function outsideMenu(event: PointerEvent) {
+  function outsideMenu(event: MouseEvent) {
     if (
       event.target instanceof Node &&
       !attachmentControl.contains(event.target) &&
@@ -142,7 +142,9 @@ export function createComposerMedia(
     if (nativePopover && menuOpen && !attachmentMenu.matches(':popover-open')) closeMenu();
   }
 
-  document.addEventListener('pointerdown', outsideMenu);
+  // Wait for a click so a system Back swipe starting outside the menu can
+  // dismiss it through the Back handler without also closing the applet.
+  document.addEventListener('click', outsideMenu);
   document.addEventListener('keydown', menuKey);
   attachmentControl.addEventListener('focusout', menuFocus);
   attachmentMenu.addEventListener('focusout', menuFocus);
@@ -281,6 +283,11 @@ export function createComposerMedia(
   voice.addEventListener('input', onChange);
 
   return {
+    dismissMenu(): boolean {
+      if (!menuOpen) return false;
+      closeMenu(true);
+      return true;
+    },
     isBusy: () => importing,
     attachments: () => [...media],
     output(): LlmMediaOutput | undefined {
@@ -319,7 +326,7 @@ export function createComposerMedia(
       cancelAnimationFrame(focusFrame);
       textarea.removeEventListener('focus', revealInput);
       window.removeEventListener('resize', revealInput);
-      document.removeEventListener('pointerdown', outsideMenu);
+      document.removeEventListener('click', outsideMenu);
       document.removeEventListener('keydown', menuKey);
       attachmentControl.removeEventListener('focusout', menuFocus);
       attachmentMenu.removeEventListener('focusout', menuFocus);
