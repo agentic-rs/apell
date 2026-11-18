@@ -90,6 +90,13 @@ class SensorsPlugin(private val activity: Activity) : Plugin(activity) {
   private var transferQrDisplay: AlertDialog? = null
   private val transferFile = TransferFilePicker(activity)
 
+  @Command fun backgroundTask(invoke: Invoke) {
+    activity.runOnUiThread {
+      if (activity.moveTaskToBack(false)) invoke.resolve()
+      else invoke.reject("Could not leave the Apell task.")
+    }
+  }
+
   @Command fun run(invoke: Invoke) {
     val args = invoke.parseArgs(SensorRunArgs::class.java)
     val id = OperationId(args.session_id, args.operation_id)

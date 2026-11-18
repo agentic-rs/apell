@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import type { AppletSession } from '../lib/types';
+import { useBackAction } from '../lib/backNavigation';
 import { StoreAddress } from '../components/store/StoreAddress';
 import { StoreCatalogView } from '../components/store/StoreCatalogView';
 import { StoreDetailView } from '../components/store/StoreDetailView';
@@ -16,6 +17,12 @@ export function Store({
   const state = useStore(onLaunch, onBusyChange);
   const [query, setQuery] = useState('');
   const [updates_only, setUpdatesOnly] = useState(false);
+  const can_leave_address = state.address_open && !!(state.config?.store_url || state.config_error);
+  useBackAction(25, can_leave_address || !!state.selected_id, () => {
+    if (state.operation) return;
+    if (can_leave_address) state.setAddressOpen(false);
+    else state.closeDetail();
+  });
   if (state.initial_loading)
     return (
       <p className="status" role="status">

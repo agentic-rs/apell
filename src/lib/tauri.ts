@@ -1,5 +1,6 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { onBackButtonPress } from '@tauri-apps/api/app';
 import type { LlmResult } from '../../packages/applet-sdk/src/types';
 import type {
   AppletEvent,
@@ -35,6 +36,7 @@ import type {
 declare global {
   interface Window {
     readonly __APELL_HOST_KEY__?: string;
+    readonly __APELL_PLATFORM__?: string;
   }
 }
 
@@ -47,6 +49,19 @@ function hostKey(): string {
 export function shellCall<T>(method: string, params: unknown = {}): Promise<T> {
   return invoke<T>('shell_command', { host_key: hostKey(), method, params });
 }
+
+export async function onNativeBack(handle: (platform: 'ios' | 'android') => void) {
+  if (!nativeAvailable() || !window.__APELL_HOST_KEY__) return;
+  if (window.__APELL_PLATFORM__ === 'android') {
+    const listener = await onBackButtonPress(() => handle('android'));
+    return () => {
+      void listener.unregister().catch(() => {});
+    };
+  }
+  if (window.__APELL_PLATFORM__ === 'ios') return listen('apell-back', () => handle('ios'));
+}
+
+export const backgroundShell = () => shellCall<void>('navigation.background');
 export const listApplets = () => shellCall<AppletListReport>('applets.list');
 export const getStoreConfig = () => shellCall<StoreConfig>('store.config');
 export const setStoreUrl = (store_url: string) =>

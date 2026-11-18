@@ -28,6 +28,10 @@ use tauri::{
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+  #[cfg(target_os = "ios")]
+  let ios_back = ios::BackSignal::default();
+  #[cfg(target_os = "ios")]
+  let ios_back_setup = ios_back.clone();
   tauri::Builder::default()
     .register_uri_scheme_protocol("apel", |context, request| {
       assets::respond(context.app_handle(), request)
@@ -40,7 +44,7 @@ pub fn run() {
         .open_js_links_on_click(false)
         .build(),
     )
-    .setup(|app| {
+    .setup(move |app| {
       let root = app.path().app_data_dir()?;
       let host = host::Host::new(root).map_err(std::io::Error::other)?;
       #[cfg(all(target_os = "ios", debug_assertions))]
@@ -69,7 +73,7 @@ pub fn run() {
       #[cfg(target_os = "macos")]
       desktop::configure_window(&_window);
       #[cfg(target_os = "ios")]
-      ios::configure_safe_area(&_window)?;
+      ios::configure_webview(&_window, ios_back_setup)?;
       let handle = app.handle().clone();
       tauri::async_runtime::spawn(async move {
         loop {

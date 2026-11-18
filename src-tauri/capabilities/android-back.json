@@ -1,0 +1,7 @@
+{
+  "identifier": "android-back",
+  "description": "Android system Back events for the trusted shell.",
+  "platforms": ["android"],
+  "windows": ["main"],
+  "permissions": ["core:app:allow-register-listener", "core:app:allow-remove-listener"]
+}
