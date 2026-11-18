@@ -1,6 +1,6 @@
 // File-based system speech recognition, called on a blocking worker.
 #import <Foundation/Foundation.h>
-#import <Speech/Speech.h>
+@import Speech;
 #include <stdbool.h>
 
 typedef bool (*Cancellation)(const void *);

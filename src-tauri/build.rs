@@ -3,6 +3,8 @@ fn main() {
     println!("cargo:rerun-if-changed=src/speech/apple.m");
     cc::Build::new()
       .file("src/speech/apple.m")
+      // Embed the framework link in the archive consumed by existing Xcode projects.
+      .flag("-fmodules")
       .flag("-fobjc-arc")
       .flag("-fblocks")
       .compile("apell_system_speech");
