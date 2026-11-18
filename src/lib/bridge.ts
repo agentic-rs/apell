@@ -1,5 +1,6 @@
 import type { BridgeRequest } from './types';
 import { assertJsonValue } from '../../packages/applet-sdk/src/json';
+import type { AppletBack } from './appletBack';
 
 const methods = new Set([
   'backend.invoke',
@@ -65,11 +66,16 @@ export function isBridgeRequest(value: unknown): value is BridgeRequest {
 export function attachBridge(
   port: MessagePort,
   call: (method: string, params: unknown) => Promise<unknown>,
+  back?: AppletBack,
 ): () => void {
   let closed = false;
   const active = new Set<string>();
   port.onmessage = async ({ data }: MessageEvent<unknown>) => {
-    if (!isBridgeRequest(data) || closed) return;
+    if (closed) return;
+    if (!isBridgeRequest(data)) {
+      back?.receive(data);
+      return;
+    }
     if (active.has(data.request_id) || active.size >= 32) {
       port.postMessage({
         type: 'response',
@@ -109,6 +115,7 @@ export function attachBridge(
   port.start();
   return () => {
     closed = true;
+    back?.dispose();
     port.onmessage = null;
     port.close();
   };

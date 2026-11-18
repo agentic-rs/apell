@@ -5,7 +5,10 @@ import type { AppletSession } from '../lib/types';
 import { AppletControls } from '../components/AppletControls';
 import { LlmModelPicker } from '../components/LlmModelPicker';
 import { AppletModelChooser, type ModelChoice } from '../lib/modelChoice';
-import { useBackAction } from '../lib/backNavigation';
+import { useBackAction, useBackNavigation } from '../lib/backNavigation';
+import { AppletBack } from '../lib/appletBack';
+
+const BACK_PRIORITY = 50;
 
 export function AppletView({
   session,
@@ -24,6 +27,8 @@ export function AppletView({
   const [action, setAction] = useState<'close' | 'reload' | null>(null);
   const [choice, setChoice] = useState<ModelChoice>();
   const stopBridge = useRef<(() => void) | undefined>(undefined);
+  const guestBack = useRef<((close: () => void) => void) | undefined>(undefined);
+  const navigation = useBackNavigation();
   const pending = useRef(false);
   useLayoutEffect(() => {
     if (suspended) return;
@@ -50,9 +55,15 @@ export function AppletView({
       setError((current) => (current === load_error ? '' : current));
       setReady(true);
     };
-    const initialize = async () => {
+    const initialize = async (supports_back: boolean) => {
       if (initializing || cancelled) return;
       initializing = true;
+      const back = supports_back ? new AppletBack(channel.port1) : undefined;
+      if (back) {
+        // Reserve Back as soon as the document advertises support. An input
+        // during bridge attachment should not be mistaken for the applet root.
+        guestBack.current = () => {};
+      }
       try {
         unlisten = await onAppletEvent((event) => {
           if (event.session_id === session.view_id && !cancelled)
@@ -83,15 +94,20 @@ export function AppletView({
         // loads. The check also detects a stop that preceded subscription.
         await callApplet(session.session_id, session.view_id, 'view.check', {});
         if (cancelled) return;
-        dispose = attachBridge(channel.port1, (method, params) => {
-          if (method === 'llm.choose_model') {
-            if (!session.manifest.network)
-              return Promise.reject(new Error('This applet has disabled network access.'));
-            return chooser.open(params);
-          }
-          return callApplet(session.session_id, session.view_id, method, params);
-        });
+        dispose = attachBridge(
+          channel.port1,
+          (method, params) => {
+            if (method === 'llm.choose_model') {
+              if (!session.manifest.network)
+                return Promise.reject(new Error('This applet has disabled network access.'));
+              return chooser.open(params);
+            }
+            return callApplet(session.session_id, session.view_id, method, params);
+          },
+          back,
+        );
         element?.contentWindow?.postMessage({ type: 'apell:init' }, '*', [channel.port2]);
+        if (back) guestBack.current = (close) => back.request(close);
         clearTimeout(timeout);
         setError('');
         setReady(true);
@@ -107,9 +123,10 @@ export function AppletView({
     const onReady = (event: MessageEvent<unknown>) => {
       if (event.source !== element?.contentWindow || !event.data || typeof event.data !== 'object')
         return;
-      if ((event.data as Record<string, unknown>).type === 'apell:ready') {
+      const { type, navigation_back } = event.data as Record<string, unknown>;
+      if (type === 'apell:ready') {
         if (initializing) void run('reload');
-        else void initialize();
+        else void initialize(navigation_back === true);
       }
     };
     window.addEventListener('message', onReady);
@@ -120,6 +137,7 @@ export function AppletView({
     const stop = () => {
       if (cancelled) return;
       cancelled = true;
+      guestBack.current = undefined;
       clearTimeout(timeout);
       window.removeEventListener('message', onReady);
       element?.removeEventListener('load', onLoad);
@@ -156,10 +174,15 @@ export function AppletView({
     }
   };
 
-  // Use the same scoped close as the visible control. The backend remains
-  // available for a later reopening, and modal sheets handle Back first.
-  useBackAction(50, true, () => {
-    if (!choice) void run('close');
+  // Sheets handle Back first. The applet then gets a chance to go back
+  // internally; only its root falls through to the existing scoped close.
+  useBackAction(BACK_PRIORITY, true, () => {
+    if (choice || pending.current) return;
+    const close = () => {
+      if (!navigation?.hasHigherPriority(BACK_PRIORITY)) void run('close');
+    };
+    if (guestBack.current) guestBack.current(close);
+    else close();
   });
 
   return (

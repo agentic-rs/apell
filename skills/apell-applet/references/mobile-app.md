@@ -4,7 +4,7 @@
 
 Design for the applet's content viewport on a narrow phone. Apell applies the device safe-area insets and reserves space for its title bar and controls. Let the applet fill the remaining area. Start with a single column, let labels and content wrap, and give the main content one scroll owner. In flex or grid layouts, let that region shrink with `min-height: 0`. Keep the focused field and primary action reachable as the keyboard reduces the viewport.
 
-Give the applet an internal Back action when it has nested screens. Apell's Close returns to the applet library. Test landscape, larger text, and keyboard focus on the actual host. Add wider layouts when the extra space helps the task.
+Give the applet an internal Back action when it has nested screens. Register `onBack` from `@apell/sdk` to route the iOS edge swipe and Android system Back through the same navigation. Dismiss an applet overlay before popping a screen. Return `true` when handled, and `false` at the applet root so Apell can close the view and keep the backend running. Unsubscribe when the navigation controller is disposed. Keep the visible internal Back control, including on desktop. Apell's Close always closes the view directly. Test landscape, larger text, and keyboard focus on the actual host. Add wider layouts when the extra space helps the task.
 
 ## Choose where work runs
 

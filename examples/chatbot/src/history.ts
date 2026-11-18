@@ -275,6 +275,11 @@ export function createHistory({
       if (changed) renderList();
     },
     close,
+    dismiss(): boolean {
+      if (!opened || !mobile.matches) return false;
+      close();
+      return true;
+    },
     dispose(): void {
       if (disposed) return;
       disposed = true;

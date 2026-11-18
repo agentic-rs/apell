@@ -57,6 +57,9 @@ const pending = new Map<string, Pending>();
 const activeLlm = new Map<string, ActiveLlm>();
 const downloadSubscribers = new Set<(event: DownloadProgress) => void>();
 const backendSubscribers = new Set<(event: AppletBackendEvent) => void>();
+type BackHandler = () => boolean | Promise<boolean>;
+let backRegistration: { handler: BackHandler } | undefined;
+let pendingBack: string | undefined;
 let port: MessagePort | undefined;
 let resolveReady: (value: MessagePort) => void;
 const ready = new Promise<MessagePort>((resolve) => {
@@ -67,6 +70,17 @@ function handleMessage(event: MessageEvent<unknown>): void {
   const message = event.data;
   if (!message || typeof message !== 'object') return;
   const envelope = message as Record<string, unknown>;
+  if (envelope.type === 'navigation_back') {
+    if (
+      port &&
+      typeof envelope.request_id === 'string' &&
+      envelope.request_id.length > 0 &&
+      envelope.request_id.length <= 128
+    ) {
+      void handleBack(port, envelope.request_id);
+    }
+    return;
+  }
   if (envelope.type === 'backend_event') {
     const event = envelope.event as AppletBackendEvent | undefined;
     if (!event || typeof event.name !== 'string') return;
@@ -131,6 +145,38 @@ function handleMessage(event: MessageEvent<unknown>): void {
   else request.resolve(envelope.result);
 }
 
+function replyBack(channel: MessagePort, request_id: string, handled: boolean): void {
+  try {
+    channel.postMessage({ type: 'navigation_back_result', request_id, handled });
+  } catch {
+    // Apell may already have closed or replaced this view.
+  }
+}
+
+async function handleBack(channel: MessagePort, request_id: string): Promise<void> {
+  if (pendingBack !== undefined) {
+    if (pendingBack !== request_id) replyBack(channel, request_id, true);
+    return;
+  }
+  const registration = backRegistration;
+  if (!registration) {
+    replyBack(channel, request_id, false);
+    return;
+  }
+  pendingBack = request_id;
+  let handled = true;
+  try {
+    const result = await registration.handler();
+    // Only an explicit root result from the current handler can close the view.
+    handled = result !== false || registration !== backRegistration;
+  } catch {
+    // A failing handler may already have changed pages; don't close the view.
+  } finally {
+    pendingBack = undefined;
+  }
+  replyBack(channel, request_id, handled);
+}
+
 window.addEventListener('message', (event: MessageEvent) => {
   if (
     port ||
@@ -146,7 +192,7 @@ window.addEventListener('message', (event: MessageEvent) => {
 });
 // Announce after installing the receiver. An iframe's first load event can
 // belong to its initial about:blank document rather than the applet itself.
-window.parent.postMessage({ type: 'apell:ready' }, '*');
+window.parent.postMessage({ type: 'apell:ready', navigation_back: true }, '*');
 
 export function createId(): string {
   if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
@@ -315,6 +361,18 @@ export function onDownloadProgress(handler: (event: DownloadProgress) => void): 
   downloadSubscribers.add(handler);
   return () => {
     downloadSubscribers.delete(handler);
+  };
+}
+
+/** Handle the shell's Back gesture for this applet view. Return true after
+ * going back or dismissing a modal. Return false at the applet root so Apell
+ * can close the view. The newest handler replaces any previous registration.
+ */
+export function onBack(handler: BackHandler): () => void {
+  const registration = { handler };
+  backRegistration = registration;
+  return () => {
+    if (backRegistration === registration) backRegistration = undefined;
   };
 }
 
