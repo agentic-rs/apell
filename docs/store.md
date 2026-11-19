@@ -151,9 +151,12 @@ and build scripts run without publishing access. If the build needs the CLI,
 `agentic-rs/apell/actions/setup` installs `apell` on `PATH`. Both actions use Bash
 and Rustup, which are available on the GitHub-hosted Linux runners shown below.
 
-Save a workflow like this as `.github/workflows/publish.yml`. Replace
-`APELL_COMMIT_SHA` in both action references with the same full Apell commit SHA
-and adapt the build command and filenames to your project. This example assumes
+Save a workflow like this as `.github/workflows/publish.yml`. Pin both actions to
+the same `actions-vMAJOR.MINOR.PATCH` tag. These tags version the actions
+independently of the Apell shell. Each published version keeps its original
+commit. If your repository requires full SHA pins, use the commit for the tag.
+
+Adapt the build command and filenames to your project. This example assumes
 your build prepares `dist/` with `manifest.json`, `index.html`, and any assets
 or WASM, and provides `publish.json` at the repository root.
 
@@ -180,7 +183,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: agentic-rs/apell/actions/setup@APELL_COMMIT_SHA
+      - uses: agentic-rs/apell/actions/setup@actions-v1.0.0
       - name: Build the applet and prepare its listing
         run: |
           ./scripts/build-applet
@@ -204,7 +207,7 @@ jobs:
           artifact-ids: ${{ needs.build.outputs.artifact_id }}
           path: release
           digest-mismatch: error
-      - uses: agentic-rs/apell/actions/publish@APELL_COMMIT_SHA
+      - uses: agentic-rs/apell/actions/publish@actions-v1.0.0
         with:
           store_url: ${{ vars.APELL_STORE_URL }}
           package: release/example.apel
