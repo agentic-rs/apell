@@ -1,4 +1,4 @@
-use apell_core::bundles::{parse, MAX_BUNDLE_BYTES};
+use apell_package::{parse, MAX_BUNDLE_BYTES};
 use serde::Deserialize;
 use std::{
   collections::HashSet,

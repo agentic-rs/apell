@@ -14,23 +14,21 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  publish:
+  build:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
       contents: read
-      id-token: write
     env:
-      APELL_STORE_URL: ${{ vars.APELL_STORE_URL }}
       RUSTUP_TOOLCHAIN: 1.99.0
       CARGO_BUILD_JOBS: 2
+    outputs:
+      artifact_id: ${{ steps.release.outputs.artifact-id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - name: Check store configuration
-        run: test -n "$APELL_STORE_URL"
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24.10.0
@@ -51,10 +49,37 @@ jobs:
         run: |
           pnpm build:chatbot
           pnpm exec tauri icon assets/companion.svg --output artifacts/companion-icons
-      - name: Publish with GitHub Actions identity
+      - name: Stage publishing files
         run: |
-          cargo run --locked -p apell-cli --bin apell -- publish artifacts/chatbot.apel \
-            --store "$APELL_STORE_URL" \
-            --metadata examples/chatbot/publish.json \
-            --icon artifacts/companion-icons/128x128@2x.png \
-            --auth github-oidc
+          mkdir -p release
+          cp artifacts/chatbot.apel examples/chatbot/publish.json release/
+          cp artifacts/companion-icons/128x128@2x.png release/icon.png
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        id: release
+        with:
+          name: companion-store-${{ github.run_attempt }}
+          path: release/
+          if-no-files-found: error
+          retention-days: 7
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact_id }}
+          path: release
+          digest-mismatch: error
+      - uses: ./actions/publish
+        with:
+          store_url: ${{ vars.APELL_STORE_URL }}
+          package: release/chatbot.apel
+          metadata: release/publish.json
+          icon: release/icon.png

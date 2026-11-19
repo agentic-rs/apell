@@ -1,0 +1,60 @@
+name: Publish to Apell Store
+description: Publish a prebuilt .apel to Apell Store using GitHub Actions trusted publishing.
+inputs:
+  store_url:
+    description: Canonical HTTPS origin of the Apell Store.
+    required: true
+  package:
+    description: Path to the built .apel file.
+    required: true
+  metadata:
+    description: Path to the listing JSON file.
+    required: true
+  icon:
+    description: Optional path to the listing's PNG icon.
+    required: false
+runs:
+  using: composite
+  steps:
+    - name: Check publishing inputs
+      shell: bash
+      env:
+        APELL_STORE_URL: ${{ inputs.store_url }}
+        APELL_PACKAGE: ${{ inputs.package }}
+        APELL_METADATA: ${{ inputs.metadata }}
+        APELL_ICON: ${{ inputs.icon }}
+      run: |
+        if [[ -z "$APELL_STORE_URL" ]]; then
+          echo '::error::Set the store_url input to the canonical Apell Store URL.'
+          exit 1
+        fi
+        if [[ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" || -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]]; then
+          echo '::error::Grant the publishing job id-token: write.'
+          exit 1
+        fi
+        if [[ "$APELL_PACKAGE" != *.apel || ! -f "$APELL_PACKAGE" || ! -f "$APELL_METADATA" ]]; then
+          echo '::error::Provide the prepared .apel and listing JSON files.'
+          exit 1
+        fi
+        if [[ -n "$APELL_ICON" && ! -f "$APELL_ICON" ]]; then
+          echo '::error::The listing icon file is missing.'
+          exit 1
+        fi
+    - name: Install Apell CLI
+      id: install
+      shell: bash
+      run: bash "$GITHUB_ACTION_PATH/../install-cli.sh"
+    - name: Publish applet
+      shell: bash
+      env:
+        APELL_BIN: ${{ steps.install.outputs.binary }}
+        APELL_STORE_URL: ${{ inputs.store_url }}
+        APELL_PACKAGE: ${{ inputs.package }}
+        APELL_METADATA: ${{ inputs.metadata }}
+        APELL_ICON: ${{ inputs.icon }}
+      run: |
+        args=(publish "$APELL_PACKAGE" --store "$APELL_STORE_URL" --metadata "$APELL_METADATA" --auth github-oidc)
+        if [[ -n "$APELL_ICON" ]]; then
+          args+=(--icon "$APELL_ICON")
+        fi
+        "$APELL_BIN" "${args[@]}"

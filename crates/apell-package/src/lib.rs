@@ -1,11 +1,13 @@
 //! Shared .apel package format, validation, and deterministic packing.
 
 mod archive;
+mod storage;
 
 pub use archive::{pack_directory, parse};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashSet};
+pub use storage::{atomic_write, sync_directory};
 
 pub const API_VERSION: u32 = 2;
 pub const MAX_BUNDLE_BYTES: usize = 24 * 1024 * 1024;

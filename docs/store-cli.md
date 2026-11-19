@@ -70,7 +70,8 @@ exact refs, not wildcard patterns. The set command saves the complete policy.
 The command configures the Store's publishing permission. Add the repository's
 workflow and `APELL_STORE_URL` Actions variable as described in the
 [CI guide](store.md#configure-the-workflow). The publishing job needs
-`id-token: write` and should run `apell publish … --auth github-oidc`.
+`id-token: write` and can use the `agentic-rs/apell/actions/publish` action or
+run `apell publish … --auth github-oidc` directly.
 
 ## Publish as yourself
 

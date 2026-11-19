@@ -1,0 +1,13 @@
+name: Set up Apell
+description: Install the Apell CLI from this action's revision.
+outputs:
+  binary:
+    description: Absolute path to the installed Apell CLI.
+    value: ${{ steps.install.outputs.binary }}
+runs:
+  using: composite
+  steps:
+    - name: Install Apell CLI
+      id: install
+      shell: bash
+      run: bash "$GITHUB_ACTION_PATH/../install-cli.sh"

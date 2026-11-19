@@ -317,7 +317,7 @@ fn file_credentials_are_private_origin_bound_and_removed_on_logout() {
   }
   let record = directory.path().join("cli").join(format!(
     "{}.json",
-    apell_core::bundles::digest(store.as_str().as_bytes())
+    apell_package::digest(store.as_str().as_bytes())
   ));
   let mut value: Value = serde_json::from_slice(&std::fs::read(&record).unwrap()).unwrap();
   value["store"] = "https://other.example/".into();

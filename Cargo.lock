@@ -97,7 +97,7 @@ dependencies = [
 name = "apell-cli"
 version = "0.1.0"
 dependencies = [
- "apell-core",
+ "apell-package",
  "directories",
  "libc",
  "png 0.17.16",
@@ -159,6 +159,7 @@ dependencies = [
  "sha2 0.10.9",
  "unicase",
  "unicode-normalization",
+ "uuid",
  "zip",
 ]
 

@@ -140,36 +140,87 @@ that was disconnected.
 
 ### Configure the workflow
 
-Set the non-secret repository variable `APELL_STORE_URL` to the same canonical
-origin. Build and pack the applet, then run:
+Set the non-secret repository variable `APELL_STORE_URL` to the canonical Store
+origin. Use `agentic-rs/apell/actions/publish` in a job defined directly in your
+registered workflow. It installs the Apell CLI from the action's revision, then
+validates and publishes your built `.apel`, listing JSON, and optional PNG icon.
+The publishing job needs `id-token: write`.
+
+Keep the build in a separate job with `contents: read` so frontend dependencies
+and build scripts run without publishing access. If the build needs the CLI,
+`agentic-rs/apell/actions/setup` installs `apell` on `PATH`. Both actions use Bash
+and Rustup, which are available on the GitHub-hosted Linux runners shown below.
+
+Save a workflow like this as `.github/workflows/publish.yml`. Replace
+`APELL_COMMIT_SHA` in both action references with the same full Apell commit SHA
+and adapt the build command and filenames to your project. This example assumes
+your build prepares `dist/` with `manifest.json`, `index.html`, and any assets
+or WASM, and provides `publish.json` at the repository root.
 
 ```yaml
-permissions:
-  contents: read
+name: Publish applet
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: apell-store-publish
+  cancel-in-progress: false
 
 jobs:
-  publish:
+  build:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    outputs:
+      artifact_id: ${{ steps.release.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: agentic-rs/apell/actions/setup@APELL_COMMIT_SHA
+      - name: Build the applet and prepare its listing
+        run: |
+          ./scripts/build-applet
+          apell pack dist --output release/example.apel
+          cp publish.json release/
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        id: release
+        with:
+          name: applet-store-${{ github.run_attempt }}
+          path: release/
+          if-no-files-found: error
+          retention-days: 7
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
       id-token: write
     steps:
-      # Check out the source, install a pinned CLI, and build the applet first.
-      - name: Publish
-        env:
-          APELL_STORE_URL: ${{ vars.APELL_STORE_URL }}
-        run: |
-          apell publish artifacts/example.apel \
-            --store "$APELL_STORE_URL" \
-            --metadata listing.json \
-            --icon icon.png \
-            --auth github-oidc
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact_id }}
+          path: release
+          digest-mismatch: error
+      - uses: agentic-rs/apell/actions/publish@APELL_COMMIT_SHA
+        with:
+          store_url: ${{ vars.APELL_STORE_URL }}
+          package: release/example.apel
+          metadata: release/publish.json
 ```
 
-The [Companion workflow](../.github/workflows/publish-companion.yml) is a complete
-example. It publishes from `main` when the applet manifest changes, or through
-manual dispatch. Advance the applet version before publishing changed content;
-rebuilding an existing version with different bytes is rejected.
+In Store settings, register your repository's `.github/workflows/publish.yml`
+with the `refs/heads/main` ref and the `workflow_dispatch` event for this example.
+If the Store connection requires a GitHub environment, set `environment` on the
+publish job. To include an icon, add its PNG to the uploaded artifact and pass
+its downloaded path as the `icon` input.
+
+The build sets the release channel through the version in `manifest.json`.
+`1.2.0` publishes to Stable and `1.3.0-nightly.1` to Nightly. Give each changed
+release a new version. The [Companion workflow](../.github/workflows/publish-companion.yml)
+uses the same action and also publishes from `main` on manifest changes.
 
 The CLI selects OIDC automatically in GitHub Actions. `--auth github-oidc` makes
 that requirement explicit; a missing identity token or failed exchange never

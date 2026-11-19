@@ -1,6 +1,6 @@
 #![cfg(unix)]
 
-use apell_core::bundles::{digest, pack_directory};
+use apell_package::{digest, pack_directory};
 use serde_json::{json, Value};
 use std::{
   fs,

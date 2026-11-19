@@ -1,4 +1,4 @@
-use apell_core::bundles::{atomic_write, digest, pack_directory};
+use apell_package::{atomic_write, digest, pack_directory};
 use std::{
   ffi::OsStr,
   path::{Component, Path, PathBuf},

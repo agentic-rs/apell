@@ -1,9 +1,10 @@
 mod source;
 mod store;
 
+pub(crate) use apell_package::sync_directory;
 pub use apell_package::{
-  digest, pack_directory, parse, valid_hash, validate_manifest, Bundle, Manifest, API_VERSION,
-  MAX_BUNDLE_BYTES, MAX_ENTRIES, MAX_EXPANDED_BYTES,
+  atomic_write, digest, pack_directory, parse, valid_hash, validate_manifest, Bundle, Manifest,
+  API_VERSION, MAX_BUNDLE_BYTES, MAX_ENTRIES, MAX_EXPANDED_BYTES,
 };
 pub use source::{GitHubSource, PackageSource, StoreChannel, StoreSource};
 use std::{io::Read, path::Path};
@@ -48,39 +49,6 @@ fn write_version(path: &Path, bytes: &[u8], hash: &str) -> Result<(), String> {
       }
       Err(_) => Err("Could not publish bundle version.".into()),
     }
-  })();
-  let _ = std::fs::remove_file(temporary);
-  result
-}
-
-pub(crate) fn sync_directory(path: &Path) -> Result<(), String> {
-  #[cfg(unix)]
-  std::fs::File::open(path)
-    .and_then(|directory| directory.sync_all())
-    .map_err(|_| "Could not persist storage directory.".to_string())?;
-  #[cfg(not(unix))]
-  let _ = path;
-  Ok(())
-}
-
-pub fn atomic_write(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
-  use std::io::Write;
-  let parent = path.parent().ok_or("Invalid storage location.")?;
-  std::fs::create_dir_all(parent).map_err(|_| "Could not create storage directory.")?;
-  let temporary = parent.join(format!(".{}.tmp", uuid::Uuid::new_v4()));
-  let result = (|| {
-    let mut file = std::fs::OpenOptions::new()
-      .write(true)
-      .create_new(true)
-      .open(&temporary)
-      .map_err(|_| "Could not stage data.")?;
-    file
-      .write_all(bytes)
-      .and_then(|_| file.sync_all())
-      .map_err(|_| "Could not persist data.")?;
-    drop(file);
-    std::fs::rename(&temporary, path).map_err(|_| "Could not activate data.")?;
-    sync_directory(parent)
   })();
   let _ = std::fs::remove_file(temporary);
   result

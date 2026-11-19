@@ -86,7 +86,7 @@ impl CredentialStore {
   fn path(&self, store: &Url) -> PathBuf {
     self.root.join(format!(
       "{}.json",
-      apell_core::bundles::digest(store.as_str().as_bytes())
+      apell_package::digest(store.as_str().as_bytes())
     ))
   }
 

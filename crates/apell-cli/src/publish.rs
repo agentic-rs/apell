@@ -1,7 +1,7 @@
 mod auth;
 pub(crate) mod input;
 
-use apell_core::bundles::{digest, parse, Manifest, MAX_BUNDLE_BYTES};
+use apell_package::{digest, parse, Manifest, MAX_BUNDLE_BYTES};
 use input::{read_bounded, PublishArgs, PublishMetadata, MAX_ICON_BYTES, MAX_METADATA_BYTES};
 use reqwest::{
   blocking::{multipart, Client},

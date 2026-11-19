@@ -19,11 +19,7 @@ pub(super) fn fixture(endpoint: Url) -> PreparedPublish {
   std::fs::write(package.join("manifest.json"), br#"{"schema_version":1,"api_version":2,"applet_id":"fixture","name":"Fixture","version":"1.2.0","permissions":[]}"#).unwrap();
   std::fs::write(package.join("index.html"), "<p>Fixture</p>").unwrap();
   let file = root.path().join("private-local-file-name.apel");
-  std::fs::write(
-    &file,
-    apell_core::bundles::pack_directory(&package).unwrap(),
-  )
-  .unwrap();
+  std::fs::write(&file, apell_package::pack_directory(&package).unwrap()).unwrap();
   let metadata = root.path().join("metadata.json");
   std::fs::write(
     &metadata,
