@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type {
   InstallProgress,
   StoreChannel,
@@ -22,6 +22,8 @@ import { StoreIcon } from './StoreIcon';
 export function StoreDetailView({
   detail,
   selected_version,
+  fresh,
+  refreshing,
   busy,
   installing,
   restarting,
@@ -29,10 +31,13 @@ export function StoreDetailView({
   onVersion,
   onInstall,
   onOpen,
+  onRefresh,
   onBack,
 }: {
   detail: StoreDetail;
   selected_version: string;
+  fresh: boolean;
+  refreshing: boolean;
   busy: boolean;
   installing: boolean;
   restarting: boolean;
@@ -40,9 +45,13 @@ export function StoreDetailView({
   onVersion: (version: string) => void;
   onInstall: (release: StoreReleaseOption, confirmed_channel_switch?: boolean) => void;
   onOpen: () => void;
+  onRefresh: () => void;
   onBack: () => void;
 }) {
   const [confirm_switch, setConfirmSwitch] = useState(false);
+  useEffect(() => {
+    if (!fresh) setConfirmSwitch(false);
+  }, [fresh]);
   const release = detail.releases.find((item) => item.version === selected_version);
   const recommended = recommendedStoreRelease(detail, release && storeReleaseChannel(release));
   const channel = storeReleaseChannel(release ?? recommended);
@@ -61,10 +70,21 @@ export function StoreDetailView({
   const can_install =
     release && (release.action === 'install' || release.action === 'update' || confirm_required);
   return (
-    <section className="store-detail" aria-label={detail.applet.name}>
-      <button className="store-back" disabled={busy} onClick={onBack}>
-        <Icon name="back" /> All applets
-      </button>
+    <section className="store-detail" aria-label={detail.applet.name} aria-busy={refreshing}>
+      <div className="store-toolbar">
+        <button className="store-back" disabled={busy} onClick={onBack}>
+          <Icon name="back" /> All applets
+        </button>
+        <button
+          className="icon-button"
+          aria-label="Refresh applet details"
+          title="Refresh applet details"
+          disabled={busy || refreshing}
+          onClick={onRefresh}
+        >
+          <Icon name="reload" />
+        </button>
+      </div>
       <div className="store-detail-heading">
         <StoreIcon
           store_url={detail.store_url}
@@ -148,7 +168,7 @@ export function StoreDetailView({
                 {can_install && (
                   <button
                     className="store-primary"
-                    disabled={busy}
+                    disabled={busy || !fresh}
                     onClick={() => (confirm_required ? setConfirmSwitch(true) : onInstall(release))}
                   >
                     {installing
@@ -167,7 +187,7 @@ export function StoreDetailView({
                 {detail.installed && (
                   <button
                     className={can_install ? '' : 'store-primary'}
-                    disabled={busy}
+                    disabled={busy || !fresh}
                     onClick={onOpen}
                   >
                     {detail.restart_required
@@ -179,12 +199,19 @@ export function StoreDetailView({
                         : 'Open applet'}
                   </button>
                 )}
-                {!detail.installed && !can_install && (
+                {fresh && !detail.installed && !can_install && (
                   <button disabled>
                     {release.action === 'older' ? 'Older version' : 'Unavailable'}
                   </button>
                 )}
               </div>
+              {!fresh && (
+                <p className="store-action-reason" role="status">
+                  {refreshing
+                    ? 'Checking this applet’s current releases…'
+                    : 'Refresh these details to check what can be installed.'}
+                </p>
+              )}
               {!installing && !!release.downloaded_bytes && can_install && (
                 <p className="store-action-reason">
                   {storeSize(release.downloaded_bytes)} of {storeSize(release.size_bytes)}{' '}
@@ -271,7 +298,7 @@ export function StoreDetailView({
           </div>
         )}
       </div>
-      {release && confirm_required && (
+      {fresh && release && confirm_required && (
         <Sheet
           open={confirm_switch}
           title={can_switch_source ? 'Switch installation source?' : `Switch to ${channel_name}?`}

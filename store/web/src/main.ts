@@ -5,7 +5,8 @@ import type { Actions } from './actions';
 import { button, element, routeLink, showError } from './dom';
 import { renderPackage } from './manage';
 import { renderCliApproval, renderCliCredentials } from './cli';
-import { renderCatalog, renderDetails } from './public';
+import { clearPublicView, renderPublicRoute } from './public-route';
+import { PUBLIC_INVALIDATED } from './public-cache';
 import type { AccountPackages, Applet, AppletDetails, PackageDetails, Session } from './types';
 
 const main = document.querySelector<HTMLElement>('#main')!;
@@ -14,6 +15,7 @@ let navigation_id = 0;
 let session: Session | undefined;
 
 function navigate(path: string): void {
+  if (new URL(path, location.origin).href === location.href) return;
   history.pushState(null, '', path);
   window.scrollTo(0, 0);
   void renderRoute(true);
@@ -34,7 +36,8 @@ async function signOut(): Promise<void> {
   try {
     await api('/api/v1/auth/logout', { method: 'POST', csrf_token: session.csrf_token });
     session = undefined;
-    navigate('/account');
+    if (location.pathname === '/account') void renderRoute();
+    else navigate('/account');
   } catch (error) {
     const status = element('p', 'notice error');
     status.setAttribute('role', 'alert');
@@ -45,12 +48,11 @@ async function signOut(): Promise<void> {
   }
 }
 
-async function renderRoute(focus = false): Promise<void> {
+async function renderRoute(focus = false, force = false): Promise<void> {
   request?.abort();
   request = new AbortController();
   const signal = request.signal;
   const current_id = ++navigation_id;
-  renderLoading();
   if (focus) main.focus({ preventScroll: true });
   const auth_request = api<Session>('/api/v1/auth/me', { signal }).catch(() => undefined);
   try {
@@ -60,29 +62,30 @@ async function renderRoute(focus = false): Promise<void> {
       // Public browsing must remain usable if the login service is unavailable.
       void auth_request.then((auth) => {
         if (current_id !== navigation_id) return;
+        if (auth === undefined) return;
         session = auth;
         renderAccountHeader(session, () => void signOut());
       });
-      if (path === '/') {
-        const response = await api<{ applets: Applet[] }>('/api/v1/applets', { signal });
-        if (current_id !== navigation_id) return;
-        renderCatalog(main, response.applets);
-      } else {
-        const match = /^\/applets\/([a-z0-9_-]+)$/.exec(path);
-        if (!match) throw new Error('This page could not be found.');
-        const response = await api<AppletDetails>(
-          `/api/v1/applets/${encodeURIComponent(match[1])}`,
-          { signal },
-        );
-        if (current_id !== navigation_id) return;
-        renderDetails(main, response);
-      }
+      const match = /^\/applets\/([a-z0-9_-]+)$/.exec(path);
+      if (path !== '/' && !match) throw new Error('This page could not be found.');
+      const endpoint = match
+        ? `/api/v1/applets/${encodeURIComponent(match[1])}`
+        : '/api/v1/applets';
+      await renderPublicRoute(
+        main,
+        endpoint,
+        () => current_id === navigation_id,
+        () => void renderRoute(false, true),
+        force,
+      );
     } else if (
       path === '/account' ||
       path === '/account/new' ||
       path === '/account/cli' ||
       /^\/account\/packages\/[a-z0-9_-]+$/.test(path)
     ) {
+      clearPublicView();
+      renderLoading();
       const auth = await auth_request;
       if (current_id !== navigation_id) return;
       if (!auth) throw new Error('Could not check your session. Please try again.');
@@ -131,10 +134,12 @@ async function renderRoute(focus = false): Promise<void> {
         main.replaceChildren(renderPackage(pkg, applet, actions));
       }
     } else {
+      clearPublicView();
       throw new Error('This page could not be found.');
     }
   } catch (error) {
     if (current_id !== navigation_id) return;
+    clearPublicView();
     const state = element('section', 'empty-state');
     const message = element('p');
     showError(message, error);
@@ -174,6 +179,10 @@ document.addEventListener('click', (event) => {
   navigate(target.href);
 });
 window.addEventListener('popstate', () => void renderRoute());
+window.addEventListener(PUBLIC_INVALIDATED, () => {
+  if (location.pathname === '/' || location.pathname.startsWith('/applets/'))
+    void renderRoute(false, true);
+});
 const publishing_link = document.querySelector<HTMLAnchorElement>('.site-footer a');
 if (publishing_link) {
   publishing_link.href = '/account';

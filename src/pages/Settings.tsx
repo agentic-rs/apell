@@ -33,6 +33,7 @@ export function Settings() {
     }
   };
   useEffect(() => {
+    setBusy(false);
     void load();
     return () => scope.current.cancel();
   }, []);
@@ -110,7 +111,7 @@ export function Settings() {
         </button>
       </div>
       <p>One active model, shared by your applets. Credentials stay in Apell.</p>
-      {loading && (
+      {loading && !settings && (
         <p className="status connection-status" role="status">
           Loading connections…
         </p>
@@ -215,11 +216,11 @@ export function Settings() {
           Try again
         </button>
       )}
-      {!loading && settings && (
+      {settings && (
         <button
           type="button"
           className="add-connection"
-          disabled={busy}
+          disabled={busy || loading}
           onClick={() => setEditor({})}
         >
           <Icon name="add" /> Add connection

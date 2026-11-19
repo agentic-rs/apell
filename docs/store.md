@@ -16,6 +16,12 @@ stays in the device's local settings; browsing and installation never require a
 publishing token. Search the catalog, open an applet, and review its version,
 release notes, and declared access before choosing **Install**.
 
+Apell saves the catalog, recently viewed applet details, and browsing preferences
+on this device. Returning to the Store restores the view while Apell checks for
+changes. Saved listings can still be browsed if the Store is unreachable.
+Installation and updates require a fresh review of the selected release.
+The Store website also saves public listings in the browser.
+
 The catalog opens on **Stable**. Choose **Nightly** to see prereleases,
 including applets that have not published a Stable release yet. Each channel
 has its own latest version and version history. **Updates** follows the channel

@@ -1,3 +1,6 @@
+import type { StoreApplet, StoreRelease } from '../../packages/store-catalog';
+export type { StoreApplet, StoreRelease } from '../../packages/store-catalog';
+
 export interface Manifest {
   schema_version: number;
   api_version: number;
@@ -67,29 +70,6 @@ export interface StoreConfig {
   store_url: string | null;
 }
 export type StoreChannel = 'stable' | 'nightly';
-export interface StoreRelease {
-  version: string;
-  sha256: string;
-  size_bytes: number;
-  published_at: string;
-  release_notes: string;
-  api_version: number;
-  permissions: string[];
-  network: boolean;
-  has_backend: boolean;
-  download_url: string;
-  prerelease: boolean;
-}
-export interface StoreApplet {
-  applet_id: string;
-  name: string;
-  description: string;
-  project_url: string | null;
-  icon_url: string | null;
-  latest_release: StoreRelease;
-  latest_stable_release: StoreRelease | null;
-  latest_nightly_release?: StoreRelease | null;
-}
 export interface StoreCatalogEntry extends StoreApplet {
   installed: InstalledApplet | null;
   update_available: boolean;

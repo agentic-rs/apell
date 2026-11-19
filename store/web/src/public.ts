@@ -91,7 +91,15 @@ function state(title: string, description: string): HTMLElement {
   return section;
 }
 
-export function renderCatalog(main: HTMLElement, applets: Applet[]): void {
+export interface PublicView<T> {
+  update: (data: T) => void;
+  syncUrl: () => void;
+}
+
+export function renderCatalog(
+  main: HTMLElement,
+  applets: Applet[],
+): PublicView<{ applets: Applet[] }> {
   document.title = 'Apell Store';
   let channel = selectedChannel(new URL(location.href));
   const introduction = element('section', 'catalog-intro');
@@ -150,7 +158,7 @@ export function renderCatalog(main: HTMLElement, applets: Applet[]): void {
     if (search_input.value) url.searchParams.set('q', search_input.value);
     else url.searchParams.delete('q');
     setChannel(url, channel);
-    history.replaceState(null, '', url);
+    history.replaceState(history.state, '', url);
   }
   search_input.addEventListener('input', filter);
   search_form.addEventListener('submit', (event) => event.preventDefault());
@@ -168,6 +176,18 @@ export function renderCatalog(main: HTMLElement, applets: Applet[]): void {
   );
   main.replaceChildren(introduction, catalog, instructions);
   filter();
+  return {
+    update: (data) => {
+      applets = data.applets;
+      filter();
+    },
+    syncUrl: () => {
+      const url = new URL(location.href);
+      channel = selectedChannel(url);
+      search_input.value = url.searchParams.get('q') ?? '';
+      filter();
+    },
+  };
 }
 
 function renderCard(applet: Applet, release: Release): HTMLLIElement {
@@ -211,8 +231,11 @@ const permission_labels: Record<string, string> = {
   photos: 'Photo library',
 };
 
-export function renderDetails(main: HTMLElement, details: AppletDetails): void {
-  const { applet, releases } = details;
+export function renderDetails(
+  main: HTMLElement,
+  details: AppletDetails,
+): PublicView<AppletDetails> {
+  let { applet, releases } = details;
   let channel = selectedChannel(new URL(location.href));
   document.title = `${applet.name} · Apell Store`;
   const back = link('← All applets', '/', 'back-link');
@@ -220,14 +243,19 @@ export function renderDetails(main: HTMLElement, details: AppletDetails): void {
   const heading = element('section', 'detail-heading');
   const title_group = element('div', 'detail-title');
   const title_text = element('div');
-  title_text.append(element('p', 'eyebrow', 'Apell applet'), element('h1', '', applet.name));
-  title_group.append(icon(applet, 'large'), title_text);
+  const title = element('h1', '', applet.name);
+  const artwork = element('span');
+  artwork.append(icon(applet, 'large'));
+  title_text.append(element('p', 'eyebrow', 'Apell applet'), title);
+  title_group.append(artwork, title_text);
   heading.append(title_group);
   const content = element('div', 'detail-layout');
   const article = element('article', 'detail-copy');
-  article.append(element('p', 'detail-description', applet.description));
+  const description = element('p', 'detail-description', applet.description);
+  const project = element('div');
   const project_url = projectUrl(applet.project_url);
-  if (project_url) article.append(link('Visit project ↗', project_url, 'text-link'));
+  if (project_url) project.append(link('Visit project ↗', project_url, 'text-link'));
+  article.append(description, project);
   const permissions = element('section', 'detail-section');
   const permission_list = element('ul', 'permission-list');
   const permission_note = element('p', 'muted', 'Apell manages access for each installed applet.');
@@ -298,7 +326,7 @@ export function renderDetails(main: HTMLElement, details: AppletDetails): void {
     picker.sync(channel);
     const url = new URL(location.href);
     setChannel(url, channel);
-    history.replaceState(null, '', url);
+    history.replaceState(history.state, '', url);
     back.href = channelPath('/', channel);
 
     const available = releases.filter((release) => getReleaseChannel(release) === channel);
@@ -313,11 +341,18 @@ export function renderDetails(main: HTMLElement, details: AppletDetails): void {
     );
     select.disabled = available.length === 0;
     if (select.disabled) select.append(element('option', '', 'No published versions'));
-    else select.value = version ?? latest?.version ?? available[0].version;
+    else
+      select.value = available.some((release) => release.version === version)
+        ? version!
+        : (latest?.version ?? available[0].version);
     selectRelease();
   }
 
   function selectRelease(): void {
+    const url = new URL(location.href);
+    if (select.value && !select.disabled) url.searchParams.set('version', select.value);
+    else url.searchParams.delete('version');
+    history.replaceState(history.state, '', url);
     const release = releases.find((candidate) => candidate.version === select.value);
     copy_status.textContent = '';
     integrity.hidden = !release;
@@ -362,34 +397,59 @@ export function renderDetails(main: HTMLElement, details: AppletDetails): void {
     );
   }
   select.addEventListener('change', selectRelease);
-  updateChannel(channel);
+  updateChannel(channel, new URL(location.href).searchParams.get('version') ?? undefined);
   content.append(article, install);
 
   const history_section = element('section', 'version-history');
   history_section.append(element('h2', '', 'Version history'));
   const history_list = element('ul', 'release-list');
-  for (const release of releases) {
-    const row = element('li');
-    const title = element('div', 'history-title');
-    title.append(element('strong', '', `v${release.version}`), badge(release));
-    const info = element('div', 'history-info');
-    info.append(
-      element('span', '', dateLabel(release.published_at)),
-      element('span', '', sizeLabel(release.size_bytes)),
-    );
-    const choose = button(
-      'View version',
-      () => {
-        updateChannel(getReleaseChannel(release), release.version);
-        install.scrollIntoView({ behavior: 'instant', block: 'center' });
-        select.focus({ preventScroll: true });
-      },
-      'version-button',
-    );
-    choose.setAttribute('aria-label', `View version ${release.version}`);
-    row.append(title, info, choose);
-    history_list.append(row);
+  function updateHistory(): void {
+    history_list.replaceChildren();
+    for (const release of releases) {
+      const row = element('li');
+      const title = element('div', 'history-title');
+      title.append(element('strong', '', `v${release.version}`), badge(release));
+      const info = element('div', 'history-info');
+      info.append(
+        element('span', '', dateLabel(release.published_at)),
+        element('span', '', sizeLabel(release.size_bytes)),
+      );
+      const choose = button(
+        'View version',
+        () => {
+          updateChannel(getReleaseChannel(release), release.version);
+          install.scrollIntoView({ behavior: 'instant', block: 'center' });
+          select.focus({ preventScroll: true });
+        },
+        'version-button',
+      );
+      choose.setAttribute('aria-label', `View version ${release.version}`);
+      row.append(title, info, choose);
+      history_list.append(row);
+    }
   }
+  updateHistory();
   history_section.append(history_list);
   main.replaceChildren(back, heading, content, history_section);
+  return {
+    update: (data) => {
+      const selected = select.value;
+      const previous_icon = applet.icon_url;
+      ({ applet, releases } = data);
+      document.title = `${applet.name} · Apell Store`;
+      title.textContent = applet.name;
+      description.textContent = applet.description;
+      if (previous_icon !== applet.icon_url) artwork.replaceChildren(icon(applet, 'large'));
+      const next_project = projectUrl(applet.project_url);
+      project.replaceChildren(
+        ...(next_project ? [link('Visit project ↗', next_project, 'text-link')] : []),
+      );
+      updateChannel(channel, selected);
+      updateHistory();
+    },
+    syncUrl: () => {
+      const url = new URL(location.href);
+      updateChannel(selectedChannel(url), url.searchParams.get('version') ?? undefined);
+    },
+  };
 }

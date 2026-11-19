@@ -68,6 +68,7 @@ export function StoreCatalogView({
         <input
           type="search"
           value={query}
+          maxLength={200}
           onChange={(event) => onQuery(event.target.value)}
           placeholder="Name or description"
           autoCapitalize="none"
@@ -94,13 +95,13 @@ export function StoreCatalogView({
         )}
       </div>
       {loading && (
-        <p className="status" role="status">
+        <p className={catalog ? 'visually-hidden' : 'status'} role="status">
           Checking the store…
         </p>
       )}
       {error && (
         <div className="store-feedback" role="alert">
-          <strong>Couldn’t load the store</strong>
+          <strong>{catalog ? 'Couldn’t refresh the store' : 'Couldn’t load the store'}</strong>
           <p>{error}</p>
           <button disabled={loading} onClick={onRefresh}>
             Try again

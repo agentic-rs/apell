@@ -1,4 +1,5 @@
 import { api } from './api';
+import { invalidatePublicPackage } from './public-cache';
 import { showError } from './dom';
 import type { Session } from './types';
 
@@ -40,13 +41,16 @@ export async function perform<T>(
   }
 }
 
-export function mutate<T>(
+export async function mutate<T>(
   actions: Actions,
   path: string,
   method: 'POST' | 'PUT' | 'DELETE',
   body?: unknown,
 ): Promise<T> {
-  return api<T>(path, { method, body, csrf_token: actions.session.csrf_token });
+  const result = await api<T>(path, { method, body, csrf_token: actions.session.csrf_token });
+  const published = /^\/api\/v1\/account\/packages\/([a-z0-9_-]+)\/publish$/.exec(path);
+  if (method === 'POST' && published) invalidatePublicPackage(published[1]);
+  return result;
 }
 
 export function packageEndpoint(applet_id: string): string {

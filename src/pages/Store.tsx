@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import type { AppletSession, StoreChannel } from '../lib/types';
+import { useLayoutEffect, useRef } from 'react';
+import type { AppletSession } from '../lib/types';
 import { useBackAction } from '../lib/backNavigation';
 import { StoreAddress } from '../components/store/StoreAddress';
 import { StoreCatalogView } from '../components/store/StoreCatalogView';
@@ -15,9 +15,23 @@ export function Store({
   onBusyChange: (busy: boolean) => void;
 }) {
   const state = useStore(onLaunch, onBusyChange);
-  const [query, setQuery] = useState('');
-  const [updates_only, setUpdatesOnly] = useState(false);
-  const [channel, setChannel] = useState<StoreChannel>('stable');
+  const { query, updates_only, channel } = state.browse;
+  const page = state.address_open ? 'address' : state.selected_id ? 'detail' : 'catalog';
+  const previous_page = useRef(page);
+  const previous_origin = useRef(state.config?.store_url);
+  const catalog_scroll = useRef(0);
+  useLayoutEffect(() => {
+    if (previous_origin.current !== state.config?.store_url) {
+      previous_origin.current = state.config?.store_url;
+      catalog_scroll.current = 0;
+    }
+    if (previous_page.current === page) return;
+    previous_page.current = page;
+    window.scrollTo(0, page === 'catalog' ? catalog_scroll.current : 0);
+  }, [page, state.config?.store_url]);
+  const rememberCatalogScroll = () => {
+    if (page === 'catalog') catalog_scroll.current = window.scrollY;
+  };
   const can_leave_address = state.address_open && !!(state.config?.store_url || state.config_error);
   useBackAction(25, can_leave_address || !!state.selected_id, () => {
     if (state.operation) return;
@@ -75,11 +89,22 @@ export function Store({
           {state.action_error}
         </p>
       )}
+      {state.detail && state.detail_error && (
+        <div className="store-feedback" role="alert">
+          <strong>Couldn’t refresh this applet</strong>
+          <p>{state.detail_error}</p>
+          <button disabled={!!state.operation} onClick={state.retryDetail}>
+            Try again
+          </button>
+        </div>
+      )}
       {state.selected_id ? (
         state.detail ? (
           <StoreDetailView
             detail={state.detail}
             selected_version={state.selected_version}
+            fresh={state.detail_fresh}
+            refreshing={state.detail_loading}
             busy={!!state.operation}
             installing={state.operation === 'install'}
             restarting={state.operation === 'restart'}
@@ -87,6 +112,7 @@ export function Store({
             onVersion={state.setSelectedVersion}
             onInstall={state.install}
             onOpen={state.openApplet}
+            onRefresh={state.retryDetail}
             onBack={state.closeDetail}
           />
         ) : (
@@ -115,17 +141,22 @@ export function Store({
           query={query}
           updates_only={updates_only}
           channel={channel}
-          onQuery={setQuery}
-          onFilter={setUpdatesOnly}
-          onChannel={setChannel}
+          onQuery={(query) => state.updateBrowse({ query })}
+          onFilter={(updates_only) => state.updateBrowse({ updates_only })}
+          onChannel={(channel) => state.updateBrowse({ channel })}
           onRefresh={state.refreshCatalog}
-          onAddress={() => state.setAddressOpen(true)}
-          onSelect={(applet_id) =>
+          onAddress={() => {
+            rememberCatalogScroll();
+            state.setAddressOpen(true);
+          }}
+          onSelect={(applet_id) => {
+            rememberCatalogScroll();
             state.openDetail(
               applet_id,
               !updates_only && channel === 'nightly' ? channel : undefined,
-            )
-          }
+              !updates_only,
+            );
+          }}
         />
       )}
     </div>

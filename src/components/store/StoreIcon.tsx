@@ -10,8 +10,7 @@ function next() {
   while (active < 3 && queue.length) queue.shift()?.();
 }
 
-function loadIcon(store_url: string, icon_url: string): Promise<string> {
-  const key = JSON.stringify([store_url, icon_url]);
+function loadIcon(key: string, store_url: string, icon_url: string): Promise<string> {
   const cached = images.get(key);
   if (cached) return Promise.resolve(cached);
   const existing = pending.get(key);
@@ -52,15 +51,16 @@ export function StoreIcon({
   large?: boolean;
 }) {
   const element = useRef<HTMLSpanElement>(null);
-  const [image, setImage] = useState<string>();
+  const key = JSON.stringify([store_url, icon_url]);
+  const [loaded, setLoaded] = useState<{ key: string; image?: string }>();
+  const image = loaded?.key === key ? loaded.image : images.get(key);
   useEffect(() => {
+    if (!icon_url || images.has(key)) return;
     let disposed = false;
-    setImage(undefined);
-    if (!icon_url) return;
     const load = () => {
-      void loadIcon(store_url, icon_url)
-        .then((value) => {
-          if (!disposed) setImage(value);
+      void loadIcon(key, store_url, icon_url)
+        .then((image) => {
+          if (!disposed) setLoaded({ key, image });
         })
         .catch(() => {});
     };
@@ -81,7 +81,7 @@ export function StoreIcon({
       disposed = true;
       observer?.disconnect();
     };
-  }, [store_url, icon_url]);
+  }, [key, store_url, icon_url]);
   return (
     <span
       ref={element}
@@ -89,7 +89,14 @@ export function StoreIcon({
       aria-hidden="true"
     >
       {image ? (
-        <img src={image} alt="" onError={() => setImage(undefined)} />
+        <img
+          src={image}
+          alt=""
+          onError={() => {
+            if (images.get(key) === image) images.delete(key);
+            setLoaded({ key });
+          }}
+        />
       ) : (
         Array.from(name.trim())[0]?.toLocaleUpperCase() || 'a'
       )}

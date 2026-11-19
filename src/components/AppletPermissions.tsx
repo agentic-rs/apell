@@ -74,7 +74,7 @@ export function AppletPermissions() {
         </div>
       ) : (
         <p className="status" role="status">
-          {busy ? 'Loading permissions…' : applets ? 'No applets with managed permissions.' : null}
+          {applets ? 'No applets with managed permissions.' : busy ? 'Loading permissions…' : null}
         </p>
       )}
       {error && (

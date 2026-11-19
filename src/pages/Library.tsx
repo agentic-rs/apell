@@ -38,12 +38,14 @@ export function Library({
   const [applets, setApplets] = useState<InstalledApplet[]>([]);
   const [unavailable, setUnavailable] = useState<UnavailableApplet[]>([]);
   const [loading, setLoading] = useState(true);
+  const [load_error, setLoadError] = useState('');
   const [status, setStatus] = useState('');
   const [failed, setFailed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [launching_id, setLaunchingId] = useState('');
   const [removal, setRemoval] = useState<Removal>();
   const pending = useRef(false);
+  const list_revision = useRef(0);
   const library = useRef<HTMLElement>(null);
   const restore_library_focus = useRef(false);
 
@@ -55,21 +57,21 @@ export function Library({
 
   useEffect(() => {
     let disposed = false;
+    const revision = ++list_revision.current;
+    const isCurrent = () => !disposed && revision === list_revision.current;
     listApplets()
       .then((report) => {
-        if (!disposed) {
+        if (isCurrent()) {
           setApplets(report.applets);
           setUnavailable(report.unavailable);
+          setLoadError('');
         }
       })
       .catch((error) => {
-        if (!disposed) {
-          setStatus(message(error));
-          setFailed(true);
-        }
+        if (isCurrent()) setLoadError(message(error));
       })
       .finally(() => {
-        if (!disposed) setLoading(false);
+        if (isCurrent()) setLoading(false);
       });
     return () => {
       disposed = true;
@@ -115,9 +117,11 @@ export function Library({
     }
   };
   const refresh = async () => {
+    list_revision.current++;
     const report = await listApplets();
     setApplets(report.applets);
     setUnavailable(report.unavailable);
+    setLoadError('');
   };
   const installed = async () => {
     await refresh();
@@ -169,10 +173,11 @@ export function Library({
             onOpen={() => {
               if (removal || installOpen || pending.current) return;
               setLaunchingId(applet.applet_id);
-              void run(
-                async () => onLaunch(await launchApplet(applet.applet_id)),
-                `Opening ${applet.name}…`,
-              );
+              void run(async () => {
+                const session = await launchApplet(applet.applet_id);
+                setStatus('');
+                onLaunch(session);
+              }, `Opening ${applet.name}…`);
             }}
           />
         ))}
@@ -208,13 +213,18 @@ export function Library({
           </p>
         </aside>
       )}
-      {!loading && !applets.length && (
+      {!loading && !load_error && !applets.length && (
         <div className="empty-library">
           <p>{unavailable.length ? 'Add another applet.' : 'Add your first applet.'}</p>
           <button className="primary" disabled={busy} onClick={onInstallOpen}>
             Add applet
           </button>
         </div>
+      )}
+      {!installOpen && !removal && load_error && (
+        <p className="status library-status error" role="alert">
+          {load_error}
+        </p>
       )}
       {!installOpen && !removal && status && (
         <p
@@ -270,8 +280,8 @@ export function Library({
         busy={busy || loading}
         hasSample={applets.some((applet) => applet.applet_id === 'chatbot')}
         applets={applets}
-        status={loading ? 'Loading applets…' : status}
-        failed={failed}
+        status={loading ? 'Loading applets…' : status || load_error}
+        failed={status ? failed : !!load_error}
         onSample={() =>
           void run(async () => {
             const { sample_base64 } = await import('../generated/chatbot');
