@@ -3,6 +3,7 @@ import {
   matchingStoreApplets,
   newStoreAccess,
   recommendedStoreRelease,
+  rememberedStoreRelease,
   storeChannelRelease,
 } from './storeState';
 import type { InstalledApplet, StoreCatalogEntry, StoreDetail, StoreRelease } from './types';
@@ -98,6 +99,22 @@ describe('store release review', () => {
     );
   });
 
+  it('restores viewed releases only in the applet’s default channel', () => {
+    const stable_detail = { ...detail, installed_channel: 'stable' as const };
+    expect(rememberedStoreRelease(stable_detail, stable.version)?.version).toBe(stable.version);
+    expect(rememberedStoreRelease(stable_detail, nightly.version)).toBeUndefined();
+
+    const retained_nightly = {
+      ...detail,
+      installed: null,
+      installed_channel: 'nightly' as const,
+    };
+    expect(rememberedStoreRelease(retained_nightly, nightly.version)?.version).toBe(
+      nightly.version,
+    );
+    expect(rememberedStoreRelease(retained_nightly, stable.version)).toBeUndefined();
+  });
+
   it('calls out only added permissions and newly enabled network access', () => {
     const expanded = { ...stable, permissions: ['llm', 'camera', 'location'], network: true };
     expect(newStoreAccess(expanded, installed)).toEqual(['Camera', 'Location', 'Network access']);
@@ -110,11 +127,16 @@ describe('store release review', () => {
 });
 
 describe('store catalog filtering', () => {
-  it('shows nightly-only applets after choosing Nightly, while Updates spans installed channels', () => {
-    const nightly_only = { ...applet, latest_release: nightly, latest_stable_release: null };
-    expect(matchingStoreApplets([nightly_only], '', false, 'stable')).toEqual([]);
-    expect(matchingStoreApplets([nightly_only], '', false, 'nightly')).toEqual([nightly_only]);
-    expect(matchingStoreApplets([nightly_only], '', true, 'stable')).toEqual([nightly_only]);
+  it('includes Stable and Nightly-only applets in one catalog', () => {
+    const nightly_only = {
+      ...applet,
+      applet_id: 'nightly-only',
+      latest_release: nightly,
+      latest_stable_release: null,
+    };
+    const catalog = [applet, nightly_only];
+    expect(matchingStoreApplets(catalog, '', false)).toEqual(catalog);
+    expect(matchingStoreApplets(catalog, '', true)).toEqual(catalog);
   });
 
   it('shows upgrades only from the matching installation source', () => {

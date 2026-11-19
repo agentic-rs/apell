@@ -12,6 +12,10 @@ export function channelForVersion(version: string): ReleaseChannel {
   return version.split('+', 1)[0].includes('-') ? 'nightly' : 'stable';
 }
 
+export function catalogRelease(applet: Applet): Release {
+  return applet.latest_stable_release ?? applet.latest_nightly_release ?? applet.latest_release;
+}
+
 export function latestInChannel(
   applet: Applet,
   channel: ReleaseChannel,
@@ -30,6 +34,15 @@ export function latestInChannel(
 
 export function selectedChannel(url: URL): ReleaseChannel {
   return url.searchParams.get('channel') === 'nightly' ? 'nightly' : 'stable';
+}
+
+export function availableChannel(
+  requested: ReleaseChannel,
+  releases: readonly Release[],
+): ReleaseChannel {
+  if (releases.some((release) => getReleaseChannel(release) === requested)) return requested;
+  const other = requested === 'stable' ? 'nightly' : 'stable';
+  return releases.some((release) => getReleaseChannel(release) === other) ? other : requested;
 }
 
 export function setChannel(url: URL, channel: ReleaseChannel): void {

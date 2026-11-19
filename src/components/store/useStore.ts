@@ -21,6 +21,7 @@ import type {
 } from '../../lib/types';
 import {
   recommendedStoreRelease,
+  rememberedStoreRelease,
   storeChannelName,
   storeReleaseChannel,
 } from '../../lib/storeState';
@@ -42,6 +43,7 @@ interface DetailSelection {
   applet_id: string;
   version?: string;
   channel?: StoreChannel;
+  remembered_version?: string;
 }
 
 export function useStore(
@@ -149,7 +151,9 @@ export function useStore(
         selection.current?.applet_id === applet_id
       ) {
         const requested = selection.current;
-        const explicit = result.releases.find((option) => option.version === requested.version);
+        const explicit =
+          result.releases.find((option) => option.version === requested.version) ??
+          rememberedStoreRelease(result, requested.remembered_version);
         const release = explicit ?? recommendedStoreRelease(result, requested.channel);
         setSelectedVersion(release.version);
         selection.current = {
@@ -380,25 +384,24 @@ export function useStore(
     saveAddress,
     closeDetail,
     install,
-    openDetail: (applet_id: string, channel?: StoreChannel, use_remembered_version = true) => {
+    openDetail: (applet_id: string) => {
       if (!current_url.current || scope.current.operation) return;
       setStatus('');
       setActionError('');
       setRestartAfterInstall(undefined);
       const fallback = cache.current && cachedDetail(cache.current, applet_id);
-      const remembered = cache.current?.details.find(
-        (entry) => entry.applet.applet_id === applet_id,
-      )?.selected_version;
-      const previous = fallback?.releases.find(
-        (release) =>
-          use_remembered_version &&
-          release.version === remembered &&
-          (!channel || storeReleaseChannel(release) === channel),
-      );
-      const preferred = previous ?? (fallback && recommendedStoreRelease(fallback, channel));
-      // Do not carry a catalog-only fallback across a network response: an
-      // installed applet may have an authoritative channel on the device.
-      selection.current = { applet_id, version: previous?.version, channel };
+      const remembered_version = browse.updates_only
+        ? undefined
+        : cache.current?.details.find((entry) => entry.applet.applet_id === applet_id)
+            ?.selected_version;
+      const installed = catalog?.applets.find((entry) => entry.applet_id === applet_id)?.installed;
+      // The catalog can guide the preview while the detail request verifies the
+      // installed or retained channel.
+      const preview = fallback && { ...fallback, installed: installed ?? null };
+      const preferred =
+        preview &&
+        (rememberedStoreRelease(preview, remembered_version) ?? recommendedStoreRelease(preview));
+      selection.current = { applet_id, remembered_version };
       setSelectedId(applet_id);
       setDetail(fallback);
       setSelectedVersion(preferred?.version ?? '');

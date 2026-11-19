@@ -191,16 +191,6 @@ h1 {
 .search {
   max-width: 560px;
 }
-.catalog-filters {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 16px;
-  flex-wrap: wrap;
-}
-.catalog-filters .search {
-  flex: 1 1 260px;
-}
 .channel-picker {
   display: flex;
   gap: 3px;

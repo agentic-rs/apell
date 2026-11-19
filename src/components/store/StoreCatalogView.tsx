@@ -1,4 +1,4 @@
-import type { StoreCatalog, StoreChannel } from '../../lib/types';
+import type { StoreCatalog } from '../../lib/types';
 import {
   installedStoreChannel,
   matchingStoreApplets,
@@ -15,10 +15,8 @@ export function StoreCatalogView({
   error,
   query,
   updates_only,
-  channel,
   onQuery,
   onFilter,
-  onChannel,
   onRefresh,
   onAddress,
   onSelect,
@@ -28,15 +26,13 @@ export function StoreCatalogView({
   error: string;
   query: string;
   updates_only: boolean;
-  channel: StoreChannel;
   onQuery: (value: string) => void;
   onFilter: (value: boolean) => void;
-  onChannel: (value: StoreChannel) => void;
   onRefresh: () => void;
   onAddress: () => void;
   onSelect: (applet_id: string) => void;
 }) {
-  const applets = matchingStoreApplets(catalog?.applets ?? [], query, updates_only, channel);
+  const applets = matchingStoreApplets(catalog?.applets ?? [], query, updates_only);
   const update_count =
     catalog?.applets.filter((item) => item.update_available && !item.source_conflict).length ?? 0;
   return (
@@ -74,25 +70,13 @@ export function StoreCatalogView({
           autoCapitalize="none"
         />
       </label>
-      <div className="store-filter-row">
-        <div className="store-filters" role="group" aria-label="Store filter">
-          <button aria-pressed={!updates_only} onClick={() => onFilter(false)}>
-            Discover
-          </button>
-          <button aria-pressed={updates_only} onClick={() => onFilter(true)}>
-            Updates{update_count ? ` (${update_count})` : ''}
-          </button>
-        </div>
-        {!updates_only && (
-          <div className="store-filters" role="group" aria-label="Release channel">
-            <button aria-pressed={channel === 'stable'} onClick={() => onChannel('stable')}>
-              Stable
-            </button>
-            <button aria-pressed={channel === 'nightly'} onClick={() => onChannel('nightly')}>
-              Nightly
-            </button>
-          </div>
-        )}
+      <div className="store-filters" role="group" aria-label="Store filter">
+        <button aria-pressed={!updates_only} onClick={() => onFilter(false)}>
+          Discover
+        </button>
+        <button aria-pressed={updates_only} onClick={() => onFilter(true)}>
+          Updates{update_count ? ` (${update_count})` : ''}
+        </button>
       </div>
       {loading && (
         <p className={catalog ? 'visually-hidden' : 'status'} role="status">
@@ -115,33 +99,32 @@ export function StoreCatalogView({
               ? 'No matching applets'
               : updates_only
                 ? 'You’re up to date'
-                : `No ${storeChannelName(channel)} releases yet`}
+                : 'No applets yet'}
           </h2>
           <p>
             {query.trim()
               ? 'Try another name or a shorter search.'
               : updates_only
                 ? 'Updates for each applet’s installed channel will appear here.'
-                : 'Try the other channel to see more applets.'}
+                : 'Published applets will appear here.'}
           </p>
         </div>
       )}
       {!!applets.length && catalog && (
         <ul className="store-list">
           {applets.map((applet) => {
-            const recommended = recommendedStoreRelease(
-              { store_url: catalog.store_url, applet, installed: applet.installed },
-              updates_only ? undefined : channel,
-            );
+            const recommended = recommendedStoreRelease({
+              store_url: catalog.store_url,
+              applet,
+              installed: applet.installed,
+            });
             const installed_channel = installedStoreChannel(
               catalog.store_url,
               applet.applet_id,
               applet.installed,
             );
-            const update_available =
-              applet.update_available &&
-              !applet.source_conflict &&
-              (updates_only || installed_channel === channel);
+            const update_available = applet.update_available && !applet.source_conflict;
+            const channel_name = installed_channel && storeChannelName(installed_channel);
             return (
               <li key={applet.applet_id}>
                 <button
@@ -159,18 +142,21 @@ export function StoreCatalogView({
                     <span className="store-card-description">{applet.description}</span>
                     <span className="store-card-meta">
                       {update_available ? (
-                        <span className="store-badge">Update available</span>
+                        <span className="store-badge">
+                          {channel_name ? `Update available · ${channel_name}` : 'Update available'}
+                        </span>
                       ) : applet.installed ? (
                         <span className="store-badge store-badge-muted">
                           {applet.source_conflict
                             ? 'Installed from another source'
-                            : installed_channel
-                              ? `Installed · ${storeChannelName(installed_channel)}`
+                            : channel_name
+                              ? `Installed · ${channel_name}`
                               : 'Installed'}
                         </span>
-                      ) : recommended.prerelease ? (
-                        <span className="store-badge store-badge-preview">Nightly</span>
                       ) : null}
+                      {!installed_channel && recommended.prerelease && (
+                        <span className="store-badge store-badge-preview">Nightly</span>
+                      )}
                       <span>{storeSize(recommended.size_bytes)}</span>
                     </span>
                   </span>

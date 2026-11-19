@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { channelForVersion, channelPath, latestInChannel, selectedChannel } from './channels';
+import {
+  availableChannel,
+  catalogRelease,
+  channelForVersion,
+  channelPath,
+  latestInChannel,
+  selectedChannel,
+} from './channels';
 import type { Applet, Release } from './types';
 
 const release = (version: string): Release => ({
@@ -29,7 +36,34 @@ const applet: Applet = {
 };
 
 describe('Store website release channels', () => {
-  it('browses Nightly independently of the higher Stable release', () => {
+  it('opens an available detail channel and never selects a missing channel', () => {
+    expect(availableChannel('stable', [nightly])).toBe('nightly');
+    expect(availableChannel('nightly', [stable])).toBe('stable');
+    expect(availableChannel('nightly', [stable, nightly])).toBe('nightly');
+    expect(availableChannel('stable', [stable, nightly])).toBe('stable');
+  });
+  it('shows every published applet with Stable preferred and Nightly as its fallback', () => {
+    expect(
+      catalogRelease({
+        ...applet,
+        latest_release: release('3.0.0-nightly.1'),
+        latest_nightly_release: nightly,
+      }),
+    ).toBe(stable);
+    expect(
+      catalogRelease({
+        ...applet,
+        latest_release: nightly,
+        latest_stable_release: null,
+        latest_nightly_release: nightly,
+      }),
+    ).toBe(nightly);
+    expect(
+      catalogRelease({ ...applet, latest_release: nightly, latest_stable_release: null }),
+    ).toBe(nightly);
+  });
+
+  it('selects Nightly independently of the higher Stable release on applet details', () => {
     const listing = { ...applet, latest_nightly_release: nightly };
     expect(latestInChannel(listing, 'stable')).toBe(stable);
     expect(latestInChannel(listing, 'nightly')).toBe(nightly);

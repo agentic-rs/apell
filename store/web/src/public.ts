@@ -2,6 +2,8 @@ import type { Applet, AppletDetails, Release } from './types';
 import { button, element, link } from './dom';
 import {
   channel_labels,
+  availableChannel,
+  catalogRelease,
   channelPath,
   getReleaseChannel,
   latestInChannel,
@@ -61,9 +63,11 @@ function channelPicker(onSelect: (channel: ReleaseChannel) => void) {
   group.append(stable, nightly);
   return {
     group,
-    sync: (channel: ReleaseChannel) => {
+    sync: (channel: ReleaseChannel, releases: readonly Release[]) => {
       stable.setAttribute('aria-pressed', String(channel === 'stable'));
       nightly.setAttribute('aria-pressed', String(channel === 'nightly'));
+      stable.disabled = !releases.some((release) => getReleaseChannel(release) === 'stable');
+      nightly.disabled = !releases.some((release) => getReleaseChannel(release) === 'nightly');
     },
   };
 }
@@ -101,7 +105,6 @@ export function renderCatalog(
   applets: Applet[],
 ): PublicView<{ applets: Applet[] }> {
   document.title = 'Apell Store';
-  let channel = selectedChannel(new URL(location.href));
   const introduction = element('section', 'catalog-intro');
   const copy = element('div');
   copy.append(
@@ -127,17 +130,9 @@ export function renderCatalog(
   count.setAttribute('role', 'status');
   const grid = element('ul', 'applet-grid');
   const search_state = element('div');
-  const picker = channelPicker((next) => {
-    channel = next;
-    filter();
-  });
   function filter(): void {
-    picker.sync(channel);
     const query = search_input.value.trim().toLocaleLowerCase();
-    const available = applets.flatMap((applet) => {
-      const release = latestInChannel(applet, channel);
-      return release ? [{ applet, release }] : [];
-    });
+    const available = applets.map((applet) => ({ applet, release: catalogRelease(applet) }));
     const matches = available.filter(({ applet }) =>
       `${applet.name} ${applet.description}`.toLocaleLowerCase().includes(query),
     );
@@ -149,22 +144,20 @@ export function renderCatalog(
         available.length
           ? state('Nothing here matches yet.', 'Try another name or a shorter search.')
           : state(
-              `No ${channel_labels[channel]} releases yet.`,
-              `Check the ${channel_labels[channel === 'stable' ? 'nightly' : 'stable']} channel for more applets.`,
+              'No applets published yet.',
+              'Published applets will appear here, ready to download.',
             ),
       );
     }
     const url = new URL(location.href);
     if (search_input.value) url.searchParams.set('q', search_input.value);
     else url.searchParams.delete('q');
-    setChannel(url, channel);
+    url.searchParams.delete('channel');
     history.replaceState(history.state, '', url);
   }
   search_input.addEventListener('input', filter);
   search_form.addEventListener('submit', (event) => event.preventDefault());
-  const filters = element('div', 'catalog-filters');
-  filters.append(search_form, picker.group);
-  catalog.append(filters, count, grid, search_state);
+  catalog.append(search_form, count, grid, search_state);
   const instructions = element('aside', 'install-tip');
   instructions.append(
     element('strong', '', 'New to applets?'),
@@ -183,7 +176,6 @@ export function renderCatalog(
     },
     syncUrl: () => {
       const url = new URL(location.href);
-      channel = selectedChannel(url);
       search_input.value = url.searchParams.get('q') ?? '';
       filter();
     },
@@ -322,12 +314,12 @@ export function renderDetails(
   );
 
   function updateChannel(next: ReleaseChannel, version?: string): void {
-    channel = next;
-    picker.sync(channel);
+    channel = availableChannel(next, releases);
+    picker.sync(channel, releases);
     const url = new URL(location.href);
     setChannel(url, channel);
     history.replaceState(history.state, '', url);
-    back.href = channelPath('/', channel);
+    back.href = '/';
 
     const available = releases.filter((release) => getReleaseChannel(release) === channel);
     const latest = latestInChannel(applet, channel, releases);

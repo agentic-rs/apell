@@ -79,17 +79,12 @@
   padding-left: 16px;
   background: var(--surface);
 }
-.store-filter-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-bottom: 24px;
-}
 .store-filters {
   display: flex;
   gap: 4px;
   width: fit-content;
   max-width: 100%;
+  margin-bottom: 24px;
   padding: 4px;
   border-radius: 14px;
   background: var(--subtle);

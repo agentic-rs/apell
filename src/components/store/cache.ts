@@ -4,13 +4,7 @@ import {
   publicStoreApplet,
   publicStoreRelease,
 } from '../../../packages/store-catalog';
-import type {
-  StoreApplet,
-  StoreCatalog,
-  StoreChannel,
-  StoreDetail,
-  StoreRelease,
-} from '../../lib/types';
+import type { StoreApplet, StoreCatalog, StoreDetail, StoreRelease } from '../../lib/types';
 
 const CACHE_KEY = 'apell.store.browse.v1';
 const PREFERENCES_KEY = 'apell.store.preferences.v1';
@@ -21,13 +15,11 @@ const MAX_DETAIL_LENGTH = 200_000;
 export interface StoreBrowsePreferences {
   query: string;
   updates_only: boolean;
-  channel: StoreChannel;
 }
 
 export const DEFAULT_BROWSE: StoreBrowsePreferences = {
   query: '',
   updates_only: false,
-  channel: 'stable',
 };
 
 interface CachedDetail {
@@ -64,7 +56,6 @@ function readPreferences(store_url: string): StoreBrowsePreferences {
     return {
       query: typeof data.query === 'string' ? data.query.slice(0, 200) : '',
       updates_only: data.updates_only === true,
-      channel: data.channel === 'nightly' ? 'nightly' : 'stable',
     };
   } catch {
     return DEFAULT_BROWSE;

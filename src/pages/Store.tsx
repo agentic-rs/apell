@@ -15,7 +15,7 @@ export function Store({
   onBusyChange: (busy: boolean) => void;
 }) {
   const state = useStore(onLaunch, onBusyChange);
-  const { query, updates_only, channel } = state.browse;
+  const { query, updates_only } = state.browse;
   const page = state.address_open ? 'address' : state.selected_id ? 'detail' : 'catalog';
   const previous_page = useRef(page);
   const previous_origin = useRef(state.config?.store_url);
@@ -140,10 +140,8 @@ export function Store({
           error={state.catalog_error}
           query={query}
           updates_only={updates_only}
-          channel={channel}
           onQuery={(query) => state.updateBrowse({ query })}
           onFilter={(updates_only) => state.updateBrowse({ updates_only })}
-          onChannel={(channel) => state.updateBrowse({ channel })}
           onRefresh={state.refreshCatalog}
           onAddress={() => {
             rememberCatalogScroll();
@@ -151,11 +149,7 @@ export function Store({
           }}
           onSelect={(applet_id) => {
             rememberCatalogScroll();
-            state.openDetail(
-              applet_id,
-              !updates_only && channel === 'nightly' ? channel : undefined,
-              !updates_only,
-            );
+            state.openDetail(applet_id);
           }}
         />
       )}

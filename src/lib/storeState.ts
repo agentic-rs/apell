@@ -39,14 +39,11 @@ export function matchingStoreApplets(
   applets: StoreCatalogEntry[],
   query: string,
   updates_only: boolean,
-  channel: StoreChannel = 'stable',
 ): StoreCatalogEntry[] {
   const search = query.trim().toLocaleLowerCase();
   return applets.filter(
     (applet) =>
-      (updates_only
-        ? applet.update_available && !applet.source_conflict
-        : storeChannelRelease(applet, channel) !== null) &&
+      (!updates_only || (applet.update_available && !applet.source_conflict)) &&
       `${applet.name} ${applet.description}`.toLocaleLowerCase().includes(search),
   );
 }
@@ -100,6 +97,14 @@ export function recommendedStoreRelease(
       : undefined) ??
     storeChannelRelease(applet, channel === 'nightly' ? 'stable' : 'nightly') ??
     applet.latest_release
+  );
+}
+
+export function rememberedStoreRelease(detail: StoreDetail, version: string | undefined) {
+  if (!version) return undefined;
+  const recommended = recommendedStoreRelease(detail);
+  return detail.releases.find(
+    (release) => release.version === version && release.prerelease === recommended.prerelease,
   );
 }
 

@@ -22,19 +22,19 @@ changes. Saved listings can still be browsed if the Store is unreachable.
 Installation and updates require a fresh review of the selected release.
 The Store website also saves public listings in the browser.
 
-The catalog opens on **Stable**. Choose **Nightly** to see prereleases,
-including applets that have not published a Stable release yet. Each channel
-has its own latest version and version history. **Updates** follows the channel
-each installed applet uses; a release in the other channel is never an update.
+The catalog lists every published applet once, including Nightly-only applets.
+Open an applet to choose its release channel and see that channel’s version
+history. Apell recommends Stable for new installs when available. For installed
+applets, **Updates** follows the channel recorded on this device.
 Review an update's permissions, including newly declared access, then choose
 **Update**. Updates are manual, and existing applet data is retained.
 If the old version is running, choose **Restart applet** after installing to
 open the new package and backend. This leaves Apell and other applets running.
 
 Each Store installation records the Store address, applet ID, and channel.
-To change channels, open the applet’s Store page, select the other channel,
-and confirm **Switch and install**. The applet keeps its data and remembered
-permissions. Apell prevents downgrades, so a Nightly user may need to wait for
+To change channels, open the applet’s Store page, choose **Switch to Stable**
+or **Switch to Nightly**, and confirm **Switch and install**. The applet keeps
+its data and remembered permissions. Apell prevents downgrades, so you may need to wait for
 a newer Stable version to switch back. Previously installed Preview applets
 now follow Nightly. Changing the configured store does not change installed applets' update
 sources. To move an applet from a file, a GitHub release, or another store, open its

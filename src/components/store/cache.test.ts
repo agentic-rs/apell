@@ -78,14 +78,14 @@ describe('native Store browse cache', () => {
     cacheStoreCatalog(cache, catalog);
     cacheStoreDetail(cache, detail, release.version);
     writeStoreCache(cache);
-    writeStorePreferences(store_url, { query: 'Sample', updates_only: true, channel: 'nightly' });
+    writeStorePreferences(store_url, { query: 'Sample', updates_only: true });
 
     const saved = readStoreCache(store_url);
     const raw = [...storage.values()].join('');
     expect(raw).not.toMatch(
       /private-fixture|microphone|downloaded_bytes|switch_snapshot|restart_required/,
     );
-    expect(saved.preferences).toEqual({ query: 'Sample', updates_only: true, channel: 'nightly' });
+    expect(saved.preferences).toEqual({ query: 'Sample', updates_only: true });
     expect(saved.details[0].selected_version).toBe(release.version);
     expect(cachedCatalog(saved)?.applets[0].installed).toBeNull();
     expect(cachedDetail(saved, applet.applet_id)).toMatchObject({
@@ -97,6 +97,14 @@ describe('native Store browse cache', () => {
     expect(cachedCatalog(foreign)).toBeUndefined();
     expect(foreign.details).toEqual([]);
     expect(foreign.preferences.query).toBe('');
+  });
+
+  it('restores the search and update filter from earlier preferences with a catalog channel', () => {
+    storage.set(
+      'apell.store.preferences.v1',
+      JSON.stringify({ store_url, query: 'Sample', updates_only: true, channel: 'nightly' }),
+    );
+    expect(readStoreCache(store_url).preferences).toEqual({ query: 'Sample', updates_only: true });
   });
 
   it('bounds its detail history and tolerates corrupted storage', () => {
