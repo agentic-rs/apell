@@ -98,6 +98,18 @@ pub async fn shell_command(
       serde_json::to_value(host.resume_view()?)
         .map_err(|_| "Could not encode applet attachment.".into())
     }
+    "applets.installation" => {
+      let session_id = string(&params, "session_id")?.to_owned();
+      let view_id = string(&params, "view_id")?.to_owned();
+      blocking(move || {
+        let installation = app
+          .state::<Host>()
+          .view_installation(&session_id, &view_id)?;
+        serde_json::to_value(installation)
+          .map_err(|_| "Could not encode applet installation.".into())
+      })
+      .await
+    }
     "applets.reload" => serde_json::to_value(
       host.attach_view(string(&params, "session_id")?, string(&params, "view_id")?)?,
     )

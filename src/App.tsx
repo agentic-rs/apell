@@ -3,7 +3,13 @@ import { Library } from './pages/Library';
 import { Settings } from './pages/Settings';
 import { Store } from './pages/Store';
 import { AppletView } from './pages/AppletView';
-import { closeApplet, reloadApplet, currentApplet, nativeAvailable } from './lib/tauri';
+import {
+  closeApplet,
+  reloadApplet,
+  restartApplet,
+  currentApplet,
+  nativeAvailable,
+} from './lib/tauri';
 import type { AppletSession } from './lib/types';
 import { Icon } from './components/Icon';
 import { useViewportHeight } from './lib/useViewportHeight';
@@ -154,6 +160,9 @@ function Shell() {
           }}
           onReload={async () => {
             setSession(await reloadApplet(session.session_id, session.view_id));
+          }}
+          onRestart={async () => {
+            setSession(await restartApplet(session.manifest.applet_id));
           }}
         />
       )}

@@ -1,6 +1,6 @@
 use crate::host::{Host, Session};
 use crate::permissions::{GrantSource, ManagedPermission, PermissionMode};
-use apell_core::bundles::{Bundle, InstalledApplet, Manifest};
+use apell_core::bundles::{Bundle, InstalledApplet, Manifest, PackageSource, StoreSource};
 use apell_runtime::{HostError, HostEvents, HostServices, RuntimeHandle, ServiceFuture};
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -53,6 +53,13 @@ pub struct Attachment {
   pub manifest: Manifest,
   pub entry_url: String,
   pub has_lib: bool,
+}
+
+#[derive(Serialize)]
+pub struct AppletInstallation {
+  installed_version: String,
+  store_source: Option<StoreSource>,
+  restart_required: bool,
 }
 
 impl Host {
@@ -288,6 +295,29 @@ impl Host {
       .and_then(|(run, _)| running.runs.get(run))
       .ok_or("Applet view is unavailable.")?;
     Ok(run.grant_source.clone())
+  }
+
+  pub fn view_installation(
+    &self,
+    session_id: &str,
+    view_id: &str,
+  ) -> Result<AppletInstallation, String> {
+    // Capture the exact attached identity, even when a newer installed
+    // package is waiting for the running applet to restart.
+    self.require_view(session_id, view_id)?;
+    let bundle = self.view_bundle(view_id)?;
+    let installed = self.bundles.installed(&bundle.manifest.applet_id)?;
+    // A package read can take time; don't return details to a stale view.
+    self.require_view(session_id, view_id)?;
+    let restart_required = self.needs_applet_restart(&installed);
+    Ok(AppletInstallation {
+      installed_version: installed.manifest.version,
+      store_source: match installed.source {
+        Some(PackageSource::Store(source)) => Some(source),
+        _ => None,
+      },
+      restart_required,
+    })
   }
 
   pub fn view_permission(
@@ -1006,10 +1036,15 @@ mod tests {
   }
 
   #[test]
-  fn moving_identical_bytes_to_the_store_requires_an_applet_restart() {
+  fn about_reports_the_current_installation_even_for_an_older_running_package() {
     use apell_core::bundles::{StoreChannel, StoreSource, StoreSwitchSnapshot};
 
     let (_directory, host) = fixture();
+    let attachment = host.attach_run(RUN).unwrap();
+    let initial = host.view_installation(RUN, &attachment.view_id).unwrap();
+    assert_eq!(initial.installed_version, "1.0.0");
+    assert!(initial.store_source.is_none());
+    assert!(!initial.restart_required);
     let installed = host.bundles.installed(APPLET).unwrap();
     let bytes = fs::read(
       host
@@ -1038,5 +1073,16 @@ mod tests {
       .unwrap();
     assert_eq!(updated.sha256, installed.sha256);
     assert!(host.needs_applet_restart(&updated));
+    let installation = host.view_installation(RUN, &attachment.view_id).unwrap();
+    assert_eq!(installation.installed_version, "1.0.0");
+    let source = installation.store_source.unwrap();
+    assert_eq!(source.store_url, "https://store.example");
+    assert_eq!(source.channel, StoreChannel::Stable);
+    assert!(installation.restart_required);
+    assert!(host
+      .view_installation("wrong-run", &attachment.view_id)
+      .is_err());
+    host.attach_view(RUN, &attachment.view_id).unwrap();
+    assert!(host.view_installation(RUN, &attachment.view_id).is_err());
   }
 }

@@ -4,6 +4,7 @@ import { getPermissionMode, message, setPermissionMode } from '../lib/tauri';
 import type { AppletSession, ManagedPermission, PermissionMode } from '../lib/types';
 import { Icon } from './Icon';
 import { Sheet } from './Sheet';
+import { AppletChannel } from './AppletChannel';
 import { OperationScope } from './providers/state';
 
 const permission_labels: Record<string, string> = {
@@ -126,16 +127,22 @@ interface AppletControlsProps {
   session: AppletSession;
   disabled: boolean;
   stopped?: boolean;
+  installing_channel: boolean;
+  onInstallingChannel: (installing: boolean) => void;
   onClose: () => void;
   onReload: () => void;
+  onRestart: () => void;
 }
 
 export function AppletControls({
   session,
   disabled,
   stopped,
+  installing_channel,
+  onInstallingChannel,
   onClose,
   onReload,
+  onRestart,
 }: AppletControlsProps) {
   const { manifest } = session;
   const [panel, setPanel] = useState<'menu' | 'about' | null>(null);
@@ -174,6 +181,7 @@ export function AppletControls({
           key={panel}
           open
           title={panel === 'about' ? 'About this applet' : manifest.name}
+          dismissible={!installing_channel}
           onClose={() => setPanel(null)}
         >
           {panel === 'menu' ? (
@@ -198,6 +206,14 @@ export function AppletControls({
             <div className="applet-about">
               <h3>{manifest.name}</h3>
               <p>Version {manifest.version}</p>
+              <AppletChannel
+                session={session}
+                onInstalling={onInstallingChannel}
+                onRestart={() => {
+                  setPanel(null);
+                  onRestart();
+                }}
+              />
               <h4>Permissions</h4>
               <dl className="applet-access">
                 <div>

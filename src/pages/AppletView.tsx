@@ -9,23 +9,29 @@ import { useBackAction, useBackNavigation } from '../lib/backNavigation';
 import { AppletBack } from '../lib/appletBack';
 
 const BACK_PRIORITY = 50;
+type ViewAction = 'close' | 'reload' | 'restart';
 
 export function AppletView({
   session,
   onClose,
   onReload,
+  onRestart,
 }: {
   session: AppletSession;
   onClose: () => Promise<void>;
   onReload: () => Promise<void>;
+  onRestart: () => Promise<void>;
 }) {
   const frame = useRef<HTMLIFrameElement>(null);
   const [ready, setReady] = useState(false);
   const [error, setError] = useState('');
   const [suspended, setSuspended] = useState(false);
   const [stopped, setStopped] = useState(false);
-  const [action, setAction] = useState<'close' | 'reload' | null>(null);
+  const [action, setAction] = useState<ViewAction | null>(null);
   const [choice, setChoice] = useState<ModelChoice>();
+  const [installing_channel, setInstallingChannel] = useState(false);
+  const visible_choice = installing_channel ? undefined : choice;
+  const restart_failed = useRef(false);
   const stopBridge = useRef<(() => void) | undefined>(undefined);
   const guestBack = useRef<((close: () => void) => void) | undefined>(undefined);
   const navigation = useBackNavigation();
@@ -155,8 +161,8 @@ export function AppletView({
     };
   }, [session, suspended]);
 
-  const run = async (next_action: 'close' | 'reload') => {
-    if (pending.current) return;
+  const run = async (next_action: ViewAction) => {
+    if (pending.current || installing_channel) return;
     pending.current = true;
     stopBridge.current?.();
     setChoice(undefined);
@@ -165,8 +171,9 @@ export function AppletView({
     setAction(next_action);
     setError('');
     try {
-      await (next_action === 'reload' ? onReload() : onClose());
+      await { close: onClose, reload: onReload, restart: onRestart }[next_action]();
     } catch (error) {
+      restart_failed.current = next_action === 'restart';
       setError(`Could not ${next_action} the applet. ${message(error)}`);
     } finally {
       pending.current = false;
@@ -177,7 +184,7 @@ export function AppletView({
   // Sheets handle Back first. The applet then gets a chance to go back
   // internally; only its root falls through to the existing scoped close.
   useBackAction(BACK_PRIORITY, true, () => {
-    if (choice || pending.current) return;
+    if (choice || installing_channel || pending.current) return;
     const close = () => {
       if (!navigation?.hasHigherPriority(BACK_PRIORITY)) void run('close');
     };
@@ -190,22 +197,39 @@ export function AppletView({
       <header className="applet-bar">
         <span>{session.manifest.name}</span>
         <AppletControls
-          key={choice ? 'choosing-model' : 'applet-controls'}
+          key={visible_choice ? 'choosing-model' : 'applet-controls'}
           session={session}
-          disabled={action !== null || !!choice}
+          disabled={action !== null || !!visible_choice || installing_channel}
           stopped={stopped}
+          installing_channel={installing_channel}
+          onInstallingChannel={setInstallingChannel}
           onClose={() => void run('close')}
           onReload={() => void run('reload')}
+          onRestart={() => void run('restart')}
         />
       </header>
       {suspended ? (
         <div className="applet-state">
           <p className={error ? 'status error' : 'status'} role={error ? 'alert' : 'status'}>
-            {error || (action === 'close' ? 'Closing applet…' : 'Reloading applet…')}
+            {error ||
+              (action === 'close'
+                ? 'Closing applet…'
+                : action === 'restart'
+                  ? 'Restarting applet…'
+                  : 'Reloading applet…')}
           </p>
           {!action && (
-            <button className="primary" onClick={() => void run(stopped ? 'close' : 'reload')}>
-              {stopped ? 'Close applet' : 'Try reloading'}
+            <button
+              className="primary"
+              onClick={() =>
+                void run(restart_failed.current ? 'restart' : stopped ? 'close' : 'reload')
+              }
+            >
+              {restart_failed.current
+                ? 'Try restarting'
+                : stopped
+                  ? 'Close applet'
+                  : 'Try reloading'}
             </button>
           )}
         </div>
@@ -229,7 +253,9 @@ export function AppletView({
           />
         </>
       )}
-      {choice && !suspended && <LlmModelPicker key={choice.id} choice={choice} />}
+      {visible_choice && !suspended && (
+        <LlmModelPicker key={visible_choice.id} choice={visible_choice} />
+      )}
     </section>
   );
 }

@@ -16,6 +16,11 @@ export interface InstalledApplet extends Manifest {
   icon_data_url?: string | null;
   source?: PackageSource | null;
 }
+export interface StoreSource {
+  store_url: string;
+  applet_id: string;
+  channel: StoreChannel;
+}
 export type PackageSource =
   | {
       kind: 'github';
@@ -25,12 +30,7 @@ export type PackageSource =
       release_tag?: string | null;
       prerelease?: boolean;
     }
-  | {
-      kind: 'store';
-      store_url: string;
-      applet_id: string;
-      channel: StoreChannel;
-    };
+  | ({ kind: 'store' } & StoreSource);
 export interface UnavailableApplet {
   applet_id: string;
   error: string;
@@ -56,6 +56,11 @@ export interface AppletSession {
   view_id: string;
   entry_url: string;
   has_lib: boolean;
+}
+export interface AppletInstallation {
+  store_source: StoreSource | null;
+  installed_version: string;
+  restart_required: boolean;
 }
 export interface GitHubRelease {
   repository_id: number;
@@ -108,6 +113,7 @@ export interface StoreInstallRequest {
   expected_installed_sha256: string | null;
   switch_snapshot?: StoreSwitchSnapshot;
   channel_snapshot?: StoreSwitchSnapshot;
+  installed_source?: boolean;
   operation_id: string;
 }
 export type StoreInstallResult =

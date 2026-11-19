@@ -270,6 +270,63 @@ fn same_store_channel_switch_requires_the_reviewed_snapshot() {
 }
 
 #[test]
+fn installed_source_path_only_switches_an_active_applets_own_channel() {
+  let mut report = empty_report();
+  let mut saved = installed("1.0.0");
+  let original = "https://original.example";
+  let source = StoreSource {
+    store_url: original.into(),
+    applet_id: "sample".into(),
+    channel: StoreChannel::Stable,
+  };
+  saved.source = Some(source.clone().into());
+  report.applets.push(saved.clone());
+  let mut request = InstallQuery {
+    store_url: original.into(),
+    applet_id: "sample".into(),
+    installed_source: true,
+    release: release("2.0.0-nightly.1"),
+    expected_installed_sha256: Some(saved.sha256.clone()),
+    switch_snapshot: None,
+    channel_snapshot: None,
+    operation_id: String::new(),
+  };
+
+  assert!(review_requested_install(&request, &report, original).is_err());
+  request.channel_snapshot = review_install(&report, original, "sample").channel_snapshot;
+  assert_eq!(
+    review_requested_install(&request, &report, original).unwrap(),
+    ReleaseAction::SwitchChannel
+  );
+  assert!(review_requested_install(&request, &report, "https://other.example").is_err());
+  assert!(authorize_installed_source(Some(&saved), original, "neighbor").is_err());
+  report.applets[0].sha256 = "b".repeat(64);
+  assert!(review_requested_install(&request, &report, original).is_err());
+  report.applets[0].sha256.clone_from(&saved.sha256);
+
+  request.release = release("2.0.0");
+  request.channel_snapshot = None;
+  assert!(review_requested_install(&request, &report, original).is_err());
+  request.installed_source = false;
+  assert_eq!(
+    review_requested_install(&request, &report, original).unwrap(),
+    ReleaseAction::Update
+  );
+
+  report.applets.clear();
+  report.retained.insert(
+    "sample".into(),
+    StoreSwitchSnapshot {
+      sha256: saved.sha256,
+      source: saved.source,
+      removed: true,
+    },
+  );
+  let review = review_install(&report, original, "sample");
+  assert!(authorize_installed_source(review.installed, original, "sample").is_err());
+}
+
+#[test]
 fn local_store_settings_are_atomic_optional_and_preserve_corrupt_files() {
   let root = tempfile::tempdir().unwrap();
   assert!(state::load(root.path()).unwrap().store_url.is_none());

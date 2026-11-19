@@ -29,6 +29,8 @@ struct StoreQuery {
 struct DetailQuery {
   store_url: String,
   applet_id: String,
+  #[serde(default)]
+  installed_source: bool,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -41,6 +43,8 @@ struct IconQuery {
 struct InstallQuery {
   store_url: String,
   applet_id: String,
+  #[serde(default)]
+  installed_source: bool,
   release: StoreRelease,
   expected_installed_sha256: Option<String>,
   switch_snapshot: Option<StoreSwitchSnapshot>,
@@ -164,6 +168,32 @@ async fn installed(host: &Host) -> Result<AppletListReport, String> {
     .map_err(|_| "Could not read installed applets.")?
 }
 
+fn authorize_installed_source(
+  installed: Option<&InstalledApplet>,
+  origin: &str,
+  applet_id: &str,
+) -> Result<(), String> {
+  let matches_source = installed.is_some_and(|saved| {
+    saved.manifest.applet_id == applet_id
+      && matches!(
+        saved.source.as_ref(),
+        Some(PackageSource::Store(source))
+          if source.store_url == origin && source.applet_id == applet_id
+      )
+  });
+  if matches_source {
+    Ok(())
+  } else {
+    Err("The installed applet no longer uses this Store. Reopen its details.".into())
+  }
+}
+
+async fn installed_applet(host: &Host, applet_id: &str) -> Result<InstalledApplet, String> {
+  let bundles = host.bundles.clone();
+  let applet_id = applet_id.to_owned();
+  crate::commands::blocking(move || bundles.installed(&applet_id)).await
+}
+
 pub async fn dispatch(
   app: AppHandle,
   host: &Host,
@@ -206,12 +236,22 @@ pub async fn dispatch(
     }
     "store.detail" => {
       let request: DetailQuery = input(params)?;
-      let store_url = configured(host, &request.store_url).await?;
+      let store_url = if request.installed_source {
+        let store_url = normalize_store_url(&request.store_url)?;
+        let saved = installed_applet(host, &request.applet_id).await?;
+        authorize_installed_source(Some(&saved), &store_url, &request.applet_id)?;
+        store_url
+      } else {
+        configured(host, &request.store_url).await?
+      };
       let detail = StoreClient::new(&store_url)?
         .detail(&request.applet_id)
         .await?;
       let installed = installed(host).await?;
       let review = review_install(&installed, &store_url, &request.applet_id);
+      if request.installed_source {
+        authorize_installed_source(review.installed, &store_url, &request.applet_id)?;
+      }
       let mut releases = Vec::with_capacity(detail.releases.len());
       for release in detail.releases {
         let (action, action_reason) = release_action(&release, &review);
@@ -421,14 +461,15 @@ fn checked_switch(
   }
 }
 
-async fn install(app: AppHandle, host: &Host, request: InstallQuery) -> Result<Value, String> {
-  uuid::Uuid::parse_str(&request.operation_id)
-    .map_err(|_| "Invalid install operation identity.")?;
-  request.release.validate(&request.applet_id)?;
-  let _gate = host.store_gate.lock().await;
-  let store_url = configured(host, &request.store_url).await?;
-  let report = installed(host).await?;
-  let review = review_install(&report, &store_url, &request.applet_id);
+fn review_requested_install(
+  request: &InstallQuery,
+  report: &AppletListReport,
+  store_url: &str,
+) -> Result<ReleaseAction, String> {
+  let review = review_install(report, store_url, &request.applet_id);
+  if request.installed_source {
+    authorize_installed_source(review.installed, store_url, &request.applet_id)?;
+  }
   let action = checked_switch(
     &request.release,
     &review,
@@ -436,6 +477,24 @@ async fn install(app: AppHandle, host: &Host, request: InstallQuery) -> Result<V
     request.switch_snapshot.as_ref(),
     request.channel_snapshot.as_ref(),
   )?;
+  if request.installed_source && action != ReleaseAction::SwitchChannel {
+    return Err("Choose and confirm a different release channel for this applet.".into());
+  }
+  Ok(action)
+}
+
+async fn install(app: AppHandle, host: &Host, request: InstallQuery) -> Result<Value, String> {
+  uuid::Uuid::parse_str(&request.operation_id)
+    .map_err(|_| "Invalid install operation identity.")?;
+  request.release.validate(&request.applet_id)?;
+  let _gate = host.store_gate.lock().await;
+  let store_url = if request.installed_source {
+    normalize_store_url(&request.store_url)?
+  } else {
+    configured(host, &request.store_url).await?
+  };
+  let report = installed(host).await?;
+  let action = review_requested_install(&request, &report, &store_url)?;
   let source = StoreSource {
     store_url: store_url.clone(),
     applet_id: request.applet_id.clone(),

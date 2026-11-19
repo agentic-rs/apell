@@ -805,6 +805,34 @@ svg {
   margin: 24px 0 10px;
   font-size: 14px;
 }
+.applet-channel {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+.applet-channel-review {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border-radius: 12px;
+  background: var(--subtle);
+}
+.applet-channel-notes {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.applet-channel-review ul {
+  margin: 0;
+  padding-inline-start: 22px;
+}
+.applet-channel-progress {
+  display: grid;
+  gap: 6px;
+  font-size: 14px;
+}
+.applet-channel-progress progress {
+  width: 100%;
+}
 .applet-access {
   margin: 0;
   font-size: 14px;

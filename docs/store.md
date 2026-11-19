@@ -32,10 +32,14 @@ If the old version is running, choose **Restart applet** after installing to
 open the new package and backend. This leaves Apell and other applets running.
 
 Each Store installation records the Store address, applet ID, and channel.
-To change channels, open the applet’s Store page, choose **Switch to Stable**
-or **Switch to Nightly**, and confirm **Switch and install**. The applet keeps
-its data and remembered permissions. Apell prevents downgrades, so you may need to wait for
-a newer Stable version to switch back. Previously installed Preview applets
+To change channels inside a running applet, open **About this applet** from the
+three-dot menu, choose a different **Installed channel**, and review and install
+the offered release. About checks the Store that supplied this applet, even if
+you now browse a different Store. Choose **Restart applet** to use the new
+version. You can also switch channels on the applet’s Store page.
+The applet keeps its data and remembered permissions. Apell prevents downgrades,
+so you may need to wait for a newer Stable version to switch back.
+Previously installed Preview applets
 now follow Nightly. Changing the configured store does not change installed applets' update
 sources. To move an applet from a file, a GitHub release, or another store, open its
 page, choose a Store release, and confirm **Switch to this Store**. This keeps the

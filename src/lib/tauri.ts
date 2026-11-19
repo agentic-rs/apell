@@ -4,6 +4,7 @@ import { onBackButtonPress } from '@tauri-apps/api/app';
 import type { LlmResult } from '../../packages/applet-sdk/src/types';
 import type {
   AppletEvent,
+  AppletInstallation,
   AppletListReport,
   AppletPermission,
   AppletSession,
@@ -68,8 +69,12 @@ export const setStoreUrl = (store_url: string) =>
   shellCall<StoreConfig>('store.set_url', { store_url });
 export const getStoreCatalog = (store_url: string) =>
   shellCall<StoreCatalog>('store.catalog', { store_url });
-export const getStoreDetail = (store_url: string, applet_id: string) =>
-  shellCall<StoreDetail>('store.detail', { store_url, applet_id });
+export const getStoreDetail = (store_url: string, applet_id: string, installed_source = false) =>
+  shellCall<StoreDetail>('store.detail', {
+    store_url,
+    applet_id,
+    ...(installed_source ? { installed_source } : {}),
+  });
 export const getStoreIcon = (store_url: string, icon_url: string) =>
   shellCall<string>('store.icon', { store_url, icon_url });
 export const installStoreRelease = (request: StoreInstallRequest) =>
@@ -99,6 +104,8 @@ export const closeApplet = (session_id: string, view_id: string) =>
 export const reloadApplet = (session_id: string, view_id: string) =>
   shellCall<AppletSession>('applets.reload', { session_id, view_id });
 export const currentApplet = () => shellCall<AppletSession | null>('applets.current');
+export const getAppletInstallation = (session_id: string, view_id: string) =>
+  shellCall<AppletInstallation>('applets.installation', { session_id, view_id });
 export const listAppletPermissions = () => shellCall<AppletPermission[]>('permissions.list');
 export const forgetPermission = (applet_id: string, permission: ManagedPermission) =>
   shellCall<void>('permissions.forget', { applet_id, permission });
