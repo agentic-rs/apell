@@ -12,6 +12,7 @@ import {
   statusMessage,
   submitButton,
 } from './dom';
+import { signInNotice, signInOption } from './sign-in';
 import type { CliCredential, Session } from './types';
 
 function approvalHeading(): HTMLElement {
@@ -65,18 +66,17 @@ function codeEntry(actions: Actions): HTMLElement {
 function signedOut(session: Session, code: string): HTMLElement {
   const panel = section('Sign in to continue');
   panel.append(verificationCode(code));
-  if (session.login_available) {
+  const notice = signInNotice(session);
+  if (notice) panel.append(notice);
+  const sign_in = signInOption(session);
+  if (sign_in) {
     panel.append(
-      element('p', 'muted', 'Sign in with GitHub, then review and approve this terminal request.'),
-      link('Continue with GitHub', cliLoginUrl(code), 'button primary'),
+      element('p', 'muted', 'Sign in, then review and approve this terminal request.'),
+      link(sign_in.label, cliLoginUrl(code, sign_in.provider), 'button primary'),
     );
   } else {
     panel.append(
-      element(
-        'p',
-        'notice',
-        'GitHub sign-in is unavailable on this Store. Try CLI login again later.',
-      ),
+      element('p', 'notice', 'Sign-in is unavailable on this Store. Try CLI login again later.'),
       routeLink('Browse applets →', '/', 'text-link'),
     );
   }
@@ -173,13 +173,16 @@ export function renderCliApproval(actions: Actions, signal: AbortSignal): HTMLEl
       if (signal.aborted || !root.isConnected) return;
       panel.replaceChildren(element('h2', '', 'Couldn’t load this request'));
       if (error instanceof ApiError && error.status === 401) {
+        const sign_in = signInOption(actions.session);
         panel.append(
           element(
             'p',
             'notice error',
             'Your session has expired. Sign in again to review this request.',
           ),
-          link('Continue with GitHub', cliLoginUrl(code), 'button primary'),
+          sign_in
+            ? link(sign_in.label, cliLoginUrl(code, sign_in.provider), 'button primary')
+            : button('Try again', actions.refresh, 'button secondary'),
         );
       } else if (error instanceof ApiError && [400, 404, 410].includes(error.status)) {
         panel.append(

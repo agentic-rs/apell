@@ -425,6 +425,7 @@ async fn scoped_uploads_check_actual_package_identity_and_keep_admin_publishing(
     publish_token: "fixture-administrator-token-12345678".into(),
     oidc: None,
     oauth: None,
+    account: None,
     bootstrap_owner: None,
   };
   let app = crate::router_with_identity(&config, Some(service.clone())).unwrap();
@@ -509,6 +510,7 @@ async fn credential_expiration_during_upload_prevents_publication() {
     publish_token: "fixture-administrator-token-12345678".into(),
     oidc: None,
     oauth: None,
+    account: None,
     bootstrap_owner: None,
   };
   let app = crate::router_with_identity(&config, Some(service.clone())).unwrap();
@@ -557,6 +559,7 @@ async fn database_policy_revocation_rejects_issued_tokens_and_in_flight_uploads(
     publish_token: "fixture-administrator-token-12345678".into(),
     oidc: None,
     oauth: None,
+    account: None,
     bootstrap_owner: None,
   };
   let app = crate::router_with_identity(&settings, Some(service.clone())).unwrap();

@@ -84,10 +84,7 @@ export function showError(node: HTMLElement, error: unknown): void {
   node.textContent =
     error instanceof Error ? error.message : 'Something went wrong. Please try again.';
   if (error instanceof ApiError && error.status === 401) {
-    node.append(
-      document.createTextNode(' '),
-      link('Sign in again →', '/api/v1/auth/github/login', 'text-link'),
-    );
+    node.append(document.createTextNode(' '), link('Sign in again →', '/account', 'text-link'));
   } else if (error instanceof ApiError && error.code === 'invalid_session_request') {
     node.append(
       document.createTextNode(' '),

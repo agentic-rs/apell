@@ -15,6 +15,7 @@ use std::io::{Cursor, Write};
 use tower::ServiceExt;
 use zip::{write::SimpleFileOptions, ZipWriter};
 
+mod account;
 mod cli;
 
 fn fixture() -> (tempfile::TempDir, Store, Router, String) {
@@ -26,6 +27,7 @@ fn fixture() -> (tempfile::TempDir, Store, Router, String) {
     publish_token: "fixture-publishing-token-with-enough-characters".into(),
     oidc: None,
     oauth: Some(config()),
+    account: None,
     bootstrap_owner: None,
   };
   let router = crate::router(&configuration).unwrap();

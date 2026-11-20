@@ -1,5 +1,5 @@
 use crate::{
-  auth::{OAuthConfig, User},
+  auth::{AccountConfig, OAuthConfig, User},
   OidcConfig,
 };
 use std::{net::SocketAddr, path::PathBuf};
@@ -11,6 +11,7 @@ pub struct Config {
   pub publish_token: String,
   pub oidc: Option<OidcConfig>,
   pub oauth: Option<OAuthConfig>,
+  pub account: Option<AccountConfig>,
   pub bootstrap_owner: Option<User>,
 }
 
@@ -41,6 +42,12 @@ impl Config {
       .unwrap_or_else(|_| "127.0.0.1:8788".into())
       .parse()
       .map_err(|_| "APELL_STORE_LISTEN must be an IP address and port.")?;
+    let account = AccountConfig::from_env()?;
+    let oauth = if account.is_none() {
+      OAuthConfig::from_env()?
+    } else {
+      None
+    };
     Ok(Self {
       listen,
       data_dir: std::env::var_os("APELL_STORE_DATA_DIR")
@@ -51,7 +58,8 @@ impl Config {
         .unwrap_or_else(|| "store/web/dist".into()),
       publish_token: token,
       oidc: OidcConfig::from_env()?,
-      oauth: OAuthConfig::from_env()?,
+      oauth,
+      account,
       bootstrap_owner: bootstrap_owner()?,
     })
   }

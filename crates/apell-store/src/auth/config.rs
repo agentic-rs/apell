@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{de::DeserializeOwned, Deserialize};
 use std::{io::Read, path::Path};
 use url::Url;
 
@@ -17,47 +17,35 @@ struct Credentials {
   client_secret: String,
 }
 
+// Keep issuer and credentials together so changing the login provider is explicit.
+#[derive(Clone)]
+pub struct AccountConfig {
+  pub(super) issuer: String,
+  pub(super) client_id: String,
+  pub(super) client_secret: String,
+  pub(super) origin: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AccountCredentials {
+  issuer: String,
+  client_id: String,
+  client_secret: String,
+}
+
 impl OAuthConfig {
   pub fn from_env() -> Result<Option<Self>, String> {
     let Some(path) = std::env::var_os("APELL_STORE_GITHUB_OAUTH_FILE") else {
       return Ok(None);
     };
-    let origin = std::env::var("APELL_STORE_PUBLIC_URL")
-      .map_err(|_| "Configure APELL_STORE_PUBLIC_URL for GitHub sign-in.")?;
+    let origin = public_origin_setting()?;
     Self::load(&origin, Path::new(&path)).map(Some)
   }
 
   fn load(origin: &str, path: &Path) -> Result<Self, String> {
-    let file = std::fs::File::open(path).map_err(|_| "Could not open GitHub OAuth credentials.")?;
-    let metadata = file
-      .metadata()
-      .map_err(|_| "Could not inspect GitHub OAuth credentials.")?;
-    if !metadata.is_file() || metadata.len() > 16 * 1024 {
-      return Err("GitHub OAuth credentials must be a regular JSON file of at most 16 KiB.".into());
-    }
-    let mut bytes = Vec::new();
-    file
-      .take(16 * 1024 + 1)
-      .read_to_end(&mut bytes)
-      .map_err(|_| "Could not read GitHub OAuth credentials.")?;
-    if bytes.len() > 16 * 1024 {
-      return Err("GitHub OAuth credentials exceed their size limit.".into());
-    }
-    let credentials: Credentials =
-      serde_json::from_slice(&bytes).map_err(|_| "Invalid GitHub OAuth credentials.")?;
-    if credentials.client_id.is_empty()
-      || credentials.client_id.len() > 128
-      || !credentials
-        .client_id
-        .bytes()
-        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
-      || credentials.client_secret.is_empty()
-      || credentials.client_secret.len() > 512
-      || !credentials
-        .client_secret
-        .bytes()
-        .all(|byte| byte.is_ascii_graphic())
-    {
+    let credentials: Credentials = read_credentials(path, "GitHub OAuth")?;
+    if !valid_credentials(&credentials.client_id, &credentials.client_secret) {
       return Err("Invalid GitHub OAuth credentials.".into());
     }
     let origin = canonical_origin(origin)?;
@@ -73,9 +61,77 @@ impl OAuthConfig {
   }
 }
 
+impl AccountConfig {
+  pub fn from_env() -> Result<Option<Self>, String> {
+    let Some(path) = std::env::var_os("APELL_STORE_ACCOUNT_OIDC_FILE") else {
+      return Ok(None);
+    };
+    Self::load(&public_origin_setting()?, Path::new(&path)).map(Some)
+  }
+
+  fn load(origin: &str, path: &Path) -> Result<Self, String> {
+    let credentials: AccountCredentials = read_credentials(path, "Account OIDC")?;
+    if !valid_credentials(&credentials.client_id, &credentials.client_secret) {
+      return Err("Invalid Account OIDC credentials.".into());
+    }
+    if !credentials.issuer.starts_with("https://")
+      || !super::account::validate_issuer(&credentials.issuer)
+    {
+      return Err("Account sign-in requires a canonical HTTPS issuer URL.".into());
+    }
+    Ok(Self {
+      issuer: credentials.issuer,
+      client_id: credentials.client_id,
+      client_secret: credentials.client_secret,
+      origin: canonical_origin(origin)?,
+    })
+  }
+
+  pub(super) fn callback(&self) -> String {
+    format!("{}/api/v1/auth/account/callback", self.origin)
+  }
+}
+
+fn public_origin_setting() -> Result<String, String> {
+  std::env::var("APELL_STORE_PUBLIC_URL")
+    .map_err(|_| "Configure APELL_STORE_PUBLIC_URL for Store sign-in.".into())
+}
+
+fn read_credentials<T: DeserializeOwned>(path: &Path, provider: &str) -> Result<T, String> {
+  const MAX_BYTES: u64 = 16 * 1024;
+  let file =
+    std::fs::File::open(path).map_err(|_| format!("Could not open {provider} credentials."))?;
+  let metadata = file
+    .metadata()
+    .map_err(|_| format!("Could not inspect {provider} credentials."))?;
+  if !metadata.is_file() || metadata.len() > MAX_BYTES {
+    return Err(format!(
+      "{provider} credentials must be a regular JSON file of at most 16 KiB."
+    ));
+  }
+  let mut bytes = Vec::new();
+  file
+    .take(MAX_BYTES + 1)
+    .read_to_end(&mut bytes)
+    .map_err(|_| format!("Could not read {provider} credentials."))?;
+  if bytes.len() as u64 > MAX_BYTES {
+    return Err(format!("{provider} credentials exceed their size limit."));
+  }
+  serde_json::from_slice(&bytes).map_err(|_| format!("Invalid {provider} credentials."))
+}
+
+fn valid_credentials(client_id: &str, client_secret: &str) -> bool {
+  (1..=128).contains(&client_id.len())
+    && client_id
+      .bytes()
+      .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    && (1..=512).contains(&client_secret.len())
+    && client_secret.bytes().all(|byte| byte.is_ascii_graphic())
+}
+
 fn canonical_origin(value: &str) -> Result<String, String> {
   let invalid = || {
-    "GitHub sign-in requires a root HTTPS public URL without credentials, query, or fragment."
+    "Store sign-in requires a root HTTPS public URL without credentials, query, or fragment."
       .to_owned()
   };
   if value.len() > 2048

@@ -17,8 +17,11 @@ export interface User {
   github_login: string;
 }
 
+export type LoginProvider = 'account' | 'github';
+
 export interface Session {
   login_available: boolean;
+  login_provider: LoginProvider | null;
   user: User | null;
   csrf_token: string | null;
 }

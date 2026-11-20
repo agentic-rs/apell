@@ -1,8 +1,11 @@
 # Store accounts and publishing access
 
-The website uses GitHub sign-in. Public browsing, downloads, and the native Apell
-Store remain available without an account. Sign-in identifies a person by their
-numeric GitHub user ID; changing a GitHub username does not change ownership.
+The website signs publishers in through Apell Account. Link GitHub in Account
+Security before signing in to the Store. Email codes, passkeys, and GitHub
+all work once that identity is linked. Public browsing, downloads, and the
+native Apell Store remain available without an account. The Store finds your
+package ownership using your verified numeric GitHub user ID, which stays the
+same when your GitHub username changes.
 
 The [CLI account commands](store-cli.md) support browser approval, registration,
 publishing, OIDC settings, and maintainer management using the same permissions.
@@ -14,7 +17,7 @@ publishing, OIDC settings, and maintainer management using the same permissions.
 3. Publish through the package's **Publish release** form, or configure **GitHub
    Actions** and publish from CI.
 
-Any signed-in GitHub user can register an available ID. Registration immediately
+Any signed-in Store user can register an available ID. Registration immediately
 reserves that ID and assigns its creator as owner. A public catalog entry appears
 after the first successful release. IDs already registered, published, or reserved
 during migration cannot be claimed by another signup. The small Store limit of
@@ -67,30 +70,30 @@ See [the CI publishing guide](store.md#configure-the-workflow) for workflow setu
 
 ## Operator setup
 
-Create a dedicated GitHub **OAuth App** using
-[GitHub's registration instructions](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/creating-an-oauth-app):
-
-- Homepage: the canonical HTTPS Store origin, such as `https://store.example.invalid`.
-- Callback: `https://store.example.invalid/api/v1/auth/github/callback`.
-- Exact callback matching; device flow disabled. Expiring access tokens may remain enabled.
-
-Create a private server-local JSON file, readable by the service account:
+Register a first-party **Traditional Web** client in Apell Account. Use the Store
+origin plus `/api/v1/auth/account/callback` as its exact redirect URI. Save the
+issuer URL, client ID, and client secret in a private JSON file readable by the
+Store service account. [Account client setup](account.md#register-the-store-and-other-clients)
 
 ```json
 {
+  "issuer": "https://auth.example.invalid/oidc",
   "client_id": "replace-with-the-oauth-client-id",
   "client_secret": "replace-with-the-oauth-client-secret"
 }
 ```
 
-Set `APELL_STORE_PUBLIC_URL` and `APELL_STORE_GITHUB_OAUTH_FILE` in the service
-environment. Never commit actual credentials, deployment values, or account
-identities. Restart after changing OAuth configuration. Without OAuth credentials,
-public browsing and configured CI publishing continue while sign-in is unavailable.
+Set `APELL_STORE_PUBLIC_URL` and `APELL_STORE_ACCOUNT_OIDC_FILE` in the service
+environment. The Account file takes precedence over
+`APELL_STORE_GITHUB_OAUTH_FILE`, which remains an operator rollback option for
+direct GitHub login. Keep actual credentials and deployment values on the server.
+Restart after changing the provider.
 
-The server uses browser-bound, single-use OAuth state and S256 PKCE. GitHub's token
-is used only to fetch the current identity, then discarded. No email or repository
-scope is requested. Store sessions use opaque random credentials, stored as hashes
+The server uses browser-bound, single-use state, a nonce, and S256 PKCE. It
+validates the signed ID token and checks that Account UserInfo describes the
+same subject before reading the linked GitHub ID. Each new sign-in checks the
+current link. An existing Account binding cannot claim a different GitHub
+identity. Store sessions use opaque random credentials, stored as hashes
 in SQLite, and host-only Secure/HttpOnly/SameSite cookies. Sessions last seven days;
 sign-out deletes the current session. Browser mutations require both the exact
 Store origin and a session-bound `x-csrf-token` header. Credentials never belong in
@@ -142,22 +145,24 @@ access. Browser mutations require Origin and CSRF checks; explicitly supplied CL
 bearer credentials do not use browser cookies. CLI approval and credential
 management in the browser always require a browser session and CSRF protection.
 
-| Method       | Path under `/api/v1`                                 | Behavior                                             |
-| ------------ | ---------------------------------------------------- | ---------------------------------------------------- |
-| GET          | `/auth/me`                                           | Login availability, current user, session CSRF token |
-| GET          | `/auth/github/login`                                 | Start GitHub sign-in                                 |
-| GET          | `/auth/github/callback`                              | Complete sign-in; return to account or CLI approval  |
-| POST         | `/auth/logout`                                       | Delete the current session                           |
-| GET / POST   | `/account/packages`                                  | List memberships/invitations; register an ID         |
-| GET          | `/account/packages/{id}`                             | Read package management details                      |
-| POST         | `/account/packages/{id}/publish`                     | Multipart release upload, bound to this package      |
-| PUT / DELETE | `/account/packages/{id}/publisher`                   | Change or disconnect GitHub publishing               |
-| POST         | `/account/packages/{id}/members`                     | Invite a GitHub user                                 |
-| DELETE       | `/account/packages/{id}/members/{github_id}`         | Remove a maintainer                                  |
-| DELETE       | `/account/packages/{id}/invitations/{invitation_id}` | Cancel a package invitation                          |
-| POST         | `/account/packages/{id}/ownership`                   | Invite an existing maintainer to take ownership      |
-| POST         | `/account/invitations/{id}/accept`                   | Accept an invitation addressed to the current user   |
-| DELETE       | `/account/invitations/{id}`                          | Decline an invitation                                |
+| Method       | Path under `/api/v1`                                 | Behavior                                                 |
+| ------------ | ---------------------------------------------------- | -------------------------------------------------------- |
+| GET          | `/auth/me`                                           | Login provider, availability, current user, CSRF token   |
+| GET          | `/auth/account/login`                                | Start Apell Account sign-in                              |
+| GET          | `/auth/account/callback`                             | Complete sign-in and return to the Store or CLI approval |
+| GET          | `/auth/account/security`                             | Open Apell Account Security to link GitHub               |
+| GET          | `/auth/github/login` and `/auth/github/callback`     | Direct GitHub sign-in in legacy provider mode            |
+| POST         | `/auth/logout`                                       | Delete the current session                               |
+| GET / POST   | `/account/packages`                                  | List memberships/invitations; register an ID             |
+| GET          | `/account/packages/{id}`                             | Read package management details                          |
+| POST         | `/account/packages/{id}/publish`                     | Multipart release upload, bound to this package          |
+| PUT / DELETE | `/account/packages/{id}/publisher`                   | Change or disconnect GitHub publishing                   |
+| POST         | `/account/packages/{id}/members`                     | Invite a GitHub user                                     |
+| DELETE       | `/account/packages/{id}/members/{github_id}`         | Remove a maintainer                                      |
+| DELETE       | `/account/packages/{id}/invitations/{invitation_id}` | Cancel a package invitation                              |
+| POST         | `/account/packages/{id}/ownership`                   | Invite an existing maintainer to take ownership          |
+| POST         | `/account/invitations/{id}/accept`                   | Accept an invitation addressed to the current user       |
+| DELETE       | `/account/invitations/{id}`                          | Decline an invitation                                    |
 
 Registration takes `{ "applet_id": "example" }`; member invitations take
 `{ "github_login": "example-maintainer" }`; ownership transfers take
@@ -171,9 +176,9 @@ Origin header; multipart uploads retain the existing `package`, `metadata`, and 
 
 The CLI starts a ten-minute authorization request, opens the Store's approval
 page, and polls with a separate high-entropy secret. The browser shows only the
-human verification code. Approval requires an existing browser session; GitHub
-sign-in preserves the code through a state-bound redirect. No extra OAuth App
-or GitHub device-flow setting is needed.
+human verification code. Approval requires a Store browser session. Account
+sign-in preserves the code through the redirect, including when the user must
+link GitHub and retry sign-in.
 
 | Method | Path under `/api/v1`                        | Behavior                                                     |
 | ------ | ------------------------------------------- | ------------------------------------------------------------ |

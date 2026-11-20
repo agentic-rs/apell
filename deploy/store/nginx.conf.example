@@ -27,7 +27,7 @@ server {
   client_body_timeout 60s;
   send_timeout 60s;
 
-  location ~ ^/api/v1/auth/(github/login|cli/start)$ {
+  location ~ ^/api/v1/auth/(account/login|github/login|cli/start)$ {
     limit_req zone=apell_auth_start burst=3 nodelay;
     limit_req_status 429;
     error_page 429 = @apell_auth_rate_limit;
@@ -47,7 +47,7 @@ server {
   }
 
   # OAuth authorization codes and state must not enter request logs.
-  location = /api/v1/auth/github/callback {
+  location ~ ^/api/v1/auth/(account|github)/callback$ {
     access_log off;
     error_log /dev/null;
     proxy_pass http://127.0.0.1:8788;

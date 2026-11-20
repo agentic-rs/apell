@@ -23,7 +23,7 @@ function errorDetails(body: unknown): { code?: string; message?: string } {
 
 export function errorMessage(status: number, body: unknown): string {
   const detail = errorDetails(body);
-  if (status === 401) return 'Your session has expired. Sign in with GitHub again.';
+  if (status === 401) return 'Your session has expired. Sign in again.';
   if (status === 403 && detail.code === 'invalid_session_request')
     return 'Your sign-in state changed. Refresh this page and try again.';
   if (status === 403)
@@ -51,7 +51,7 @@ export async function api<T>(
   const headers: Record<string, string> = { Accept: 'application/json' };
   let body: BodyInit | undefined;
   if (method !== 'GET') {
-    if (!options.csrf_token) throw new ApiError('Sign in with GitHub before making changes.', 401);
+    if (!options.csrf_token) throw new ApiError('Sign in before making changes.', 401);
     headers['x-csrf-token'] = options.csrf_token;
     if (options.body instanceof FormData) body = options.body;
     else {

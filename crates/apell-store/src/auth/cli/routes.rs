@@ -66,7 +66,7 @@ async fn input<T: DeserializeOwned>(request: Request) -> Result<T> {
 async fn start(State(state): State<AppState>, request: Request) -> Result<Response> {
   let auth = enabled(&state)?;
   let _: Empty = input(request).await?;
-  let origin = auth.config.origin.clone();
+  let origin = auth.origin.clone();
   let started = blocking(move || auth.store.start_cli_authorization(now())).await?;
   let verification_uri = format!("{origin}/account/cli");
   let verification_uri_complete = format!("{verification_uri}?code={}", started.user_code);

@@ -71,11 +71,16 @@ fn router_with_identity(config: &Config, oidc: Option<oidc::Oidc>) -> Result<Rou
 
 fn router_with_store(config: &Config, store: Store, oidc: Option<oidc::Oidc>) -> Result<Router> {
   validate_token(&config.publish_token).map_err(StoreError::invalid)?;
-  let auth = config
-    .oauth
-    .clone()
-    .map(|oauth| auth::Auth::new(oauth, store.clone()).map(Arc::new))
-    .transpose()?;
+  let auth = if let Some(account) = config.account.clone() {
+    Some(auth::Auth::new_account(account, store.clone())?)
+  } else {
+    config
+      .oauth
+      .clone()
+      .map(|oauth| auth::Auth::new(oauth, store.clone()))
+      .transpose()?
+  }
+  .map(Arc::new);
   let state = AppState {
     store,
     token_hash: Sha256::digest(config.publish_token.as_bytes()).into(),

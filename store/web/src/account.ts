@@ -9,6 +9,7 @@ import {
   statusMessage,
   submitButton,
 } from './dom';
+import { signInNotice, signInOption } from './sign-in';
 import type { AccountPackages, Invitation, PackageDetails, Session } from './types';
 
 export function renderAccountHeader(session: Session | undefined, onLogout: () => void): void {
@@ -38,20 +39,23 @@ export function renderSignedOut(session: Session): HTMLElement {
     element(
       'p',
       'lead',
-      'Sign in with GitHub to register packages, invite maintainers, and connect your publishing workflow.',
+      'Sign in to register packages, invite maintainers, and connect your publishing workflow.',
     ),
   );
-  if (new URL(location.href).searchParams.get('auth_error')) {
-    const error = element(
-      'p',
-      'notice error',
-      'GitHub sign-in could not be completed. Please try again.',
-    );
-    error.setAttribute('role', 'alert');
-    root.append(error);
-  }
-  if (session.login_available) {
-    root.append(link('Continue with GitHub', '/api/v1/auth/github/login', 'button primary'));
+  const notice = signInNotice(session);
+  if (notice) root.append(notice);
+  const sign_in = signInOption(session);
+  if (sign_in) {
+    root.append(link(sign_in.label, sign_in.url, 'button primary'));
+    if (sign_in.provider === 'account' && !notice) {
+      root.append(
+        element(
+          'p',
+          'muted',
+          'Use any Apell Account sign-in method. To publish, link your GitHub account in Account Security.',
+        ),
+      );
+    }
     root.append(
       element(
         'p',

@@ -1,4 +1,5 @@
-import type { CliRequest } from './types';
+import { loginOptions } from './sign-in';
+import type { CliRequest, LoginProvider } from './types';
 
 export function normalizeCliCode(value: string): string | undefined {
   const code = value.trim().toUpperCase();
@@ -12,10 +13,10 @@ export function cliCodeFromSearch(search: string): string | undefined {
   return codes.length === 1 ? normalizeCliCode(codes[0]) : undefined;
 }
 
-export function cliLoginUrl(code: string): string {
+export function cliLoginUrl(code: string, provider: LoginProvider): string {
   const normalized = normalizeCliCode(code);
   if (!normalized) throw new Error('Enter the verification code shown in your terminal.');
-  return `/api/v1/auth/github/login?cli_code=${encodeURIComponent(normalized)}`;
+  return `${loginOptions[provider].url}?cli_code=${encodeURIComponent(normalized)}`;
 }
 
 export function cliRequest(value: unknown, expected_code: string): CliRequest {

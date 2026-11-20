@@ -63,6 +63,7 @@ fn app() -> (tempfile::TempDir, Router) {
     publish_token: TOKEN.into(),
     oidc: None,
     oauth: None,
+    account: None,
     bootstrap_owner: None,
   };
   let app = router(&config).unwrap();

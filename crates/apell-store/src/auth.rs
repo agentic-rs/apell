@@ -1,3 +1,4 @@
+mod account;
 mod cli;
 mod config;
 mod github;
@@ -6,7 +7,7 @@ mod sessions;
 #[cfg(test)]
 mod tests;
 
-pub use config::OAuthConfig;
+pub use config::{AccountConfig, OAuthConfig};
 pub use github::RepositoryIdentity;
 pub(crate) use routes::routes;
 pub(crate) use sessions::migrate;
@@ -24,18 +25,54 @@ pub struct User {
 }
 
 pub struct Auth {
-  config: OAuthConfig,
+  origin: String,
+  sign_in: SignIn,
   store: Store,
   github: github::GitHub,
 }
 
+enum SignIn {
+  Github(OAuthConfig),
+  Account(account::Account),
+}
+
+#[derive(Copy, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum LoginProvider {
+  Github,
+  Account,
+}
+
 impl Auth {
   pub fn new(config: OAuthConfig, store: Store) -> Result<Self> {
+    Self::with_provider(config.origin.clone(), SignIn::Github(config), store)
+  }
+
+  pub fn new_account(config: AccountConfig, store: Store) -> Result<Self> {
+    let redirect_uri = config.callback();
+    let account = account::Account::new(
+      &config.issuer,
+      config.client_id,
+      config.client_secret,
+      redirect_uri,
+    )?;
+    Self::with_provider(config.origin, SignIn::Account(account), store)
+  }
+
+  fn with_provider(origin: String, sign_in: SignIn, store: Store) -> Result<Self> {
     Ok(Self {
-      config,
+      origin,
+      sign_in,
       store,
       github: github::GitHub::new()?,
     })
+  }
+
+  fn login_provider(&self) -> LoginProvider {
+    match self.sign_in {
+      SignIn::Github(_) => LoginProvider::Github,
+      SignIn::Account(_) => LoginProvider::Account,
+    }
   }
 
   pub fn user(&self, headers: &HeaderMap) -> Result<User> {
@@ -67,8 +104,7 @@ impl Auth {
   pub fn require_browser_mutation(&self, headers: &HeaderMap) -> Result<User> {
     let user = self.browser_user(headers)?;
     if headers.get_all("origin").iter().count() != 1
-      || headers.get("origin").and_then(|value| value.to_str().ok())
-        != Some(self.config.origin.as_str())
+      || headers.get("origin").and_then(|value| value.to_str().ok()) != Some(self.origin.as_str())
       || headers.get_all("x-csrf-token").iter().count() != 1
     {
       return Err(forbidden());
@@ -115,7 +151,7 @@ fn unauthorized() -> StoreError {
   StoreError::new(
     StatusCode::UNAUTHORIZED,
     "sign_in_required",
-    "Sign in with GitHub to continue.",
+    "Sign in to the Store to continue.",
   )
 }
 

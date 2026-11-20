@@ -134,6 +134,14 @@ impl GitHub {
     profile(self.get(&["users", login]).await?)
   }
 
+  pub(super) async fn lookup_user_id(&self, id: u64) -> Result<User> {
+    let user = profile(self.get(&["user", &id.to_string()]).await?)?;
+    if user.github_id != id {
+      return Err(unavailable());
+    }
+    Ok(user)
+  }
+
   pub async fn lookup_repository(&self, name: &str) -> Result<RepositoryIdentity> {
     let Some((owner, repository)) = name.split_once('/') else {
       return Err(StoreError::invalid(
