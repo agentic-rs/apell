@@ -1,25 +1,26 @@
+name: apell-account-logto
+
 services:
   account:
-    image: ghcr.io/dexidp/dex:v2.46.1
-    command: [dex, serve, /etc/dex/account.yaml.tmpl]
+    image: ghcr.io/logto-io/logto:1.46.0@sha256:d5e208ce705cbcf7c79ddba421216eb65413d0b0531aa658fb22a4ba659be983
+    entrypoint:
+      - sh
+      - -ec
+      - |
+        password=$$(node -p 'encodeURIComponent(process.env.ACCOUNT_DB_PASSWORD)')
+        export DB_URL="postgresql://logto:$$password@db:5432/logto"
+        unset password ACCOUNT_DB_PASSWORD
+        npm run cli db seed -- --swe
+        exec npm start
     restart: unless-stopped
-    read_only: true
-    tmpfs:
-      - /tmp:rw,noexec,nosuid,nodev,mode=1777
     ports:
-      - '127.0.0.1:${ACCOUNT_PORT:-5556}:5556'
+      - '127.0.0.1:${ACCOUNT_PORT:-5656}:3001'
+      - '127.0.0.1:${ACCOUNT_ADMIN_PORT:-3002}:3002'
     environment:
-      ACCOUNT_ISSUER: ${ACCOUNT_ISSUER:?Set ACCOUNT_ISSUER}
       ACCOUNT_DB_PASSWORD: ${ACCOUNT_DB_PASSWORD:?Set ACCOUNT_DB_PASSWORD}
-      ACCOUNT_SESSION_KEY: ${ACCOUNT_SESSION_KEY:?Set ACCOUNT_SESSION_KEY}
-      ACCOUNT_GITHUB_CLIENT_ID: ${ACCOUNT_GITHUB_CLIENT_ID:?Set ACCOUNT_GITHUB_CLIENT_ID}
-      ACCOUNT_GITHUB_CLIENT_SECRET: ${ACCOUNT_GITHUB_CLIENT_SECRET:?Set ACCOUNT_GITHUB_CLIENT_SECRET}
-      ACCOUNT_STORE_REDIRECT_URI: ${ACCOUNT_STORE_REDIRECT_URI:?Set ACCOUNT_STORE_REDIRECT_URI}
-      ACCOUNT_STORE_CLIENT_SECRET: ${ACCOUNT_STORE_CLIENT_SECRET:?Set ACCOUNT_STORE_CLIENT_SECRET}
-      DEX_EXPAND_ENV: 'false'
-      DEX_SESSIONS_ENABLED: 'true'
-    volumes:
-      - ./dex.yaml.tmpl:/etc/dex/account.yaml.tmpl:ro
+      ENDPOINT: ${ACCOUNT_ENDPOINT:?Set ACCOUNT_ENDPOINT}
+      ADMIN_ENDPOINT: 'http://127.0.0.1:${ACCOUNT_ADMIN_PORT:-3002}'
+      TRUST_PROXY_HEADER: '1'
     depends_on:
       db:
         condition: service_healthy
@@ -29,16 +30,16 @@ services:
     image: docker.io/library/postgres:17.12-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_DB: account
-      POSTGRES_USER: account
+      POSTGRES_DB: logto
+      POSTGRES_USER: logto
       POSTGRES_PASSWORD: ${ACCOUNT_DB_PASSWORD:?Set ACCOUNT_DB_PASSWORD}
     healthcheck:
-      test: [CMD, pg_isready, -h, 127.0.0.1, -U, account, -d, account]
+      test: [CMD, pg_isready, -h, 127.0.0.1, -U, logto, -d, logto]
       interval: 2s
       timeout: 3s
       retries: 30
     volumes:
-      - identity:/var/lib/postgresql/data
+      - logto_identity:/var/lib/postgresql/data
     networks: [database]
 
 networks:
@@ -47,4 +48,4 @@ networks:
     internal: true
 
 volumes:
-  identity:
+  logto_identity:
