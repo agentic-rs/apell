@@ -1,0 +1,50 @@
+services:
+  account:
+    image: ghcr.io/dexidp/dex:v2.46.1
+    command: [dex, serve, /etc/dex/account.yaml.tmpl]
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,mode=1777
+    ports:
+      - '127.0.0.1:${ACCOUNT_PORT:-5556}:5556'
+    environment:
+      ACCOUNT_ISSUER: ${ACCOUNT_ISSUER:?Set ACCOUNT_ISSUER}
+      ACCOUNT_DB_PASSWORD: ${ACCOUNT_DB_PASSWORD:?Set ACCOUNT_DB_PASSWORD}
+      ACCOUNT_SESSION_KEY: ${ACCOUNT_SESSION_KEY:?Set ACCOUNT_SESSION_KEY}
+      ACCOUNT_GITHUB_CLIENT_ID: ${ACCOUNT_GITHUB_CLIENT_ID:?Set ACCOUNT_GITHUB_CLIENT_ID}
+      ACCOUNT_GITHUB_CLIENT_SECRET: ${ACCOUNT_GITHUB_CLIENT_SECRET:?Set ACCOUNT_GITHUB_CLIENT_SECRET}
+      ACCOUNT_STORE_REDIRECT_URI: ${ACCOUNT_STORE_REDIRECT_URI:?Set ACCOUNT_STORE_REDIRECT_URI}
+      ACCOUNT_STORE_CLIENT_SECRET: ${ACCOUNT_STORE_CLIENT_SECRET:?Set ACCOUNT_STORE_CLIENT_SECRET}
+      DEX_EXPAND_ENV: 'false'
+      DEX_SESSIONS_ENABLED: 'true'
+    volumes:
+      - ./dex.yaml.tmpl:/etc/dex/account.yaml.tmpl:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    networks: [frontend, database]
+
+  db:
+    image: docker.io/library/postgres:17.12-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: account
+      POSTGRES_USER: account
+      POSTGRES_PASSWORD: ${ACCOUNT_DB_PASSWORD:?Set ACCOUNT_DB_PASSWORD}
+    healthcheck:
+      test: [CMD, pg_isready, -h, 127.0.0.1, -U, account, -d, account]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    volumes:
+      - identity:/var/lib/postgresql/data
+    networks: [database]
+
+networks:
+  frontend: {}
+  database:
+    internal: true
+
+volumes:
+  identity:

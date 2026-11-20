@@ -33,6 +33,9 @@ applets, and review available updates. Enter the store's HTTPS address once; it 
 saved locally. Store updates retain applet data and take effect for an already
 running applet after Apell restarts. See [using the store](docs/store.md#browse-and-install-inside-apell).
 
+See [Apell Account](docs/account.md) for the standalone sign-in service and its
+Store client contract.
+
 To remove an applet, press and hold its library icon, choose **Remove applet**,
 and confirm. On desktop, right-click the icon to open the same menu. Removal
 stops the applet and keeps its local data. Reinstall it from the same source

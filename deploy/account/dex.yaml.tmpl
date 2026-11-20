@@ -1,0 +1,62 @@
+{{- $issuer := .Env.ACCOUNT_ISSUER -}}
+issuer: {{ $issuer | toJSON }}
+
+storage:
+  type: postgres
+  config:
+    host: db
+    database: account
+    user: account
+    password: {{ .Env.ACCOUNT_DB_PASSWORD | toJSON }}
+    ssl:
+      mode: disable
+
+web:
+  http: 0.0.0.0:5556
+
+frontend:
+  issuer: Apell Account
+
+logger:
+  level: warn
+  excludeFields: [email, username, preferred_username, groups]
+
+expiry:
+  authRequests: 10m
+  idTokens: 10m
+
+sessions:
+  cookieName: __Host-apell_account
+  cookieEncryptionKey: {{ .Env.ACCOUNT_SESSION_KEY | toJSON }}
+  absoluteLifetime: 24h
+  validIfNotUsedFor: 1h
+  rememberMeCheckedByDefault: false
+  ssoSharedWithDefault: none
+
+oauth2:
+  responseTypes: [code]
+  grantTypes: [authorization_code]
+  pkce:
+    enforce: true
+    codeChallengeMethodsSupported: [S256]
+
+staticClients:
+  - id: apell-store-web
+    name: Apell Store
+    secretEnv: ACCOUNT_STORE_CLIENT_SECRET
+    redirectURIs:
+      - {{ .Env.ACCOUNT_STORE_REDIRECT_URI | toJSON }}
+    allowedConnectors: [github]
+
+connectors:
+  - type: github
+    id: github
+    name: GitHub
+    grantTypes: [authorization_code]
+    config:
+      clientID: {{ .Env.ACCOUNT_GITHUB_CLIENT_ID | toJSON }}
+      clientSecret: {{ .Env.ACCOUNT_GITHUB_CLIENT_SECRET | toJSON }}
+      redirectURI: {{ printf "%s/callback" $issuer | toJSON }}
+      useLoginAsID: false
+
+enablePasswordDB: false
