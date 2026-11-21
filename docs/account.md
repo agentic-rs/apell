@@ -93,6 +93,59 @@ GitHub from an authenticated Account session.
 
 ## Register the Store and other clients
 
+Install the CLI from this checkout to register OIDC applications through the
+Account Management API.
+
+```sh
+cargo install --locked --path crates/apell-cli
+```
+
+Registration is an operator operation. Export `ACCOUNT_MANAGEMENT_ENDPOINT`
+and `ACCOUNT_MANAGEMENT_TOKEN` in the operator's shell, using an authorized
+Logto Management API token. These are the same environment variables used by
+`configure.ts`. The endpoint is the Logto core origin, using HTTPS or loopback
+HTTP through an SSH tunnel. With a tunnel to the core port, the endpoint can be
+`http://localhost:5656`. [Management API authentication](https://docs.logto.io/integrate-logto/interact-with-management-api)
+
+Register a confidential web service with its exact sign-in and sign-out
+callbacks.
+
+```sh
+apell auth app register \
+  --name "Example service" \
+  --type web \
+  --redirect-uri https://service.example.invalid/auth/callback \
+  --post-logout-redirect-uri https://service.example.invalid/ \
+  --output .env.example-service-oidc.json
+```
+
+Use `--type native` for a mobile or desktop application and `--type spa` for a
+browser application. Native clients can register custom URI schemes and
+loopback development callbacks.
+
+```sh
+apell auth app register \
+  --name "Example native app" \
+  --type native \
+  --redirect-uri org.example.app:/auth/callback \
+  --output .env.example-native-oidc.json
+```
+
+Repeat `--redirect-uri` or `--post-logout-redirect-uri` to register multiple
+exact callbacks. Registrations use third-party consent for the standard
+`openid`, `profile`, and `email` scopes by default. Add `--first-party` for a
+trusted service operated with Account. `apell package oidc` configures a
+package's GitHub Actions publisher separately from these Account clients.
+
+The command discovers the public issuer and writes a new JSON file containing
+`issuer`, `client_id`, `client_type`, `redirect_uris`, and
+`post_logout_redirect_uris`. Web clients also receive `client_secret`. Public
+native and SPA clients use authorization code with S256 PKCE. The output
+file has mode `0600`, and its parent directory must exist. Existing output
+files are preserved. The `.env.*` output names above are ignored by Git.
+Terminal output contains the registration summary and client ID, with
+`--json` available for scripts.
+
 Use discovery at `/oidc/.well-known/openid-configuration`. Register one
 confidential web client for the Store with its own secret and exact callback
 `/api/v1/auth/account/callback` under the Store origin. Use the issuer's full
