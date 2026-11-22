@@ -89,6 +89,9 @@ command exits. Use `appell dev --list` to see available targets. Use
 specific target UDID to run unattended. From outside the checkout, pass
 `--project PATH` to select the Apell source directory.
 
+For Account sign-in, configure the checkout's ignored local build settings
+before deploying. [Apell Account setup](docs/account.md#sign-in-to-apell-and-sync-model-settings)
+
 On iOS, swipe right from the left edge to go back. On Android, use system
 Back. It dismisses the top sheet, then returns one screen at a time. Applets
 can handle Back with the [SDK](docs/architecture.md#applet-back-navigation);

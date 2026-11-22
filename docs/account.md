@@ -178,11 +178,11 @@ Set up a Logto API resource for config sync with `config:read` and
 approved for sync. Keep that role out of the default assignments during a
 pilot. [Logto API resource setup](https://docs.logto.io/authorization/global-api-resources)
 
-Set these public values in the shell's build environment. Keep deployment-specific
-values in local build settings. On mobile, `pnpm tauri` and `apell dev` forward
-these values to the native build. The shell polls Logto while the user
-approves the device code in a browser and then keeps session credentials in the
-device's secure store.
+For local builds, put these public values in the ignored
+`deploy/account/.env.shell-pilot` file as `NAME=value` entries. `apell dev` and
+`pnpm tauri` pick up this file from the shell checkout. Exported build variables
+override the file. The shell polls Logto while the user approves the device code
+in a browser and then keeps session credentials in the device's secure store.
 
 | Variable                  | Value                                            |
 | ------------------------- | ------------------------------------------------ |
