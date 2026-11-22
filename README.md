@@ -41,7 +41,7 @@ and confirm. On desktop, right-click the icon to open the same menu. Removal
 stops the applet and keeps its local data. Reinstall it from the same source
 to use its saved files and settings again.
 
-`pnpm dev` serves the shell frontend for development. Launch the native Tauri application to install and run applets.
+`pnpm dev` serves the shell frontend for development. Launch the native Tauri application, `apell-app`, to install and run applets.
 
 ## Build and test
 
@@ -56,13 +56,13 @@ The TypeScript suite exercises the SDK and shell bridge. The Rust suites cover p
 
 ## macOS app
 
-The native macOS app starts with a 420×820 content area and the same launcher, settings, and applet controls as mobile. Resize the window to use the existing wider layouts, including Companion's conversation sidebar. Closing the window keeps Apell and its applet backends running; reopening Apell from the Dock restores the window. Use **Apell → Quit Apell** to stop the host.
+The native macOS app starts with a 420×820 content area and the same launcher, settings, and applet controls as mobile. Resize the window to use the existing wider layouts, including Companion's conversation sidebar. Closing the window keeps the app and its applet backends running. Reopen `apell-app` from the Dock to restore the window, or use **Quit** from the app menu to stop the host.
 
 Build and open the standalone application on macOS 11 or later:
 
 ```sh
 pnpm desktop:build --bundles app
-open target/release/bundle/macos/Apell.app
+open target/release/bundle/macos/apell-app.app
 ```
 
 The `.app` contains the frontend and Companion bundle and runs without a development server. The macOS configuration uses an ad-hoc signature for local use. Configure a Developer ID locally for public distribution, following [Tauri's macOS signing guide](https://v2.tauri.app/distribute/sign/macos/). For an interactive development build, use `pnpm desktop:dev`. Build products and personal signing configuration stay outside Git.
@@ -142,9 +142,9 @@ Verify the installed executable matches the build before reporting the simulator
 
 Keep signing enabled for runnable simulator builds. Xcode's local simulator signing embeds the app identity required by Keychain; `--no-sign` is suitable only for compile checks and cannot verify provider credentials or sign-in.
 
-For installation from Xcode, run `pnpm tauri ios build --debug --open`, keep that terminal running, select the `apell_iOS` target, enable automatic signing with your development team, select the connected iPhone, and Run. This builds a bundled frontend that works without the development server once installed.
+For installation from Xcode, run `pnpm tauri ios build --debug --open`, keep that terminal running, select the `apell-app_iOS` target, enable automatic signing with your development team, select the connected iPhone, and Run. This builds a bundled frontend that works without the development server once installed.
 
-iOS build/dev commands automatically run `pnpm ios:prepare`. It prepares the generated Xcode Rust build phase to find Node, pnpm, and Rust even when Xcode was opened from the Dock. Tool locations are resolved from the current terminal into an ignored local environment file; personal paths and signing settings stay out of source files. After changing Node or Rust installations, rerun the Tauri command or `pnpm ios:prepare`. If Xcode reports `pnpm: command not found`, run the prepare command and retry the build. Keep the Tauri terminal running during Xcode builds so its build-options service remains available.
+iOS build/dev commands automatically run `pnpm ios:prepare`. It updates existing generated projects to the `apell-app_iOS` scheme while preserving signing settings. It also prepares the Xcode Rust build phase to find Node, pnpm, and Rust even when Xcode was opened from the Dock. Tool locations are resolved from the current terminal into an ignored local environment file. After changing Node or Rust installations, rerun the Tauri command or `pnpm ios:prepare`. If Xcode reports `pnpm: command not found`, run the prepare command and retry the build. Keep the Tauri terminal running during Xcode builds so its build-options service remains available.
 
 ## Create and distribute an applet
 

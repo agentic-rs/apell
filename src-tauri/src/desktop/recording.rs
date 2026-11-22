@@ -27,7 +27,7 @@ const START_OPERATION: &str = "recording-start";
 const CONTROL_OPERATION: &str = "recording-control";
 const CANCELLED: &str = "Microphone recording was cancelled.";
 const DENIED: &str =
-  "Microphone access is denied. Enable Apell in System Settings → Privacy & Security → Microphone.";
+  "Microphone access is denied. Enable apell-app in System Settings → Privacy & Security → Microphone.";
 const VISIBLE: &str = "Show the Apell window to start or resume recording.";
 const MAX_SECONDS: f64 = apell_speech::MAX_AUDIO_SECONDS as f64;
 

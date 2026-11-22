@@ -5,7 +5,7 @@ use super::{
 use serde::Deserialize;
 use std::{
   env,
-  ffi::OsStr,
+  ffi::{OsStr, OsString},
   fs,
   os::unix::fs::PermissionsExt,
   path::{Path, PathBuf},
@@ -23,6 +23,10 @@ pub(super) fn run(project: &Path, target: &Target, batch: Option<&Batch>) -> Res
       "initialize the iOS project",
     )?;
   }
+  run_command(
+    Command::new("pnpm").current_dir(project).arg("ios:prepare"),
+    "prepare the generated iOS project",
+  )?;
   let mut build = Command::new("pnpm");
   build
     .current_dir(project)
@@ -41,9 +45,63 @@ pub(super) fn run(project: &Path, target: &Target, batch: Option<&Batch>) -> Res
   }
   build.arg("--config").arg(config.to_string());
   match target.kind {
-    Kind::Simulator => run_simulator(build, &apple, &target.udid, batch),
+    Kind::Simulator => run_simulator(
+      build,
+      &apple,
+      &simulator_product_name(project)?,
+      &target.udid,
+      batch,
+    ),
     Kind::Device => run_device(build, &target.udid, batch),
   }
+}
+
+fn xcode_project(apple: &Path) -> Result<(OsString, String), String> {
+  let mut project = None;
+  for entry in fs::read_dir(apple).map_err(|e| format!("Could not read the iOS project: {e}"))? {
+    let entry = entry.map_err(|e| e.to_string())?;
+    if entry.path().extension() != Some(OsStr::new("xcodeproj")) || !entry.path().is_dir() {
+      continue;
+    }
+    if project.is_some() {
+      return Err("Expected one generated Xcode project.".into());
+    }
+    let filename = entry.file_name();
+    let name = Path::new(&filename)
+      .file_stem()
+      .and_then(OsStr::to_str)
+      .ok_or("The generated Xcode project has an invalid name.")?;
+    let target = format!("{name}_iOS");
+    project = Some((filename, target));
+  }
+  project.ok_or_else(|| "The generated Xcode project is missing.".into())
+}
+
+fn simulator_product_name(project: &Path) -> Result<String, String> {
+  #[derive(Deserialize)]
+  #[serde(rename_all = "camelCase")]
+  struct AppConfig {
+    product_name: Option<String>,
+  }
+  let mut product = None;
+  let tauri = project.join("src-tauri");
+  for filename in ["tauri.conf.json", "tauri.ios.conf.json"] {
+    let bytes = match fs::read(tauri.join(filename)) {
+      Ok(bytes) => bytes,
+      Err(error)
+        if filename == "tauri.ios.conf.json" && error.kind() == std::io::ErrorKind::NotFound =>
+      {
+        continue;
+      }
+      Err(error) => return Err(format!("Could not read {filename}: {error}")),
+    };
+    let config: AppConfig =
+      serde_json::from_slice(&bytes).map_err(|error| format!("Invalid {filename}: {error}"))?;
+    product = config.product_name.or(product);
+  }
+  product
+    .filter(|name| Path::new(name).file_name() == Some(OsStr::new(name)))
+    .ok_or_else(|| "Set a valid Tauri productName for the simulator app.".into())
 }
 
 #[derive(Deserialize)]
@@ -64,14 +122,14 @@ fn local_signing(apple: &Path, kind: Kind) -> Result<Signing, String> {
     Kind::Simulator => "generic/platform=iOS Simulator",
     Kind::Device => "generic/platform=iOS",
   };
+  let (project, scheme) = xcode_project(apple)?;
   let output = Command::new("xcrun")
     .current_dir(apple)
+    .args(["xcodebuild", "-project"])
+    .arg(project)
     .args([
-      "xcodebuild",
-      "-project",
-      "apell.xcodeproj",
       "-scheme",
-      "apell_iOS",
+      &scheme,
       "-configuration",
       "debug",
       "-destination",
@@ -91,12 +149,14 @@ fn local_signing(apple: &Path, kind: Kind) -> Result<Signing, String> {
     serde_json::from_slice(&output.stdout).map_err(|_| "Invalid Xcode build settings response.")?;
   let target = settings
     .into_iter()
-    .find(|s| s.target == "apell_iOS")
-    .ok_or("The generated project is missing the apell_iOS target.")?;
+    .find(|s| s.target == scheme)
+    .ok_or_else(|| format!("The generated project is missing the {scheme} target."))?;
   let signing: Signing = serde_json::from_value(target.settings)
-    .map_err(|_| "Set the bundle identifier in the apell_iOS target's signing settings.")?;
+    .map_err(|_| format!("Set the bundle identifier in the {scheme} target's signing settings."))?;
   if signing.product_bundle_identifier.is_empty() {
-    return Err("Set the bundle identifier in the apell_iOS target's signing settings.".into());
+    return Err(format!(
+      "Set the bundle identifier in the {scheme} target's signing settings."
+    ));
   }
   Ok(signing)
 }
@@ -151,6 +211,7 @@ fn bundle_identifier(app: &Path) -> Result<String, String> {
 fn run_simulator(
   mut build: Command,
   apple: &Path,
+  product_name: &str,
   udid: &str,
   batch: Option<&Batch>,
 ) -> Result<(), String> {
@@ -163,7 +224,16 @@ fn run_simulator(
     build.args(["--target", arch]),
     "build the signed simulator app",
   )?;
-  let app = app_in(&apple.join("build").join(output))?;
+  let app = apple
+    .join("build")
+    .join(output)
+    .join(product_name)
+    .with_extension("app");
+  if !app.join("Info.plist").is_file() {
+    return Err(format!(
+      "Could not locate the built simulator app {product_name}.app."
+    ));
+  }
   let id = bundle_identifier(&app)?;
   run_command(
     Command::new("xcrun").args(["simctl", "bootstatus", udid, "-b"]),
@@ -295,6 +365,40 @@ fn run_device(mut build: Command, udid: &str, batch: Option<&Batch>) -> Result<(
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn signing_uses_the_generated_project_name_and_derived_scheme() {
+    for name in ["apell", "apell-app"] {
+      let apple = TempDir::new().unwrap();
+      let project = format!("{name}.xcodeproj");
+      fs::create_dir(apple.path().join(&project)).unwrap();
+      assert_eq!(
+        xcode_project(apple.path()).unwrap(),
+        (project.into(), format!("{name}_iOS"))
+      );
+    }
+  }
+
+  #[test]
+  fn the_simulator_uses_the_platforms_effective_product_name() {
+    let project = TempDir::new().unwrap();
+    let tauri = project.path().join("src-tauri");
+    fs::create_dir(&tauri).unwrap();
+    fs::write(
+      tauri.join("tauri.conf.json"),
+      r#"{"productName":"apell-app"}"#,
+    )
+    .unwrap();
+    assert_eq!(simulator_product_name(project.path()).unwrap(), "apell-app");
+    let override_file = tauri.join("tauri.ios.conf.json");
+    fs::write(&override_file, r#"{"productName":"apell simulator"}"#).unwrap();
+    assert_eq!(
+      simulator_product_name(project.path()).unwrap(),
+      "apell simulator"
+    );
+    fs::write(&override_file, r#"{"productName":"../unrelated"}"#).unwrap();
+    assert!(simulator_product_name(project.path()).is_err());
+  }
 
   #[test]
   fn archiver_preserves_xcode_arguments_and_provisions_only_the_selected_device() {

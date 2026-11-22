@@ -13,6 +13,7 @@ import {
 } from 'node:fs/promises';
 import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { migrateIosProjectName } from './mobile-project.ts';
 
 const environment_name = '.apell-build-env';
 const bootstrap = [
@@ -175,6 +176,7 @@ export interface PrepareIosOptions {
 
 export async function prepareIos(options: PrepareIosOptions = {}): Promise<void> {
   const project_root = options.project_root ?? fileURLToPath(new URL('..', import.meta.url));
+  await migrateIosProjectName(project_root);
   const apple_dir = join(project_root, 'src-tauri', 'gen', 'apple');
   let projects: string[];
   try {

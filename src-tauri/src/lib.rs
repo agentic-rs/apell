@@ -55,9 +55,14 @@ pub fn run() {
       let origins = navigation::trusted_origins(app.config().build.dev_url.as_ref());
       let boot = navigation::bootstrap(&host.host_key, &origins)?;
       app.manage(host);
+      let title = app
+        .config()
+        .product_name
+        .as_deref()
+        .unwrap_or(env!("CARGO_PKG_NAME"));
       let window =
         tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("index.html".into()))
-          .title("Apell")
+          .title(title)
           .background_color(tauri::window::Color(248, 247, 250, 255))
           .initialization_script(boot)
           // Sensor access belongs to the native applet services.

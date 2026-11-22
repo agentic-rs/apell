@@ -1,7 +1,15 @@
 import { createRequire } from 'node:module';
+import { migrateIosProjectName, syncAndroidAppName } from './mobile-project.ts';
+
+const [, , platform, command, ...args] = process.argv;
+const query = args.some((arg) => ['--help', '-h', '--version', '-V'].includes(arg));
+if (!query && (command === 'build' || command === 'dev' || command === 'run')) {
+  if (platform === 'ios') await migrateIosProjectName();
+  if (platform === 'android') await syncAndroidAppName();
+}
 
 // Tauri forwards TAURI-prefixed values to the native mobile build scripts.
-if (process.argv[2] === 'ios' || process.argv[2] === 'android') {
+if (platform === 'ios' || platform === 'android') {
   for (const name of [
     'APELL_ACCOUNT_ISSUER',
     'APELL_ACCOUNT_CLIENT_ID',
@@ -15,7 +23,7 @@ if (process.argv[2] === 'ios' || process.argv[2] === 'android') {
 }
 
 // Tauri reads NDK_HOME, while the Whisper CMake build reads ANDROID_NDK_ROOT.
-if (process.argv[2] === 'android' && !process.env.ANDROID_NDK_ROOT && !process.env.ANDROID_NDK) {
+if (platform === 'android' && !process.env.ANDROID_NDK_ROOT && !process.env.ANDROID_NDK) {
   if (process.env.NDK_HOME) process.env.ANDROID_NDK_ROOT = process.env.NDK_HOME;
 }
 

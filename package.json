@@ -1,5 +1,5 @@
 {
-  "name": "apell",
+  "name": "apell-app",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -13,9 +13,9 @@
     "desktop:build": "pnpm tauri build",
     "store:build": "tsc --project store/web/tsconfig.json && vite build --config store/web/vite.config.ts",
     "store:serve": "cargo run --locked -p apell-store",
-    "ios:init": "tauri ios init && pnpm ios:prepare",
+    "ios:init": "pnpm tauri ios init && pnpm ios:prepare",
     "ios:prepare": "node --experimental-strip-types scripts/prepare-ios.ts",
-    "ios:dev": "tauri ios dev",
+    "ios:dev": "pnpm tauri ios dev",
     "android:init": "pnpm tauri android init",
     "android:dev": "pnpm tauri android dev",
     "test": "pnpm build:chatbot && vitest run",
