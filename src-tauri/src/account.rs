@@ -1,3 +1,5 @@
+#[cfg(target_os = "ios")]
+mod apple;
 mod oidc;
 
 use crate::{commands::blocking, host::Host};
@@ -9,6 +11,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, Url};
+#[cfg(not(target_os = "ios"))]
 use tauri_plugin_opener::OpenerExt;
 use tokio::sync::Mutex;
 use zeroize::{Zeroize, Zeroizing};
@@ -38,6 +41,8 @@ struct Status {
 
 #[derive(Clone)]
 struct Attempt {
+  #[cfg(target_os = "ios")]
+  presentation_id: u64,
   state: String,
   nonce: String,
   verifier: Zeroizing<String>,
@@ -54,6 +59,8 @@ impl Attempt {
       Ok(URL_SAFE_NO_PAD.encode(bytes.as_ref()))
     }
     Ok(Self {
+      #[cfg(target_os = "ios")]
+      presentation_id: apple::next_id(),
       state: random()?,
       nonce: random()?,
       verifier: Zeroizing::new(random()?),
@@ -61,6 +68,22 @@ impl Attempt {
       provider: None,
       completing: false,
     })
+  }
+
+  fn present(&self, app: &AppHandle, url: &Url) -> Result<(), &'static str> {
+    #[cfg(target_os = "ios")]
+    apple::present(app, self, url)?;
+    #[cfg(not(target_os = "ios"))]
+    app
+      .opener()
+      .open_url(url.as_str(), None::<&str>)
+      .map_err(|_| "Could not open the browser for Apell Account sign-in.")?;
+    Ok(())
+  }
+
+  fn dismiss(&self) {
+    #[cfg(target_os = "ios")]
+    apple::cancel(self.presentation_id);
   }
 }
 
@@ -301,18 +324,16 @@ impl Account {
           &attempt.verifier,
         );
         pending.provider = Some(provider);
-        if app.opener().open_url(url.as_str(), None::<&str>).is_err() {
+        if let Err(error) = attempt.present(app, &url) {
           state.attempt = None;
-          state.error = Some("Could not open the browser for Apell Account sign-in.".into());
+          state.error = Some(error.into());
         } else {
           let app = app.clone();
+          let deadline = attempt.expires;
+          let attempt_id = attempt.state;
           tauri::async_runtime::spawn(async move {
-            tokio::time::sleep_until(attempt.expires.into()).await;
-            app
-              .state::<Host>()
-              .account
-              .expire(&app, &attempt.state)
-              .await;
+            tokio::time::sleep_until(deadline.into()).await;
+            app.state::<Host>().account.expire(&app, &attempt_id).await;
           });
         }
       }
@@ -327,11 +348,12 @@ impl Account {
 
   async fn expire(&self, app: &AppHandle, attempt_id: &str) {
     let mut state = self.state.lock().await;
-    if state
+    if let Some(attempt) = state
       .attempt
       .as_ref()
-      .is_some_and(|attempt| attempt.state == attempt_id)
+      .filter(|attempt| attempt.state == attempt_id)
     {
+      attempt.dismiss();
       state.attempt = None;
       state.error = Some(SIGN_IN_EXPIRED.into());
       changed(app);
@@ -340,7 +362,8 @@ impl Account {
 
   async fn cancel(&self, app: &AppHandle) -> Result<Status, String> {
     let mut state = self.state.lock().await;
-    if state.attempt.take().is_some() {
+    if let Some(attempt) = state.attempt.take() {
+      attempt.dismiss();
       state.error = None;
       changed(app);
     }
@@ -356,7 +379,9 @@ impl Account {
     if state.session.is_some() {
       persist(app, None).await?;
     }
-    state.attempt = None;
+    if let Some(attempt) = state.attempt.take() {
+      attempt.dismiss();
+    }
     state.error = None;
     if let Some(session) = state.session.take() {
       let app = app.clone();
@@ -381,15 +406,41 @@ impl Account {
     Ok(state.status(true))
   }
 
-  #[cfg(any(target_os = "ios", target_os = "android", target_os = "macos"))]
-  async fn complete(&self, app: &AppHandle, url: Url) {
+  #[cfg(target_os = "ios")]
+  async fn finish_apple_sign_in(
+    &self,
+    app: &AppHandle,
+    attempt_id: &str,
+    result: Result<Option<Url>, &'static str>,
+  ) {
     let Some(config) = &self.config else { return };
-    let Some(callback) = oidc::callback(&url) else {
-      return;
+    let error = match result {
+      Ok(Some(url)) => {
+        if let Some(callback) = oidc::callback(&url).filter(|callback| {
+          callback.state == attempt_id && callback.issuer == config.issuer.as_str()
+        }) {
+          self.complete(app, config, callback).await;
+          return;
+        }
+        Some(apple::INVALID_CALLBACK)
+      }
+      Ok(None) => None,
+      Err(error) => Some(error),
     };
-    if callback.issuer != config.issuer.as_str() {
-      return;
+    let mut state = self.state.lock().await;
+    if state
+      .attempt
+      .as_ref()
+      .is_some_and(|attempt| attempt.state == attempt_id && !attempt.completing)
+    {
+      state.attempt = None;
+      state.error = error.map(str::to_owned);
+      changed(app);
     }
+  }
+
+  #[cfg(any(target_os = "ios", target_os = "android", target_os = "macos"))]
+  async fn complete(&self, app: &AppHandle, config: &Config, callback: oidc::Callback<'_>) {
     let (attempt, provider, code) = {
       let mut state = self.state.lock().await;
       let Some(attempt) = state.attempt.as_mut() else {
@@ -502,7 +553,7 @@ fn changed(app: &AppHandle) {
   let _ = app.emit_to("main", EVENT, ());
 }
 
-#[cfg(any(target_os = "ios", target_os = "android", target_os = "macos"))]
+#[cfg(any(target_os = "android", target_os = "macos"))]
 pub(crate) fn register_callbacks(app: &tauri::App) {
   use tauri_plugin_deep_link::DeepLinkExt;
   let handle = app.handle().clone();
@@ -510,7 +561,16 @@ pub(crate) fn register_callbacks(app: &tauri::App) {
     for url in event.urls() {
       let app = handle.clone();
       tauri::async_runtime::spawn(async move {
-        app.state::<Host>().account.complete(&app, url).await;
+        let host = app.state::<Host>();
+        let account = &host.account;
+        let Some(config) = &account.config else {
+          return;
+        };
+        if let Some(callback) =
+          oidc::callback(&url).filter(|callback| callback.issuer == config.issuer.as_str())
+        {
+          account.complete(&app, config, callback).await;
+        }
       });
     }
   });

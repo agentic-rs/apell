@@ -219,13 +219,13 @@ export function AccountSync({
             disabled={!!busy}
             onClick={() => void changeAccount('sign_in', signInToAccount)}
           >
-            {busy === 'sign_in' ? 'Opening browser…' : 'Sign in'}
+            {busy === 'sign_in' ? 'Opening sign-in…' : 'Sign in'}
           </button>
         </>
       )}
       {account?.state === 'signing_in' && (
         <>
-          <p role="status">Finish signing in in your browser.</p>
+          <p role="status">Finish signing in to Apell Account.</p>
           <button
             type="button"
             disabled={!!busy}

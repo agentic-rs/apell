@@ -57,7 +57,7 @@ pub fn run() {
       let origins = navigation::trusted_origins(app.config().build.dev_url.as_ref());
       let boot = navigation::bootstrap(&host.host_key, &origins)?;
       app.manage(host);
-      #[cfg(any(target_os = "ios", target_os = "android", target_os = "macos"))]
+      #[cfg(any(target_os = "android", target_os = "macos"))]
       account::register_callbacks(app);
       let window =
         tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("index.html".into()))

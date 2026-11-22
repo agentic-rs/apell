@@ -169,8 +169,9 @@ Accounts that can sync. [Logto API resource setup](https://docs.logto.io/authori
 
 Set these public values in the shell's build environment. Keep deployment-specific
 values in local build settings. On mobile, `pnpm tauri` and `apell dev` forward
-these values to the native build. The shell uses the system browser and S256
-PKCE, with session credentials in the device's secure store.
+these values to the native build. On iOS, sign-in opens the system authentication
+sheet. Android and macOS open the system browser. All three use S256 PKCE and
+keep session credentials in the device's secure store.
 
 | Variable                  | Value                                            |
 | ------------------------- | ------------------------------------------------ |
