@@ -1,4 +1,5 @@
 use super::*;
+use crate::llm::tests::config_at;
 
 fn request() -> LlmRequest {
   LlmRequest {
@@ -13,7 +14,10 @@ fn request() -> LlmRequest {
 }
 
 fn output() -> Output {
-  Output::new("test", LlmConfig::default().provenance())
+  Output::new(
+    "test",
+    config_at("https://provider.invalid/v1").provenance(),
+  )
 }
 
 #[test]
@@ -98,7 +102,7 @@ fn buffered_messages_preserve_arbitrary_metadata_at_every_level() {
 
 #[test]
 fn unsolicited_buffered_audio_cannot_be_replayed_as_assistant_metadata() {
-  let config = LlmConfig::default();
+  let config = config_at("https://provider.invalid/v1");
   let mut output = output();
   let status = output.buffered(
     json!({"choices":[{
@@ -176,13 +180,7 @@ fn required_named_and_none_choices_cannot_silently_succeed() {
 
 #[test]
 fn rejects_inconsistent_metadata_and_oversized_output() {
-  let mut output = Output::new(
-    "test",
-    LlmProvenance {
-      model_id: None,
-      ..LlmConfig::default().provenance()
-    },
-  );
+  let mut output = output();
   output
     .consume(
       &json!({"id":"one","model":"actual","choices":[]}),
@@ -211,8 +209,7 @@ fn rejects_inconsistent_metadata_and_oversized_output() {
       &|_| {}
     )
     .is_err());
-  let mut output = Output::new("test", LlmConfig::default().provenance());
-  assert!(output
+  assert!(self::output()
     .fields(
       &json!({"role":"assistant", "content":"text", "metadata":"x".repeat(MAX_OUTPUT_BYTES)}),
       false,

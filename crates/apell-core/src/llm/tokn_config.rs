@@ -5,10 +5,6 @@ use tokn_sdk::{config::v2::compile_execution, policy::ExecutionRules};
 /// One opaque route preserves Apell's compatible-provider contract. Credentials
 /// arrive through host-owned RequestOptions, never an account file or catalogue.
 pub(super) fn execution_rules(config: &LlmConfig) -> Result<ExecutionRules, String> {
-  if config.base_url == "demo" {
-    return Err("Demo mode does not use provider routing.".into());
-  }
-
   let mut base_url = base_url(config)?;
   base_url.set_path(&format!("{}/", base_url.path().trim_end_matches('/')));
   let driver = wire::driver(config)?;
@@ -45,9 +41,6 @@ pub(super) fn validate_account(
   config: &LlmConfig,
   account: Option<&tokn_sdk::account::AccountConfig>,
 ) -> Result<(), Failure> {
-  if config.base_url == "demo" {
-    return Ok(());
-  }
   let driver = wire::driver(config)
     .map_err(|_| Failure::new("invalid_configuration", "The provider is invalid."))?;
   let Some(account) = account else {

@@ -612,12 +612,18 @@ mod tests {
     bundles::{digest, pack_directory, API_VERSION},
     llm::{LlmConfig, LlmRequest, LlmStatus},
   };
-  use std::{fs, time::Duration};
-  use tokio::{sync::oneshot, task::JoinHandle};
+  use std::{fs, net::Ipv4Addr, time::Duration};
+  use tokio::{
+    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
+    net::TcpListener,
+    sync::oneshot,
+    task::JoinHandle,
+  };
   use ManagedPermission::{Camera, Location, Microphone};
 
   const APPLET: &str = "view-fixture";
   const RUN: &str = "native-run";
+  const GENERATION_DEADLINE: Duration = Duration::from_secs(5);
 
   fn install(host: &Host, applet_id: &str, version: &str) {
     install_with_permissions(host, applet_id, version, &["sqlite", "llm"]);
@@ -860,7 +866,49 @@ mod tests {
       .clone()
   }
 
-  async fn generate(host: &Host, session: &str) -> JoinHandle<LlmStatus> {
+  async fn generate(host: &Host, session: &str) -> (JoinHandle<LlmStatus>, oneshot::Sender<()>) {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    let config = LlmConfig {
+      provider_id: "custom".into(),
+      base_url: format!("http://{}/v1", listener.local_addr().unwrap()),
+      model_id: "fixture-model".into(),
+      connection_id: "fixture-connection".into(),
+    };
+    let (received, mut ready) = oneshot::channel();
+    let (complete, release) = oneshot::channel();
+    tokio::spawn(async move {
+      let (socket, _) = listener.accept().await.unwrap();
+      let mut stream = BufReader::new(socket);
+      let mut content_length = None;
+      loop {
+        let mut line = String::new();
+        assert_ne!(stream.read_line(&mut line).await.unwrap(), 0);
+        if let Some((name, value)) = line.split_once(':') {
+          if name.eq_ignore_ascii_case("content-length") {
+            content_length = Some(value.trim().parse::<usize>().unwrap());
+          }
+        }
+        if line == "\r\n" {
+          break;
+        }
+      }
+      let mut body = vec![0; content_length.expect("Generation sends a JSON request body.")];
+      stream.read_exact(&mut body).await.unwrap();
+      received.send(()).unwrap();
+      if release.await.is_ok() {
+        let body = format!(
+          "data: {}\n\n",
+          json!({"model": "fixture-model", "choices": [
+            {"index": 0, "delta": {"content": "Hello"}, "finish_reason": "stop"}
+          ]})
+        );
+        let response = format!(
+          "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+          body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+      }
+    });
     let llm = host.llm.clone();
     let session = session.to_owned();
     let request = LlmRequest {
@@ -868,30 +916,18 @@ mod tests {
       messages: vec![json!({"role": "user", "content": "Hello"})],
       ..Default::default()
     };
-    let (started, mut ready) = oneshot::channel();
-    let started = std::sync::Mutex::new(Some(started));
     let mut work = tokio::spawn(async move {
       llm
-        .generate(
-          &session,
-          request,
-          LlmConfig::default(),
-          None,
-          move |event| {
-            if event.kind == "started" {
-              started.lock().unwrap().take().unwrap().send(()).unwrap();
-            }
-          },
-        )
+        .generate(&session, request, config, None, |_| {})
         .await
         .status
     });
     tokio::select! {
       result = &mut work => panic!("Generation ended before view rotation: {result:?}"),
       result = &mut ready => result.unwrap(),
-      _ = tokio::time::sleep(Duration::from_secs(5)) => panic!("Generation did not start"),
+      _ = tokio::time::sleep(GENERATION_DEADLINE) => panic!("Generation did not reach the provider"),
     }
-    work
+    (work, complete)
   }
 
   #[tokio::test]
@@ -912,8 +948,8 @@ mod tests {
       )
     };
     assert!(query(&first.view_id, &view_database).is_ok());
-    let run_generation = generate(&host, RUN).await;
-    let view_generation = generate(&host, &first.view_id).await;
+    let (run_generation, finish_run) = generate(&host, RUN).await;
+    let (view_generation, finish_view) = generate(&host, &first.view_id).await;
 
     let second = host.attach_view(RUN, &first.view_id).unwrap();
     assert_eq!(second.session_id, first.session_id);
@@ -925,13 +961,27 @@ mod tests {
     assert!(query(&first.view_id, &view_database).is_err());
     assert!(query(&second.view_id, &view_database).is_err());
     assert!(host.llm.cancel(&first.view_id, "other").is_err());
-    assert_eq!(view_generation.await.unwrap(), LlmStatus::Cancelled);
+    assert_eq!(
+      tokio::time::timeout(GENERATION_DEADLINE, view_generation)
+        .await
+        .unwrap()
+        .unwrap(),
+      LlmStatus::Cancelled
+    );
+    drop(finish_view);
 
     assert!(!*run_session.cancellation.borrow());
     run_session.run_local(|| Ok(())).unwrap();
     assert!(query(RUN, &run_database).is_ok());
     assert!(query(&second.view_id, &database(&host, &second.view_id)).is_ok());
-    assert_eq!(run_generation.await.unwrap(), LlmStatus::Completed);
+    finish_run.send(()).unwrap();
+    assert_eq!(
+      tokio::time::timeout(GENERATION_DEADLINE, run_generation)
+        .await
+        .unwrap()
+        .unwrap(),
+      LlmStatus::Completed
+    );
   }
 
   #[test]

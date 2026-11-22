@@ -21,10 +21,7 @@ export function connectionDraft(
   connection: LlmConnection | undefined,
   providers: LlmProvider[],
 ): ConnectionDraft {
-  const provider =
-    providers.find((item) => item.provider_id === 'openai') ??
-    providers.find((item) => item.provider_id !== 'demo') ??
-    providers[0];
+  const provider = providers.find((item) => item.provider_id === 'openai') ?? providers[0];
   return {
     name: connection?.name ?? provider?.name ?? '',
     provider_id: connection?.provider_id ?? provider?.provider_id ?? '',
@@ -40,7 +37,7 @@ export function changeProvider(draft: ConnectionDraft, provider: LlmProvider): C
     ...draft,
     provider_id: provider.provider_id,
     base_url: provider.base_url,
-    model_id: provider.provider_id === 'demo' ? 'local-demo' : '',
+    model_id: '',
     remove_credential: false,
     api_key: '',
   };

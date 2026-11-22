@@ -140,7 +140,7 @@ export interface LlmConnection {
   credential_status: CredentialStatus;
 }
 export interface LlmSettings {
-  active_connection_id: string;
+  active_connection_id: string | null;
   connections: LlmConnection[];
   providers: LlmProvider[];
 }
@@ -227,7 +227,7 @@ export interface LlmModel {
 }
 export interface LlmModels {
   models: LlmModel[];
-  source: 'provider' | 'catalogue';
+  source: 'provider';
 }
 export interface LoginChallenge {
   login_id: string;

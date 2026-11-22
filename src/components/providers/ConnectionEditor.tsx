@@ -43,7 +43,7 @@ import {
 interface EditorProps {
   connection?: LlmConnection;
   providers: LlmProvider[];
-  active_connection_id: string;
+  active_connection_id: string | null;
   onSaved: (connection: LlmConnection, previous_id?: string) => void;
   onActivated: (connection_id: string) => void;
   onDeleted: (connection_id: string) => void;
@@ -72,7 +72,6 @@ export function ConnectionEditor(props: EditorProps) {
   const drafts = useRef(new DraftSession(createConnectionDraft, discardConnectionDraft));
   const login_operation = useRef<Operation | undefined>(undefined);
   const provider = props.providers.find((item) => item.provider_id === draft.provider_id);
-  const is_demo = draft.provider_id === 'demo';
   const device_login = provider?.auth_methods.includes('device_code') ?? false;
   const accepts_key = provider?.auth_methods.includes('api_key') ?? false;
   const changed_destination = destinationChanged(draft, saved);
@@ -250,7 +249,6 @@ export function ConnectionEditor(props: EditorProps) {
             Provider
             <select
               value={draft.provider_id}
-              disabled={saved?.provider_id === 'demo'}
               onChange={(event) => {
                 const next = props.providers.find(
                   (item) => item.provider_id === event.target.value,
@@ -264,113 +262,101 @@ export function ConnectionEditor(props: EditorProps) {
                 announce('');
               }}
             >
-              {props.providers
-                .filter((item) => item.provider_id !== 'demo' || saved?.provider_id === 'demo')
-                .map((item) => (
-                  <option key={item.provider_id} value={item.provider_id}>
-                    {item.name}
-                  </option>
-                ))}
+              {props.providers.map((item) => (
+                <option key={item.provider_id} value={item.provider_id}>
+                  {item.name}
+                </option>
+              ))}
               {!provider && (
                 <option value={draft.provider_id}>{draft.provider_id} (unavailable)</option>
               )}
             </select>
           </label>
-          {is_demo ? (
-            <div className="notice">
-              Local demo returns scripted replies without sending a model request.
-            </div>
-          ) : (
-            <>
-              {!device_login && (
-                <details
-                  className="connection-advanced"
-                  open={draft.provider_id === 'custom' || !draft.base_url || undefined}
-                >
-                  <summary>API endpoint</summary>
-                  <label>
-                    Base URL
-                    <input
-                      type="url"
-                      required
-                      value={draft.base_url}
-                      autoCapitalize="none"
-                      autoCorrect="off"
-                      spellCheck={false}
-                      placeholder="https://api.example.com/v1"
-                      onChange={(event) => {
-                        const next = { ...draft, base_url: event.target.value };
-                        if (
-                          draftPayload(next, saved).base_url !== draftPayload(draft, saved).base_url
-                        )
-                          resetDestination();
-                        setDraft(next);
-                      }}
-                    />
-                  </label>
-                </details>
-              )}
-              {draft.provider_id === 'zai-coding-plan' && (
-                <p className="status">
-                  If you’re creating a new key, use a Personal or Team Coding Plan key from Z.ai.
-                </p>
-              )}
-              {accepts_key && (
-                <ApiKeyField
-                  credential_status={credential_status}
-                  optional={provider?.auth_methods.includes('none') ?? false}
-                  value={draft.api_key}
-                  removing={draft.remove_credential}
-                  onChange={(api_key) => {
-                    setDraft({ ...draft, api_key, remove_credential: false });
-                    setModels(undefined);
-                  }}
-                  onRemove={() => {
-                    setDraft({ ...draft, remove_credential: true, api_key: '' });
-                    setModels(undefined);
-                  }}
-                  onUndo={() => {
-                    setDraft({ ...draft, remove_credential: false });
-                    setModels(undefined);
+          {!device_login && (
+            <details
+              className="connection-advanced"
+              open={draft.provider_id === 'custom' || !draft.base_url || undefined}
+            >
+              <summary>API endpoint</summary>
+              <label>
+                Base URL
+                <input
+                  type="url"
+                  required
+                  value={draft.base_url}
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  placeholder="https://api.example.com/v1"
+                  onChange={(event) => {
+                    const next = { ...draft, base_url: event.target.value };
+                    if (draftPayload(next, saved).base_url !== draftPayload(draft, saved).base_url)
+                      resetDestination();
+                    setDraft(next);
                   }}
                 />
+              </label>
+            </details>
+          )}
+          {draft.provider_id === 'zai-coding-plan' && (
+            <p className="status">
+              If you’re creating a new key, use a Personal or Team Coding Plan key from Z.ai.
+            </p>
+          )}
+          {accepts_key && (
+            <ApiKeyField
+              credential_status={credential_status}
+              optional={provider?.auth_methods.includes('none') ?? false}
+              value={draft.api_key}
+              removing={draft.remove_credential}
+              onChange={(api_key) => {
+                setDraft({ ...draft, api_key, remove_credential: false });
+                setModels(undefined);
+              }}
+              onRemove={() => {
+                setDraft({ ...draft, remove_credential: true, api_key: '' });
+                setModels(undefined);
+              }}
+              onUndo={() => {
+                setDraft({ ...draft, remove_credential: false });
+                setModels(undefined);
+              }}
+            />
+          )}
+          {device_login && (
+            <div className="credential-fields">
+              <p className="status">
+                {staged_login
+                  ? draft.remove_credential
+                    ? 'This sign-in will be discarded when you save.'
+                    : 'Signed in for this setup. Save to keep this account.'
+                  : credential_status === 'present'
+                    ? 'Signed in securely.'
+                    : credential_status === 'unavailable'
+                      ? 'The secure credential store is unavailable.'
+                      : 'Sign in with your account using a one-time code.'}
+              </p>
+              <button type="button" disabled={!!busy} onClick={signIn}>
+                {credential_status === 'present' ? 'Sign in again' : 'Sign in'}
+              </button>
+              {credential_status === 'present' && (
+                <button
+                  type="button"
+                  className={`text-button${draft.remove_credential ? '' : ' danger'}`}
+                  onClick={() => {
+                    setDraft({
+                      ...draft,
+                      remove_credential: !draft.remove_credential,
+                      api_key: '',
+                    });
+                    setModels(undefined);
+                    announce(draft.remove_credential ? '' : 'Save to remove the sign-in.');
+                  }}
+                >
+                  {draft.remove_credential ? 'Undo removal' : 'Remove sign-in'}
+                </button>
               )}
-              {device_login && (
-                <div className="credential-fields">
-                  <p className="status">
-                    {staged_login
-                      ? draft.remove_credential
-                        ? 'This sign-in will be discarded when you save.'
-                        : 'Signed in for this setup. Save to keep this account.'
-                      : credential_status === 'present'
-                        ? 'Signed in securely.'
-                        : credential_status === 'unavailable'
-                          ? 'The secure credential store is unavailable.'
-                          : 'Sign in with your account using a one-time code.'}
-                  </p>
-                  <button type="button" disabled={!!busy} onClick={signIn}>
-                    {credential_status === 'present' ? 'Sign in again' : 'Sign in'}
-                  </button>
-                  {credential_status === 'present' && (
-                    <button
-                      type="button"
-                      className={`text-button${draft.remove_credential ? '' : ' danger'}`}
-                      onClick={() => {
-                        setDraft({
-                          ...draft,
-                          remove_credential: !draft.remove_credential,
-                          api_key: '',
-                        });
-                        setModels(undefined);
-                        announce(draft.remove_credential ? '' : 'Save to remove the sign-in.');
-                      }}
-                    >
-                      {draft.remove_credential ? 'Undo removal' : 'Remove sign-in'}
-                    </button>
-                  )}
-                </div>
-              )}
-            </>
+            </div>
           )}
         </fieldset>
         {login && (
@@ -405,53 +391,49 @@ export function ConnectionEditor(props: EditorProps) {
             Cancel sign-in
           </button>
         )}
-        {!is_demo && (
-          <fieldset disabled={!!busy}>
-            <ModelPicker
-              model_id={draft.model_id}
-              models={models}
-              disabled={!!busy}
-              required
-              onChange={(model_id) => setDraft({ ...draft, model_id })}
-            />
-            <button
-              type="button"
-              disabled={!can_discover}
-              onClick={() =>
-                void run('models', async (operation) => {
-                  const value = await ensureDraft(operation);
-                  if (!operation.isCurrent()) return;
-                  await loadModels(operation, value);
-                })
-              }
-            >
-              {busy === 'models' ? 'Loading models…' : models ? 'Refresh models' : 'Load models'}
-            </button>
-            <label>
-              Name (optional)
-              <input
-                maxLength={80}
-                value={draft.name}
-                placeholder={provider?.name}
-                autoComplete="off"
-                onChange={(event) => setDraft({ ...draft, name: event.target.value })}
-              />
-            </label>
-            {changed_destination && (
-              <p className="status">
-                This is a different destination. The previous credential will not be reused.
-              </p>
-            )}
-          </fieldset>
-        )}
-        {!is_demo && (
+        <fieldset disabled={!!busy}>
+          <ModelPicker
+            model_id={draft.model_id}
+            models={models}
+            disabled={!!busy}
+            required
+            onChange={(model_id) => setDraft({ ...draft, model_id })}
+          />
           <button
-            className="primary"
-            disabled={!!busy || !dirty || !canSaveDraft(draft, provider, saved, staged_login)}
+            type="button"
+            disabled={!can_discover}
+            onClick={() =>
+              void run('models', async (operation) => {
+                const value = await ensureDraft(operation);
+                if (!operation.isCurrent()) return;
+                await loadModels(operation, value);
+              })
+            }
           >
-            {busy === 'save' ? 'Saving…' : 'Save connection'}
+            {busy === 'models' ? 'Loading models…' : models ? 'Refresh models' : 'Load models'}
           </button>
-        )}
+          <label>
+            Name (optional)
+            <input
+              maxLength={80}
+              value={draft.name}
+              placeholder={provider?.name}
+              autoComplete="off"
+              onChange={(event) => setDraft({ ...draft, name: event.target.value })}
+            />
+          </label>
+          {changed_destination && (
+            <p className="status">
+              This is a different destination. The previous credential will not be reused.
+            </p>
+          )}
+        </fieldset>
+        <button
+          className="primary"
+          disabled={!!busy || !dirty || !canSaveDraft(draft, provider, saved, staged_login)}
+        >
+          {busy === 'save' ? 'Saving…' : 'Save connection'}
+        </button>
       </form>
 
       {busy === 'test' && (
@@ -477,36 +459,29 @@ export function ConnectionEditor(props: EditorProps) {
               {busy === 'activate' ? 'Switching…' : 'Use connection'}
             </button>
           )}
-          {!is_demo && (
-            <>
-              <button
-                type="button"
-                disabled={!can_probe || !saved.model_id.trim()}
-                onClick={() =>
-                  void run('test', async (operation) => {
-                    const request_id = requestId();
-                    operation.setCancellation(() => {
-                      void cancelConnectionTest(request_id).catch(() => {});
-                    });
-                    const result = await testConnection(saved.connection_id, request_id);
-                    if (!operation.isCurrent()) return;
-                    announce(
-                      result.status === 'completed'
-                        ? `Connection works. Model: ${result.provenance.model_id ?? result.provenance.requested_model_id}.`
-                        : (result.error?.message ??
-                            `The test ended with status: ${result.status}.`),
-                      result.status !== 'completed',
-                    );
-                  })
-                }
-              >
-                {busy === 'test' ? 'Testing…' : 'Test connection'}
-              </button>
-              <p className="status">
-                Testing sends a small model request and may use account credits.
-              </p>
-            </>
-          )}
+          <button
+            type="button"
+            disabled={!can_probe || !saved.model_id.trim()}
+            onClick={() =>
+              void run('test', async (operation) => {
+                const request_id = requestId();
+                operation.setCancellation(() => {
+                  void cancelConnectionTest(request_id).catch(() => {});
+                });
+                const result = await testConnection(saved.connection_id, request_id);
+                if (!operation.isCurrent()) return;
+                announce(
+                  result.status === 'completed'
+                    ? `Connection works. Model: ${result.provenance.model_id ?? result.provenance.requested_model_id}.`
+                    : (result.error?.message ?? `The test ended with status: ${result.status}.`),
+                  result.status !== 'completed',
+                );
+              })
+            }
+          >
+            {busy === 'test' ? 'Testing…' : 'Test connection'}
+          </button>
+          <p className="status">Testing sends a small model request and may use account credits.</p>
         </div>
       )}
       {status && (
@@ -517,13 +492,13 @@ export function ConnectionEditor(props: EditorProps) {
           {status}
         </p>
       )}
-      {saved && saved.provider_id !== 'demo' && (
+      {saved && (
         <div className="delete-connection">
           {confirm_delete ? (
             <>
               <p>
                 Remove this connection and its saved credential?
-                {active ? ' New requests will use Local demo.' : ''}
+                {active ? ' Choose another connection to set a new default model.' : ''}
               </p>
               <div className="button-row">
                 <button type="button" disabled={!!busy} onClick={() => setConfirmDelete(false)}>

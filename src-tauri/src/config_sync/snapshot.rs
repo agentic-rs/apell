@@ -1,4 +1,7 @@
-use crate::settings::{credential_ref, Connection, Settings, DEMO_ID, MAX_CONNECTIONS};
+use super::saved_selection;
+use crate::settings::{
+  credential_ref, Connection, Settings, LEGACY_DEMO_CONNECTION_ID, MAX_CONNECTIONS,
+};
 use apell_core::{bundles::digest, llm::validate_config, providers::default_base_url};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -35,7 +38,7 @@ struct SummaryConnection<'a> {
 }
 
 fn built_in_endpoint(provider_id: &str) -> Option<&'static str> {
-  if matches!(provider_id, "demo" | "custom" | "llama-cpp") {
+  if matches!(provider_id, "custom" | "llama-cpp") {
     return None;
   }
   default_base_url(provider_id)
@@ -49,7 +52,7 @@ fn eligible(connection: &Connection) -> bool {
 }
 
 pub(super) fn device_only(connection: &Connection) -> bool {
-  !connection.is_demo() && !eligible(connection)
+  !eligible(connection)
 }
 
 impl Snapshot {
@@ -66,15 +69,13 @@ impl Snapshot {
       })
       .collect();
     connections.sort_unstable_by(|a, b| a.connection_id.cmp(&b.connection_id));
-    let active = previous_selection.unwrap_or(&settings.active_connection_id);
-    let active_connection_id = if connections
-      .iter()
-      .any(|entry| entry.connection_id == active)
-    {
-      active.to_owned()
-    } else {
-      DEMO_ID.into()
-    };
+    // Keep the v1 wire value for no preferred connection so existing Store
+    // revisions and their fingerprints survive the local settings migration.
+    let active_connection_id = previous_selection
+      .or(settings.active_connection_id.as_deref())
+      .filter(|id| connections.iter().any(|entry| entry.connection_id == *id))
+      .unwrap_or(LEGACY_DEMO_CONNECTION_ID)
+      .to_owned();
     Self {
       schema_version: 1,
       connections,
@@ -85,9 +86,9 @@ impl Snapshot {
   pub fn validate(&mut self) -> Result<(), String> {
     let mut ids = HashSet::new();
     if self.schema_version != 1
-      || self.connections.len() >= MAX_CONNECTIONS
+      || self.connections.len() > MAX_CONNECTIONS
       || self.connections.iter().any(|entry| {
-        entry.connection_id == DEMO_ID
+        entry.connection_id == LEGACY_DEMO_CONNECTION_ID
           || !ids.insert(entry.connection_id.as_str())
           || entry.name.is_empty()
           || entry.name.len() > 80
@@ -95,7 +96,7 @@ impl Snapshot {
           || entry.name.chars().any(char::is_control)
           || entry.model_id.trim() != entry.model_id
       })
-      || (self.active_connection_id != DEMO_ID && !ids.contains(self.active_connection_id.as_str()))
+      || saved_selection(&self.active_connection_id).is_some_and(|id| !ids.contains(id))
     {
       return Err("The synced provider settings are invalid.".into());
     }
@@ -180,10 +181,8 @@ impl Snapshot {
           .into(),
       );
     }
-    if eligible(current.active()) || current.active().is_demo() {
-      next
-        .active_connection_id
-        .clone_from(&self.active_connection_id);
+    if current.active().is_none_or(eligible) {
+      next.active_connection_id = saved_selection(&self.active_connection_id).map(str::to_owned);
     }
     credential_removals.sort_unstable();
     Ok((next, credential_removals))
@@ -229,7 +228,7 @@ mod tests {
       saved("private", "openai", "https://private.example.invalid/v1"),
       saved("custom", "custom", "https://public.example.invalid/v1"),
     ]);
-    local.active_connection_id = "private".into();
+    local.active_connection_id = Some("private".into());
     let snapshot = Snapshot::capture(&local, Some("public"));
     assert_eq!(
       serde_json::to_value(snapshot).unwrap(),
@@ -247,15 +246,13 @@ mod tests {
     let openai = saved("fixture", "openai", built_in_endpoint("openai").unwrap());
     let private = saved("private", "custom", "https://private.example.invalid/v1");
     local.connections.extend([openai.clone(), private.clone()]);
-    local
-      .active_connection_id
-      .clone_from(&private.connection_id);
+    local.active_connection_id = Some(private.connection_id.clone());
     let mut remote = Snapshot::capture(&local, Some("fixture"));
     remote.connections[0].model_id = "updated-model".into();
     assert!(remote.validate().is_ok());
     let (next, removed) = remote.settings(&local).unwrap();
     assert!(removed.is_empty());
-    assert_eq!(next.active(), &private);
+    assert_eq!(next.active(), Some(&private));
     assert_eq!(
       next.connection("fixture").unwrap().model_id,
       "updated-model"

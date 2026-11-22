@@ -34,10 +34,7 @@ export function ModelPicker({
       </label>
       {models && models.models.length > 0 && (
         <details className="model-browser" open>
-          <summary>
-            {models.models.length} {models.source === 'catalogue' ? 'catalogue' : 'available'}{' '}
-            models
-          </summary>
+          <summary>{models.models.length} available models</summary>
           <label>
             <span className="visually-hidden">Find a model</span>
             <input
@@ -70,9 +67,6 @@ export function ModelPicker({
           </div>
           {matches.length > 40 && (
             <p className="status">Showing 40 matches. Refine your search to see more.</p>
-          )}
-          {models.source === 'catalogue' && (
-            <p className="status">Catalogue entries may not be available to this account.</p>
           )}
         </details>
       )}

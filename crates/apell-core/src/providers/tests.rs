@@ -9,7 +9,8 @@ fn presets_advertise_only_supported_embedded_auth_and_exact_defaults() {
     .map(|provider| provider.provider_id.as_str())
     .collect::<HashSet<_>>();
   assert_eq!(ids.len(), providers.len());
-  assert_eq!(providers.len(), Registry::builtin().ids().len() + 2);
+  assert_eq!(providers.len(), Registry::builtin().ids().len() + 1);
+  assert!(!ids.contains("demo"));
   for provider in &providers {
     assert_eq!(
       Some(provider.base_url.as_str()),

@@ -95,12 +95,12 @@ async fn snapshot() -> Result<Value, HostError> {
   let mut target = selection::load(&id, None).await?;
   let messages = storage::messages(&id).await?;
   if target.is_none() && messages.is_empty() {
-    if let Ok(config) = apell_guest::call::<Value>("llm.config", json!({})).await {
-      if config["mode"] == "provider" {
-        let default: selection::Target = serde_json::from_value(config).map_err(HostError::new)?;
-        selection::choose(&id, default.clone()).await?;
-        target = Some(default);
-      }
+    target = apell_guest::call::<selection::Target>("llm.config", json!({}))
+      .await
+      .ok()
+      .filter(selection::Target::valid);
+    if let Some(default) = &target {
+      selection::choose(&id, default.clone()).await?;
     }
   }
   let mut value = state::snapshot();

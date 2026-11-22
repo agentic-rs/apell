@@ -9,7 +9,9 @@ pub struct Target {
 }
 
 impl Target {
-  fn valid(&self) -> bool {
+  pub(super) fn valid(&self) -> bool {
+    // Older hosts attributed turns to this placeholder. Keep those chats in
+    // history without treating their placeholder as a route for new messages.
     !self.connection_id.is_empty()
       && self.connection_id != "local-demo"
       && !self.model_id.trim().is_empty()

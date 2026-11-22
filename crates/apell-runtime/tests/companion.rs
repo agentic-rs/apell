@@ -61,9 +61,9 @@ impl HostServices for Services {
         method if method.starts_with("sqlite.") => sql
           .dispatch("actor", "chatbot", method, params)
           .map_err(HostError::new),
-        "llm.config" => {
-          Ok(json!({"mode":"demo","connection_id":"local-demo","model_id":"local-demo"}))
-        }
+        "llm.config" => Err(HostError::new(
+          "Activate a model connection in Apell Settings.",
+        )),
         "llm.generate" => {
           let (complete, result) = oneshot::channel();
           start
@@ -175,6 +175,16 @@ async fn generation_survives_a_detached_view_and_replays_only_on_its_original_ro
   let original = app.snapshot().await;
   let id = original["conversation_id"].as_str().unwrap().to_owned();
   assert!(original["target"].is_null());
+  let error = app
+    .runtime
+    .invoke(
+      "start_send",
+      json!({"conversation_id":id,"content":"Before choosing a model"}),
+    )
+    .await
+    .unwrap_err();
+  assert_eq!(error.message, "Choose a provider and model before sending.");
+  assert_eq!(app.snapshot().await["messages"], json!([]));
   assert_eq!(
     app
       .invoke(

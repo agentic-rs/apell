@@ -33,7 +33,7 @@ export function LlmModelPicker({ choice }: { choice: ModelChoice }) {
     getSettings()
       .then((saved) => {
         if (closed) return;
-        const connections = saved.connections.filter((entry) => entry.provider_id !== 'demo');
+        const { connections } = saved;
         const prior = connections.find(
           (entry) => entry.connection_id === choice.current?.connection_id,
         );
@@ -54,7 +54,7 @@ export function LlmModelPicker({ choice }: { choice: ModelChoice }) {
     };
   }, [choice]);
 
-  const connections = settings?.connections.filter((entry) => entry.provider_id !== 'demo') ?? [];
+  const connections = settings?.connections ?? [];
   const connection = connections.find((entry) => entry.connection_id === connection_id);
   const usable = settings && connection && selectableProvider(settings, connection);
   const selected =

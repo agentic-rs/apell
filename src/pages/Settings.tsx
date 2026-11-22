@@ -95,8 +95,7 @@ export function Settings() {
                 ),
                 active_connection_id:
                   current.active_connection_id === connection_id
-                    ? (current.connections.find((item) => item.provider_id === 'demo')
-                        ?.connection_id ?? '')
+                    ? null
                     : current.active_connection_id,
               },
           );
@@ -121,13 +120,21 @@ export function Settings() {
           <Icon name="add" />
         </button>
       </div>
-      <p>One active model, shared by your applets. Credentials stay in Apell.</p>
+      {settings && (
+        <p>
+          {!settings.connections.length
+            ? 'Add a connection to use a model in your applets.'
+            : settings.active_connection_id === null
+              ? 'Choose a connection to set the default model for your applets.'
+              : 'The active model is shared by your applets. Credentials stay in Apell.'}
+        </p>
+      )}
       {loading && !settings && (
         <p className="status connection-status" role="status">
           Loading connections…
         </p>
       )}
-      {settings && (
+      {!!settings?.connections.length && (
         <div className="connection-list">
           {settings.connections.map((connection) => {
             const active = settings.active_connection_id === connection.connection_id;

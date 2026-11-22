@@ -7,8 +7,9 @@ use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, path::Path};
 use uuid::Uuid;
 
-pub const DEMO_ID: &str = "local-demo";
-pub(crate) const MAX_CONNECTIONS: usize = 32;
+const SCHEMA_VERSION: u32 = 3;
+pub(crate) const LEGACY_DEMO_CONNECTION_ID: &str = "local-demo";
+pub(crate) const MAX_CONNECTIONS: usize = 31;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -45,10 +46,6 @@ impl Connection {
     }
   }
 
-  pub fn is_demo(&self) -> bool {
-    self.provider_id == "demo"
-  }
-
   pub fn is_oauth(&self) -> bool {
     matches!(self.provider_id.as_str(), "codex" | "github-copilot")
   }
@@ -64,15 +61,10 @@ impl Connection {
     })
   }
 
-  fn demo() -> Self {
-    Self {
-      connection_id: DEMO_ID.into(),
-      name: "Local demo".into(),
-      provider_id: "demo".into(),
-      base_url: "demo".into(),
-      model_id: DEMO_ID.into(),
-      credential: credential_ref(DEMO_ID),
-    }
+  fn is_legacy_demo(&self) -> bool {
+    self.connection_id == LEGACY_DEMO_CONNECTION_ID
+      || self.provider_id == "demo"
+      || self.base_url == "demo"
   }
 }
 
@@ -87,16 +79,16 @@ pub fn credential_ref(connection_id: &str) -> CredentialRef {
 #[serde(deny_unknown_fields)]
 pub struct Settings {
   pub schema_version: u32,
-  pub active_connection_id: String,
+  pub active_connection_id: Option<String>,
   pub connections: Vec<Connection>,
 }
 
 impl Default for Settings {
   fn default() -> Self {
     Self {
-      schema_version: 2,
-      active_connection_id: DEMO_ID.into(),
-      connections: vec![Connection::demo()],
+      schema_version: SCHEMA_VERSION,
+      active_connection_id: None,
+      connections: Vec::new(),
     }
   }
 }
@@ -109,8 +101,21 @@ impl Settings {
       if bytes.len() > 128 * 1024 {
         return Err("Saved model connections exceed their storage limit.".into());
       }
-      let saved: Self = serde_json::from_slice(&bytes)
+      let mut saved: Self = serde_json::from_slice(&bytes)
         .map_err(|_| "Saved model connections are invalid. They were preserved.")?;
+      if saved.schema_version == 2 {
+        if saved.active_connection_id.as_deref() == Some(LEGACY_DEMO_CONNECTION_ID)
+          || saved.active().is_some_and(Connection::is_legacy_demo)
+        {
+          saved.active_connection_id = None;
+        }
+        saved
+          .connections
+          .retain(|connection| !connection.is_legacy_demo());
+        saved.schema_version = SCHEMA_VERSION;
+        saved.persist(root)?;
+        return Ok(saved);
+      }
       saved.validate_storage()?;
       return Ok(saved);
     }
@@ -121,8 +126,8 @@ impl Settings {
         std::fs::read(&legacy_path).map_err(|_| "Could not read previous model settings.")?;
       let legacy: LlmConfig = serde_json::from_slice(&bytes)
         .map_err(|_| "Previous model settings are invalid. They were preserved.")?;
-      if legacy.base_url != "demo" {
-        settings.active_connection_id = legacy.connection_id.clone();
+      if legacy.base_url != "demo" && legacy.provider_id != "demo" {
+        settings.active_connection_id = Some(legacy.connection_id.clone());
         settings.connections.push(Connection {
           connection_id: legacy.connection_id,
           name: "Saved connection".into(),
@@ -143,10 +148,11 @@ impl Settings {
   fn validate_storage(&self) -> Result<(), String> {
     let mut ids = HashSet::new();
     let mut slots = HashSet::new();
-    if self.schema_version != 2
+    if self.schema_version != SCHEMA_VERSION
       || self.connections.len() > MAX_CONNECTIONS
       || self.connections.iter().any(|connection| {
-        connection.connection_id.is_empty()
+        connection.is_legacy_demo()
+          || connection.connection_id.is_empty()
           || connection.connection_id.len() > 128
           || !connection
             .connection_id
@@ -161,8 +167,7 @@ impl Settings {
             .bytes()
             .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
       })
-      || self.connection(DEMO_ID).is_err()
-      || self.connection(&self.active_connection_id).is_err()
+      || self.active_connection_id.is_some() && self.active().is_none()
     {
       return Err("Saved model connections are invalid. They were preserved.".into());
     }
@@ -183,10 +188,11 @@ impl Settings {
       .ok_or_else(|| "This model connection no longer exists.".into())
   }
 
-  pub fn active(&self) -> &Connection {
+  pub fn active(&self) -> Option<&Connection> {
     self
-      .connection(&self.active_connection_id)
-      .expect("validated active connection")
+      .active_connection_id
+      .as_deref()
+      .and_then(|id| self.connection(id).ok())
   }
 
   pub fn prepare_save(&self, input: &SaveConnection) -> Result<Connection, String> {
@@ -195,9 +201,6 @@ impl Settings {
       .as_deref()
       .map(|id| self.connection(id))
       .transpose()?;
-    if previous.is_some_and(Connection::is_demo) || input.provider_id == "demo" {
-      return Err("The local demo connection cannot be edited.".into());
-    }
     if previous.is_none() && self.connections.len() >= MAX_CONNECTIONS {
       return Err("You can save up to 31 provider connections.".into());
     }
@@ -236,7 +239,7 @@ impl Settings {
       base_url,
       model_id: input.model_id.trim().into(),
     };
-    if previous.is_some_and(|old| old.connection_id == self.active_connection_id)
+    if previous.is_some_and(|old| self.active_connection_id.as_ref() == Some(&old.connection_id))
       && connection.model_id.is_empty()
     {
       return Err("Choose a model before changing the active connection.".into());
@@ -256,8 +259,8 @@ impl Settings {
         .iter()
         .position(|entry| entry.connection_id == id)
     }) {
-      if self.active_connection_id == self.connections[index].connection_id {
-        self.active_connection_id = connection.connection_id.clone();
+      if self.active_connection_id.as_ref() == Some(&self.connections[index].connection_id) {
+        self.active_connection_id = Some(connection.connection_id.clone());
       }
       self.connections[index] = connection;
     } else {
@@ -318,7 +321,7 @@ mod tests {
     std::fs::write(&path, &previous).unwrap();
     let mut next = Settings::default();
     let connection = next.prepare_save(&input()).unwrap();
-    next.active_connection_id = connection.connection_id.clone();
+    next.active_connection_id = Some(connection.connection_id.clone());
     next.replace(None, connection);
     let bytes = serde_json::to_vec(&next).unwrap();
 
@@ -340,7 +343,7 @@ mod tests {
     let mut next = Settings::default();
     let connection = next.prepare_save(&input()).unwrap();
     let expected_slot = connection.credential.account.clone();
-    next.active_connection_id = connection.connection_id.clone();
+    next.active_connection_id = Some(connection.connection_id.clone());
     next.replace(None, connection);
     let bytes = serde_json::to_vec(&next).unwrap();
 
@@ -353,7 +356,10 @@ mod tests {
     assert!(result.is_ok());
     let published = Settings::load(directory.path()).unwrap();
     assert_eq!(published.active_connection_id, next.active_connection_id);
-    assert_eq!(published.active().credential.account, expected_slot);
+    assert_eq!(
+      published.active().unwrap().credential.account,
+      expected_slot
+    );
     assert_eq!(std::fs::read(path).unwrap(), bytes);
   }
 
@@ -386,7 +392,7 @@ mod tests {
     let mut settings = Settings::default();
     let first = settings.prepare_save(&input()).unwrap();
     settings.replace(None, first.clone());
-    settings.active_connection_id = first.connection_id.clone();
+    settings.active_connection_id = Some(first.connection_id.clone());
     let mut change = input();
     change.connection_id = Some(first.connection_id.clone());
     change.name = "Renamed".into();
@@ -401,7 +407,10 @@ mod tests {
     let next = settings.prepare_save(&change).unwrap();
     assert_ne!(next.connection_id, first.connection_id);
     settings.replace(Some(&first.connection_id), next.clone());
-    assert_eq!(settings.active_connection_id, next.connection_id);
+    assert_eq!(
+      settings.active_connection_id.as_ref(),
+      Some(&next.connection_id)
+    );
   }
 
   #[test]
@@ -411,7 +420,7 @@ mod tests {
     draft.model_id.clear();
     let connection = settings.prepare_save(&draft).unwrap();
     settings.replace(None, connection.clone());
-    settings.active_connection_id = connection.connection_id.clone();
+    settings.active_connection_id = Some(connection.connection_id.clone());
     draft.connection_id = Some(connection.connection_id);
     assert!(settings.prepare_save(&draft).is_err());
     draft.connection_id = None;
@@ -422,12 +431,42 @@ mod tests {
   }
 
   #[test]
+  fn upgrading_settings_removes_demo_but_preserves_real_connections_and_selection() {
+    let connection = Settings::default().prepare_save(&input()).unwrap();
+    let demo = Connection {
+      connection_id: LEGACY_DEMO_CONNECTION_ID.into(),
+      name: "Local demo".into(),
+      provider_id: "demo".into(),
+      base_url: "demo".into(),
+      model_id: LEGACY_DEMO_CONNECTION_ID.into(),
+      credential: credential_ref(LEGACY_DEMO_CONNECTION_ID),
+    };
+    for (previous_active, expected_active) in [(&demo, None), (&connection, Some(&connection))] {
+      let directory = tempfile::tempdir().unwrap();
+      let path = directory.path().join("llm-connections.json");
+      let old = Settings {
+        schema_version: 2,
+        active_connection_id: Some(previous_active.connection_id.clone()),
+        connections: vec![demo.clone(), connection.clone()],
+      };
+      std::fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+      let upgraded = Settings::load(directory.path()).unwrap();
+      assert_eq!(upgraded.active(), expected_active);
+      assert_eq!(upgraded.connections, [connection.clone()]);
+      let persisted: Settings = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+      assert_eq!(persisted.schema_version, SCHEMA_VERSION);
+      assert_eq!(persisted.active(), expected_active);
+      assert_eq!(persisted.connections, upgraded.connections);
+    }
+  }
+
+  #[test]
   fn migration_keeps_identity_and_old_credential_reference_without_copying_secrets() {
     let dir = tempfile::tempdir().unwrap();
     let old = serde_json::json!({"base_url":"https://example.invalid/v1","model_id":"model","connection_id":"previous-id"});
     std::fs::write(dir.path().join("llm.json"), old.to_string()).unwrap();
     let settings = Settings::load(dir.path()).unwrap();
-    let active = settings.active();
+    let active = settings.active().unwrap();
     assert_eq!(active.connection_id, "previous-id");
     assert_eq!(active.provider_id, "custom");
     assert_eq!(
@@ -436,7 +475,7 @@ mod tests {
     );
     assert!(matches!(active.credential.format, CredentialFormat::ApiKey));
     let reopened = Settings::load(dir.path()).unwrap();
-    assert_eq!(reopened.active().connection_id, active.connection_id);
+    assert_eq!(reopened.active(), Some(active));
     assert_eq!(
       std::fs::read_to_string(dir.path().join("llm.json")).unwrap(),
       old.to_string()
@@ -450,10 +489,13 @@ mod tests {
     std::fs::write(dir.path().join("llm.json"), br#"{"base_url":"https://example.invalid/v1///","model_id":"model","connection_id":"previous-id"}"#).unwrap();
     let settings = Settings::load(dir.path()).unwrap();
     let mut edit = input();
-    edit.connection_id = Some(settings.active_connection_id.clone());
-    edit.base_url = settings.active().base_url.clone();
+    edit.connection_id = settings.active_connection_id.clone();
+    edit.base_url = settings.active().unwrap().base_url.clone();
     let next = settings.prepare_save(&edit).unwrap();
-    assert_eq!(next.connection_id, settings.active_connection_id);
+    assert_eq!(
+      Some(&next.connection_id),
+      settings.active_connection_id.as_ref()
+    );
   }
 
   #[test]
@@ -465,9 +507,9 @@ mod tests {
     )
     .unwrap();
     let settings = Settings::load(dir.path()).unwrap();
-    assert!(validate_config(&settings.active().config()).is_err());
+    assert!(validate_config(&settings.active().unwrap().config()).is_err());
     let mut fixed = input();
-    fixed.connection_id = Some(settings.active_connection_id.clone());
+    fixed.connection_id = settings.active_connection_id.clone();
     fixed.key_action = KeyAction::Remove;
     assert!(settings.prepare_save(&fixed).is_ok());
   }

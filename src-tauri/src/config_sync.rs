@@ -5,7 +5,7 @@ use crate::{
   commands::blocking,
   host::Host,
   provider_commands::{commit_settings, finish_snapshot, read_account},
-  settings::{Settings, DEMO_ID},
+  settings::{Connection, Settings, LEGACY_DEMO_CONNECTION_ID},
 };
 use apell_core::bundles::{atomic_write, digest};
 use reqwest::{Method, StatusCode};
@@ -178,11 +178,15 @@ async fn save_state(host: &Host, key: &str, state: DeviceState) -> Result<(), St
 
 fn capture(settings: &Settings, state: &DeviceState) -> Snapshot {
   let preferred = state.cursor.as_ref().and_then(|cursor| {
-    (settings.active_connection_id == cursor.local_active
-      || snapshot::device_only(settings.active()))
+    (settings.active_connection_id.as_deref() == saved_selection(&cursor.local_active)
+      || settings.active().is_some_and(snapshot::device_only))
     .then_some(cursor.remote_active.as_str())
   });
   Snapshot::capture(settings, preferred)
+}
+
+fn saved_selection(id: &str) -> Option<&str> {
+  (id != LEGACY_DEMO_CONNECTION_ID).then_some(id)
 }
 
 async fn synchronize(
@@ -255,7 +259,7 @@ async fn synchronize(
     snapshot_hash: revision.snapshot.fingerprint()?,
     revision_id: revision.revision_id,
     remote_active: revision.snapshot.active_connection_id,
-    local_active,
+    local_active: local_active.unwrap_or_else(|| LEGACY_DEMO_CONNECTION_ID.to_owned()),
     updated_at: revision.updated_at,
   });
   let output = json!({"state": outcome, "status": status(Some(&state))});
@@ -313,7 +317,7 @@ async fn apply_remote(
   state: &DeviceState,
   local_hash: &str,
   remote: &Snapshot,
-) -> Result<String, String> {
+) -> Result<Option<String>, String> {
   let _gate = host.credential_gate.lock().await;
   let mut current = host.settings.lock().await;
   require_account(app, host, access).await?;
@@ -326,10 +330,15 @@ async fn apply_remote(
   let previous_active = current.active_connection_id.clone();
   let next = blocking(move || {
     // Keep a usable local default until credentials are entered on this device.
-    if !can_activate(&app, &next)? {
-      next.active_connection_id = previous_active;
-      if next.connection(&next.active_connection_id).is_err() || !can_activate(&app, &next)? {
-        next.active_connection_id = DEMO_ID.into();
+    if let Some(selected) = next.active() {
+      if !can_activate(&app, selected)? {
+        let previous = previous_active
+          .as_deref()
+          .and_then(|id| next.connection(id).ok());
+        next.active_connection_id = match previous {
+          Some(connection) if can_activate(&app, connection)? => previous_active,
+          _ => None,
+        };
       }
     }
     commit_settings(
@@ -346,9 +355,11 @@ async fn apply_remote(
   Ok(active)
 }
 
-fn can_activate(app: &AppHandle, settings: &Settings) -> Result<bool, String> {
-  let connection = settings.active();
-  if connection.is_demo() || matches!(connection.provider_id.as_str(), "custom" | "llama-cpp") {
+fn can_activate(app: &AppHandle, connection: &Connection) -> Result<bool, String> {
+  if apell_core::llm::validate_config(&connection.config()).is_err() {
+    return Ok(false);
+  }
+  if matches!(connection.provider_id.as_str(), "custom" | "llama-cpp") {
     return Ok(true);
   }
   Ok(read_account(app, connection)?.is_some())
@@ -460,13 +471,37 @@ mod tests {
   }
 
   #[test]
+  fn an_old_cursor_keeps_the_cloud_preference_when_no_model_is_active_locally() {
+    let mut cloud = snapshot("model");
+    cloud.active_connection_id = "fixture".into();
+    let (mut local, _) = cloud.settings(&Settings::default()).unwrap();
+    assert_eq!(local.active_connection_id.as_deref(), Some("fixture"));
+    local.active_connection_id = None;
+    let state = DeviceState {
+      enabled: true,
+      cursor: Some(Cursor {
+        revision_id: "fixture-revision".into(),
+        snapshot_hash: cloud.fingerprint().unwrap(),
+        remote_active: "fixture".into(),
+        local_active: LEGACY_DEMO_CONNECTION_ID.into(),
+        updated_at: String::new(),
+      }),
+    };
+    assert!(capture(&local, &state) == cloud);
+    assert_eq!(
+      Snapshot::capture(&local, None).active_connection_id,
+      LEGACY_DEMO_CONNECTION_ID
+    );
+  }
+
+  #[test]
   fn divergent_edits_and_cloud_removals_require_an_explicit_choice() {
     let local = snapshot("local-edit");
     let mut cursor = Cursor {
       revision_id: "ancestor".into(),
       snapshot_hash: snapshot("original").fingerprint().unwrap(),
-      remote_active: DEMO_ID.into(),
-      local_active: DEMO_ID.into(),
+      remote_active: LEGACY_DEMO_CONNECTION_ID.into(),
+      local_active: LEGACY_DEMO_CONNECTION_ID.into(),
       updated_at: String::new(),
     };
     let mut remote = Revision {

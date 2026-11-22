@@ -1,6 +1,6 @@
 use super::{
   event, generated,
-  media::{self, Attachments},
+  media::Attachments,
   platform::{ApellBody, ApellPlatform, PlatformError},
   sse::SseParser,
   tokn_config, validation, wire, Failure, LlmConfig, LlmEvent, LlmMediaFile, LlmMediaOutput,
@@ -9,10 +9,7 @@ use super::{
 };
 use reqwest::Client;
 use serde_json::{json, Map, Value};
-use std::{
-  collections::{BTreeMap, HashSet},
-  time::Duration,
-};
+use std::collections::{BTreeMap, HashSet};
 
 pub(super) struct Output {
   request_id: String,
@@ -586,48 +583,6 @@ fn provider_error(value: &Value, status: Option<u16>) -> Failure {
     retryable: status.is_some_and(|status| status == 429 || status >= 500),
     ..Failure::new("provider_error", &message)
   }
-}
-
-pub(super) async fn demo(
-  request: &LlmRequest,
-  output: &mut Output,
-  emit: &impl Fn(LlmEvent),
-) -> Result<LlmStatus, Failure> {
-  let prompt = request
-    .messages
-    .iter()
-    .rev()
-    .find(|message| message["role"] == "user")
-    .map(|message| match media::parts(message) {
-      Some(parts) => parts
-        .iter()
-        .filter_map(|part| part["text"].as_str())
-        .flat_map(str::chars)
-        .take(200)
-        .collect::<String>(),
-      None => message["content"]
-        .as_str()
-        .unwrap_or_default()
-        .chars()
-        .take(200)
-        .collect(),
-    })
-    .unwrap_or_default();
-  let answer = format!("This is the local demo provider. Your message was: “{prompt}”\n\nThe applet is running Rust WebAssembly, and this conversation is stored by the shell’s native SQLite service. Configure a provider in the shell settings for real model responses.");
-  for text in answer.split_inclusive(' ') {
-    tokio::time::sleep(Duration::from_millis(18)).await;
-    output.charge(text.len())?;
-    if request.stream {
-      output.text(text, emit);
-    } else {
-      output.content.push_str(text);
-    }
-  }
-  output
-    .message
-    .insert("content".into(), json!(output.content));
-  output.finish_reason = Some("stop".into());
-  output.finish(request)
 }
 
 pub(super) async fn remote(

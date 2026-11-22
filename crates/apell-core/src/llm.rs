@@ -211,11 +211,9 @@ impl LlmService {
     validation::request(request)?;
     tokn_config::validate_account(config, account.as_ref())?;
     let (mut cancellation, guard) = self.register(session_id, &request.request_id)?;
-    let protocol = (config.base_url != "demo")
-      .then(|| wire::protocol(config))
-      .transpose()?;
+    let protocol = wire::protocol(config)?;
     if let Some(output) = &request.output {
-      if !protocol.is_some_and(|protocol| protocol.supports_output(config, output)) {
+      if !protocol.supports_output(config, output) {
         return Err(Failure::unsupported(output.capability()));
       }
       if files.is_none() {
@@ -233,31 +231,10 @@ impl LlmService {
       .filter_map(|part| part["type"].as_str())
       .filter(|kind| *kind != "text");
     let first_file = file_kinds.next();
-    if protocol.is_none()
-      && (!request.tools.is_empty()
-        || request.messages.iter().any(|message| {
-          message
-            .get("tool_calls")
-            .and_then(serde_json::Value::as_array)
-            .is_some_and(|calls| !calls.is_empty())
-            || message["role"] == "tool"
-        }))
+    if !protocol.supports_audio_input()
+      && (first_file == Some("audio") || file_kinds.any(|kind| kind == "audio"))
     {
-      return Err(Failure::unsupported("tools"));
-    }
-    if let Some(kind) = first_file {
-      let Some(protocol) = protocol else {
-        return Err(Failure::unsupported(match kind {
-          "image" => "image_input",
-          "document" => "pdf_input",
-          _ => "audio_input",
-        }));
-      };
-      if !protocol.supports_audio_input()
-        && (kind == "audio" || file_kinds.any(|kind| kind == "audio"))
-      {
-        return Err(Failure::unsupported("audio_input"));
-      }
+      return Err(Failure::unsupported("audio_input"));
     }
     emit(LlmEvent {
       provenance: Some(output.provenance.clone()),
@@ -281,9 +258,6 @@ impl LlmService {
     // failures return the exact partial answer regardless of event delivery order.
     let status = {
       let work = async {
-        if protocol.is_none() {
-          return provider::demo(request, output, emit).await;
-        }
         let attachments = if first_file.is_some() {
           let worker_permit = permit.take();
           let access = files

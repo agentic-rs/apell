@@ -39,7 +39,7 @@ export interface LlmChooseModelOptions {
 }
 
 export interface LlmConfiguration extends LlmSelection {
-  mode: 'demo' | 'provider';
+  mode: 'provider';
   capabilities: LlmCapabilities;
 }
 

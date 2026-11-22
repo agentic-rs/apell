@@ -144,6 +144,8 @@ function updateControls(): void {
   stopButton.hidden = !activeRequest;
   stopButton.disabled = !!activeRequest?.stopping;
   modelButton.disabled = submitting;
+  const chooseButton = messagesElement.querySelector<HTMLButtonElement>('.choose-model');
+  if (chooseButton) chooseButton.disabled = submitting;
   element<HTMLButtonElement>('.header-new').disabled = submitting;
   element<HTMLButtonElement>('.history-toggle').disabled = !ready || changingView;
   history.update(conversations, currentId, {
@@ -226,14 +228,19 @@ function renderMessages(messages: Message[], switched: boolean): void {
   if (messages.length === 0) {
     const empty = document.createElement('div');
     empty.className = 'empty-state';
-    empty.innerHTML = `<h2>How can I help?</h2><p>A question, an idea, a fresh perspective.</p><div class="suggestions"><button type="button">Brainstorm an idea</button><button type="button">Explain something</button><button type="button">Make a plan</button></div>`;
-    for (const button of empty.querySelectorAll<HTMLButtonElement>('button')) {
-      button.addEventListener('click', () => {
-        textarea.value = button.textContent ?? '';
-        resizeInput();
-        updateControls();
-        textarea.focus({ preventScroll: true });
-      });
+    if (selected) {
+      empty.innerHTML = `<h2>How can I help?</h2><p>A question, an idea, a fresh perspective.</p><div class="suggestions"><button type="button">Brainstorm an idea</button><button type="button">Explain something</button><button type="button">Make a plan</button></div>`;
+      for (const button of empty.querySelectorAll<HTMLButtonElement>('button')) {
+        button.addEventListener('click', () => {
+          textarea.value = button.textContent ?? '';
+          resizeInput();
+          updateControls();
+          textarea.focus({ preventScroll: true });
+        });
+      }
+    } else {
+      empty.innerHTML = `<h2>No model selected</h2><p>You can add a provider connection in Apell Settings.</p><div class="suggestions"><button class="choose-model" type="button">Choose model</button></div>`;
+      empty.querySelector('button')?.addEventListener('click', chooseModel);
     }
     messagesElement.appendChild(empty);
     messagesElement.scrollTop = 0;
@@ -262,8 +269,7 @@ async function applySnapshot(view: Snapshot): Promise<void> {
   let modelError: unknown;
   if (view.target) {
     try {
-      const config = await llm.config(view.target);
-      if (config.mode === 'provider') model = config;
+      model = await llm.config(view.target);
     } catch (error) {
       modelError = error;
     }
@@ -294,15 +300,16 @@ async function applySnapshot(view: Snapshot): Promise<void> {
     ? `Change provider and model (${label})`
     : 'Choose a provider and model';
   modelButton.setAttribute('aria-label', modelButton.title);
+  modelButton.hidden = !model && !view.messages.length;
   footer.textContent = view.messages.length
-    ? 'Changing models starts a new chat.'
-    : model
-      ? ''
-      : 'Choose a model to start chatting.';
+    ? model
+      ? 'Changing models starts a new chat.'
+      : 'Choose a model to start a new chat.'
+    : '';
   footer.hidden = !footer.textContent;
   showError(modelError ?? view.error ?? undefined);
-  renderHistory();
   renderMessages(view.messages, switched);
+  renderHistory();
 }
 
 // Subscribe before the first snapshot, coalescing refreshes during a slow host
@@ -402,13 +409,14 @@ function stopReply(): void {
 }
 stopButton.addEventListener('click', stopReply);
 element<HTMLButtonElement>('.header-new').addEventListener('click', newConversation);
-modelButton.addEventListener('click', () => {
+function chooseModel(): void {
   void changeView(async () => {
     const result = await llm.chooseModel(selected ? { current: targetOf(selected) } : {});
     if (result)
       await applet.invoke('choose_model', { conversation_id: currentId, target: targetOf(result) });
   });
-});
+}
+modelButton.addEventListener('click', chooseModel);
 
 async function boot(): Promise<void> {
   applet.onEvent((event) => {

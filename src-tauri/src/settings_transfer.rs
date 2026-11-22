@@ -18,7 +18,7 @@ use zeroize::Zeroizing;
 pub const TRANSFER_PREFIX: &str = "apell-settings:v1:";
 pub const MAX_PAYLOAD_BYTES: usize = 256 * 1024;
 pub const MAX_QR_BYTES: usize = 1200;
-const MAX_TRANSFER_CONNECTIONS: usize = MAX_CONNECTIONS - 1;
+const MAX_TRANSFER_CONNECTIONS: usize = MAX_CONNECTIONS;
 const SALT_BYTES: usize = 16;
 const NONCE_BYTES: usize = 12;
 const TAG_BYTES: usize = 16;
@@ -121,7 +121,7 @@ impl TransferConnection {
   fn prepare(&self, scratch: &Settings) -> Result<(Connection, Option<Zeroizing<String>>), String> {
     // The ordinary editor accepts a temporary empty model while drafting. A
     // transfer can only create a complete connection with a remote endpoint.
-    if self.model_id.trim().is_empty() || self.base_url.trim().trim_end_matches('/') == "demo" {
+    if self.model_id.trim().is_empty() {
       return Err("An exported connection is missing a valid endpoint or model.".into());
     }
     let connection = scratch.prepare_save(&SaveConnection {
@@ -345,9 +345,6 @@ async fn export_archive(app: AppHandle, connection_ids: Vec<String>) -> Result<A
       let scratch = Settings::default();
       let mut connections = Vec::with_capacity(saved.len());
       for connection in saved {
-        if connection.is_demo() {
-          return Err("Local demo does not need to be exported.".into());
-        }
         // Device credentials are never read for transfer, even for old
         // settings that happen to have a credential in the vault.
         let api_key = if connection.is_oauth() {
@@ -505,7 +502,7 @@ mod tests {
     let active = existing.connection_id.clone();
     let old_slot = existing.credential.account.clone();
     original.replace(None, existing);
-    original.active_connection_id = active.clone();
+    original.active_connection_id = Some(active.clone());
 
     let mut repeated = connection(" Existing ", Some("fixture-replacement"));
     repeated.base_url.push('/');
@@ -520,7 +517,10 @@ mod tests {
     .unwrap();
     assert_eq!(plan.added, 1);
     assert_eq!(plan.credentials.len(), 1);
-    assert_eq!(plan.settings.active_connection_id, active);
+    assert_eq!(
+      plan.settings.active_connection_id.as_deref(),
+      Some(active.as_str())
+    );
     assert_eq!(
       plan
         .settings
@@ -530,9 +530,9 @@ mod tests {
         .account,
       old_slot
     );
-    assert_eq!(plan.settings.connections.len(), 3);
+    assert_eq!(plan.settings.connections.len(), 2);
 
-    let saved = &plan.settings.connections[2];
+    let saved = &plan.settings.connections[1];
     let (slot, encoded) = &plan.credentials[0];
     assert_eq!(slot, &saved.credential.account);
     assert_ne!(slot, &old_slot);

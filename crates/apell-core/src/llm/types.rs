@@ -22,29 +22,12 @@ fn new_connection_id() -> String {
   Uuid::new_v4().to_string()
 }
 
-impl Default for LlmConfig {
-  fn default() -> Self {
-    Self {
-      provider_id: "demo".into(),
-      base_url: "demo".into(),
-      model_id: "local-demo".into(),
-      connection_id: new_connection_id(),
-    }
-  }
-}
-
 impl LlmConfig {
   pub fn capabilities(&self) -> LlmCapabilities {
     // An arbitrary compatible endpoint does not advertise model capabilities.
     // Do not infer them from its URL, model name, or lack of reasoning output.
-    let state = if self.base_url == "demo" {
-      CapabilityState::Unsupported
-    } else {
-      CapabilityState::Unknown
-    };
-    let protocol = (self.base_url != "demo")
-      .then(|| super::wire::protocol(self).ok())
-      .flatten();
+    let state = CapabilityState::Unknown;
+    let protocol = super::wire::protocol(self).ok();
     let output = |supports| {
       if supports {
         state
@@ -68,7 +51,7 @@ impl LlmConfig {
     LlmProvenance {
       connection_id: self.connection_id.clone(),
       requested_model_id: self.model_id.clone(),
-      model_id: (self.base_url == "demo").then(|| "local-demo".into()),
+      model_id: None,
     }
   }
 }

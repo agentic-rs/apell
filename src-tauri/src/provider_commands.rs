@@ -1,6 +1,6 @@
 use crate::{
   host::{string, Host},
-  settings::{Connection, CredentialFormat, KeyAction, SaveConnection, Settings, DEMO_ID},
+  settings::{Connection, CredentialFormat, KeyAction, SaveConnection, Settings},
 };
 use apell_core::{
   llm::{validate_config, LlmConfig, LlmRequest, LlmTarget},
@@ -186,9 +186,6 @@ pub(crate) fn read_account(
   app: &AppHandle,
   connection: &Connection,
 ) -> Result<Option<AccountConfig>, String> {
-  if connection.is_demo() {
-    return Ok(None);
-  }
   let saved = tauri_plugin_apell_credentials::read(app, &connection.credential.account)?;
   let Some(saved) = saved else {
     return Ok(None);
@@ -254,7 +251,10 @@ impl<'a> ModelRoute<'a> {
 
   pub fn resolve(&self, settings: &Settings) -> Result<Connection, String> {
     match self {
-      Self::Active => Ok(settings.active().clone()),
+      Self::Active => settings
+        .active()
+        .cloned()
+        .ok_or_else(|| "Activate a model connection in Apell Settings.".into()),
       Self::Saved(id) => settings.connection(id).cloned(),
       Self::Selected(target) => {
         let mut selected = settings.connection(&target.connection_id)?.clone();
@@ -333,7 +333,7 @@ async fn current_account(
       blocking(move || tauri_plugin_apell_credentials::write(&app_write, &slot, Some(&saved)))
         .await?;
     }
-  } else if !connection.is_demo() {
+  } else {
     account = Some(providers::static_account(
       &connection.provider_id,
       &connection.connection_id,
@@ -429,8 +429,7 @@ pub async fn dispatch(
       let app_read = app.clone();
       let checked = connection.clone();
       blocking(move || {
-        if !checked.is_demo()
-          && !matches!(checked.provider_id.as_str(), "custom" | "llama-cpp")
+        if !matches!(checked.provider_id.as_str(), "custom" | "llama-cpp")
           && read_account(&app_read, &checked)?.is_none()
         {
           return Err("Add credentials before using this connection.".into());
@@ -439,7 +438,7 @@ pub async fn dispatch(
       })
       .await?;
       let mut next = current.clone();
-      next.active_connection_id = id.to_owned();
+      next.active_connection_id = Some(id.to_owned());
       let root = host.root.clone();
       let persist = next.clone();
       blocking(move || persist.persist(&root)).await?;
@@ -451,15 +450,12 @@ pub async fn dispatch(
       let _gate = host.credential_gate.lock().await;
       let mut current = host.settings.lock().await;
       let connection = current.connection(id)?.clone();
-      if connection.is_demo() {
-        return Err("The local demo connection cannot be removed.".into());
-      }
       let mut next = current.clone();
       next
         .connections
         .retain(|connection| connection.connection_id != id);
-      if next.active_connection_id == id {
-        next.active_connection_id = DEMO_ID.into();
+      if next.active_connection_id.as_deref() == Some(id) {
+        next.active_connection_id = None;
       }
       let persist = next.clone();
       let root = host.root.clone();
@@ -601,16 +597,16 @@ mod tests {
     assert_eq!(selected.model_id, "chosen-model");
     assert_eq!(selected.credential, saved.credential);
     assert_eq!(settings.connection(&target.connection_id).unwrap(), &saved);
-    assert!(ModelRoute::applet(None)
-      .resolve(&settings)
-      .unwrap()
-      .is_demo());
+    assert_eq!(
+      ModelRoute::applet(None).resolve(&settings).unwrap_err(),
+      "Activate a model connection in Apell Settings."
+    );
     let public = crate::host::public_config(&selected.config());
     assert_eq!(public["provider_name"], "OpenAI compatible");
     assert!(!public.to_string().contains(&saved.name));
     assert!(!public.to_string().contains(&saved.base_url));
     assert!(ModelRoute::Selected(&LlmTarget {
-      connection_id: DEMO_ID.into(),
+      connection_id: crate::settings::LEGACY_DEMO_CONNECTION_ID.into(),
       ..target.clone()
     })
     .resolve(&settings)

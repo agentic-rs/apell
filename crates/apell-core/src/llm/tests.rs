@@ -9,32 +9,33 @@ fn request(id: &str) -> LlmRequest {
   }
 }
 
+pub(super) fn config_at(base_url: &str) -> LlmConfig {
+  LlmConfig {
+    provider_id: "custom".into(),
+    base_url: base_url.into(),
+    model_id: "fixture-model".into(),
+    connection_id: "fixture-connection".into(),
+  }
+}
+
 #[test]
 fn validates_urls_schema_budget_and_tool_history() {
   for base_url in [
+    "demo",
     "file:///tmp/test",
     "http://provider.invalid/v1",
     "https://user:secret@provider.invalid/v1",
     "https://provider.invalid/v1?key=secret",
     "https://provider.invalid/v1#fragment",
   ] {
-    assert!(validate_config(&LlmConfig {
-      provider_id: "custom".into(),
-      base_url: base_url.into(),
-      ..Default::default()
-    })
-    .is_err());
+    assert!(validate_config(&config_at(base_url)).is_err());
   }
   for base_url in [
     "https://provider.invalid/v1/",
     "http://127.0.0.1:8000/v1",
     "http://[::1]:8000/v1",
   ] {
-    let config = LlmConfig {
-      provider_id: "custom".into(),
-      base_url: base_url.into(),
-      ..Default::default()
-    };
+    let config = config_at(base_url);
     assert_eq!(
       validation::completion_url(&config).unwrap().path(),
       "/v1/chat/completions"
@@ -65,12 +66,17 @@ fn validates_urls_schema_budget_and_tool_history() {
 
 #[tokio::test]
 async fn early_cancellation_and_close_are_scoped_and_release_registry() {
+  let pending_provider = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+  let config = config_at(&format!(
+    "http://{}/v1",
+    pending_provider.local_addr().unwrap()
+  ));
   let service = Arc::new(LlmService::new().unwrap());
   service.register_session("one").unwrap();
   service.register_session("two").unwrap();
   service.cancel("one", "early").unwrap();
   let result = service
-    .generate("one", request("early"), LlmConfig::default(), None, |_| {})
+    .generate("one", request("early"), config.clone(), None, |_| {})
     .await;
   assert_eq!(result.status, LlmStatus::Cancelled);
   assert!(service.register("two", "early").is_ok());
@@ -82,23 +88,20 @@ async fn early_cancellation_and_close_are_scoped_and_release_registry() {
   drop(guard);
   assert!(service.requests.lock().unwrap().active.is_empty());
   let spawned = service.clone();
+  let (started, mut ready) = watch::channel(false);
   let task = tokio::spawn(async move {
     spawned
-      .generate(
-        "one",
-        request("running"),
-        LlmConfig::default(),
-        None,
-        |_| {},
-      )
+      .generate("one", request("running"), config, None, move |event| {
+        if event.kind == "started" {
+          started.send_replace(true);
+        }
+      })
       .await
   });
-  for _ in 0..100 {
-    if !service.requests.lock().unwrap().active.is_empty() {
-      break;
-    }
-    tokio::task::yield_now().await;
-  }
+  tokio::time::timeout(Duration::from_secs(5), ready.wait_for(|started| *started))
+    .await
+    .unwrap()
+    .unwrap();
   service.close_session("one");
   assert_eq!(task.await.unwrap().status, LlmStatus::Cancelled);
   assert!(service.requests.lock().unwrap().active.is_empty());
@@ -117,66 +120,6 @@ fn stale_guard_cannot_remove_replacement_request() {
   assert_eq!(service.requests.lock().unwrap().active.len(), 1);
   drop(current);
   assert!(service.requests.lock().unwrap().active.is_empty());
-}
-
-#[tokio::test]
-async fn demo_result_matches_progress_and_returns_replayable_message() {
-  let service = LlmService::new().unwrap();
-  service.register_session("session").unwrap();
-  let events = Arc::new(Mutex::new(Vec::new()));
-  let sink = events.clone();
-  let result = service
-    .generate(
-      "session",
-      request("demo"),
-      LlmConfig::default(),
-      None,
-      move |event| sink.lock().unwrap().push(event),
-    )
-    .await;
-  assert_eq!(result.status, LlmStatus::Completed);
-  assert_eq!(result.provenance.model_id.as_deref(), Some("local-demo"));
-  {
-    let events = events.lock().unwrap();
-    assert_eq!(events.first().unwrap().kind, "started");
-    assert_eq!(
-      events
-        .iter()
-        .filter(|event| event.kind == "text_delta")
-        .map(|event| event.text.as_str())
-        .collect::<String>(),
-      result.content
-    );
-    assert!(events
-      .iter()
-      .all(|event| matches!(event.kind.as_str(), "started" | "text_delta")));
-    assert_eq!(
-      result.message.as_ref().unwrap(),
-      &json!({"role":"assistant", "content":result.content})
-    );
-  }
-  let mut tools = request("tools");
-  tools.tools.push(LlmToolDefinition {
-    name: "search".into(),
-    description: None,
-    parameters: json!({}),
-  });
-  assert_eq!(
-    service
-      .generate("session", tools.clone(), LlmConfig::default(), None, |_| {})
-      .await
-      .status,
-    LlmStatus::Unsupported
-  );
-  let mut buffered = request("buffered");
-  buffered.stream = false;
-  let result = service
-    .generate("session", buffered, LlmConfig::default(), None, |event| {
-      assert_eq!(event.kind, "started");
-    })
-    .await;
-  assert_eq!(result.status, LlmStatus::Completed);
-  assert!(result.message.is_some());
 }
 
 #[test]

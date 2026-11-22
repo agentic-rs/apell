@@ -9,9 +9,7 @@ use tokn_sdk::policy::{CanonicalAuthority, InvalidAuthority, InvalidHost};
 impl LlmTarget {
   /// Validate the exact snapshot before reading credentials or contacting Tokn.
   pub fn validate_for(&self, config: &LlmConfig) -> Result<(), String> {
-    if config.provider_id == "demo"
-      || config.base_url == "demo"
-      || self.connection_id != config.connection_id
+    if self.connection_id != config.connection_id
       || self.model_id != config.model_id
       || self.model_id != self.model_id.trim()
     {
@@ -31,11 +29,9 @@ pub fn validate_config(config: &LlmConfig) -> Result<(), String> {
   if !valid_id(&config.connection_id) {
     return Err("The connection identity is invalid.".into());
   }
-  if config.base_url != "demo" {
-    // Settings and generation must admit the same endpoint. Compile only the
-    // in-memory rules here; this reads no credentials and performs no I/O.
-    super::tokn_config::execution_rules(config)?;
-  }
+  // Settings and generation must admit the same endpoint. Compile only the
+  // in-memory rules here; this reads no credentials and performs no I/O.
+  super::tokn_config::execution_rules(config)?;
   Ok(())
 }
 
@@ -417,7 +413,6 @@ mod tests {
   #[test]
   fn settings_preserve_normalized_urls_localhost_and_model_validation() {
     for url in [
-      "demo",
       "https://EXAMPLE.invalid:443/tenant/v1///",
       "https://xn--bcher-kva.example/v1",
       "https://bücher.example/v1",

@@ -650,7 +650,7 @@ mod tests {
     assert_eq!(failed.unwrap_err(), "fixture disk failure");
     assert!(vault.borrow().is_empty());
     assert!(get(&host.provider_jobs, &id).unwrap().oauth.is_some());
-    assert_eq!(host.settings.lock().await.connections.len(), 1);
+    assert!(host.settings.lock().await.connections.is_empty());
     assert_eq!(
       std::fs::read(directory.path().join("llm-connections.json")).unwrap(),
       original
@@ -679,10 +679,9 @@ mod tests {
       serde_json::from_str(vault.borrow().get(&saved.credential.account).unwrap()).unwrap();
     assert_eq!(stored.id, saved.connection_id);
     assert!(get(&host.provider_jobs, &id).is_err());
-    assert_eq!(
-      Settings::load(directory.path()).unwrap().connections.len(),
-      2
-    );
+    let settings = Settings::load(directory.path()).unwrap();
+    assert!(settings.active().is_none());
+    assert_eq!(settings.connections, [saved]);
   }
 
   #[tokio::test]
@@ -839,7 +838,7 @@ mod tests {
       .unwrap()
       .get(&reservation.login_id)
       .is_none());
-    assert_eq!(host.settings.lock().await.connections.len(), 1);
+    assert!(host.settings.lock().await.connections.is_empty());
   }
 
   #[tokio::test]

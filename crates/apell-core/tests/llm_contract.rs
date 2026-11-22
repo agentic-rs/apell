@@ -46,7 +46,7 @@ impl Server {
       provider_id: "custom".into(),
       base_url: format!("http://{}/v1", listener.local_addr().unwrap()),
       model_id: "requested-alias".into(),
-      ..LlmConfig::default()
+      connection_id: uuid::Uuid::new_v4().to_string(),
     };
     let captured = Arc::new(Mutex::new(Vec::new()));
     let received = captured.clone();
@@ -270,6 +270,48 @@ async fn generate(
     .unwrap()
     .contains_key("continuation_id"));
   (result, events)
+}
+
+#[tokio::test]
+async fn provider_result_matches_progress_and_returns_replayable_message() {
+  let message = json!({"role":"assistant", "content":"Complete answer."});
+  let server = Server::start(vec![
+    Reply::Stream(
+      sse(json!({"model":"actual-model-revision", "choices":[{
+        "index":0, "delta":{"role":"assistant", "content":"Complete "}
+      }]}))
+        + &sse(json!({"choices":[{
+          "index":0, "delta":{"content":"answer."}, "finish_reason":"stop"
+        }]})),
+    ),
+    Reply::Json(completion(message.clone(), "stop")),
+  ])
+  .await;
+  let service = LlmService::new().unwrap();
+  service.register_session("session").unwrap();
+  let (streamed, events) = generate(&service, "session", input("streamed"), &server.config).await;
+  assert_eq!(streamed.status, LlmStatus::Completed);
+  assert_eq!(streamed.message.as_ref(), Some(&message));
+  assert_eq!(
+    streamed.provenance.model_id.as_deref(),
+    Some("actual-model-revision")
+  );
+  assert_eq!(events.first().unwrap().kind, "started");
+  assert_eq!(
+    events
+      .iter()
+      .filter(|event| event.kind == "text_delta")
+      .map(|event| event.text.as_str())
+      .collect::<String>(),
+    streamed.content
+  );
+  let mut buffered = input("buffered");
+  buffered.stream = false;
+  let (buffered, events) = generate(&service, "session", buffered, &server.config).await;
+  assert_eq!(buffered.status, LlmStatus::Completed);
+  assert_eq!(buffered.message, Some(message));
+  assert_eq!(events.len(), 1);
+  assert_eq!(events[0].kind, "started");
 }
 
 #[tokio::test]
@@ -551,7 +593,10 @@ async fn explicit_target_must_match_the_snapshot_and_never_reaches_the_provider_
   };
   let mut request = input("target");
   request.target = Some(target.clone());
-  for mismatch in [server.config.clone(), LlmConfig::default()] {
+  let mut other_connection = server.config.clone();
+  other_connection.connection_id = "different-connection".into();
+  other_connection.model_id.clone_from(&target.model_id);
+  for mismatch in [server.config.clone(), other_connection] {
     let result = service
       .generate("session", request.clone(), mismatch, None, |_| {})
       .await;

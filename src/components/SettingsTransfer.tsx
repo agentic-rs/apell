@@ -484,7 +484,6 @@ function TransferSheet({
 
 export function SettingsTransfer({ connections, providers, disabled, onImported }: TransferProps) {
   const [mode, setMode] = useState<TransferMode>();
-  const exportable = connections.filter((connection) => connection.provider_id !== 'demo');
   return (
     <section className="panel settings-transfer">
       <h2>Transfer connections</h2>
@@ -495,7 +494,7 @@ export function SettingsTransfer({ connections, providers, disabled, onImported 
         </button>
         <button
           type="button"
-          disabled={disabled || !exportable.length}
+          disabled={disabled || !connections.length}
           onClick={() => setMode('export')}
         >
           Export
@@ -505,7 +504,7 @@ export function SettingsTransfer({ connections, providers, disabled, onImported 
         <TransferSheet
           key={mode}
           mode={mode}
-          connections={exportable}
+          connections={connections}
           providers={providers}
           onClose={() => setMode(undefined)}
           onImported={onImported}

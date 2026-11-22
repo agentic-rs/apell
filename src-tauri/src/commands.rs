@@ -3,8 +3,8 @@ use crate::permissions::ManagedPermission;
 use crate::provider_commands::{snapshot, ModelRoute, ModelSnapshot};
 use crate::settings::Settings;
 use apell_core::llm::{
-  deserialize_target, LlmConfig, LlmEvent, LlmFailure, LlmFiles, LlmProvenance, LlmRequest,
-  LlmResult, LlmStatus, LlmTarget,
+  deserialize_target, LlmEvent, LlmFailure, LlmFiles, LlmProvenance, LlmRequest, LlmResult,
+  LlmStatus, LlmTarget,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -37,21 +37,36 @@ fn failed_generation(
   .map_err(|_| "Could not encode LLM result.".into())
 }
 
-enum OfflineModel {
-  Demo(LlmConfig),
-  Remote(LlmProvenance),
+fn invalid_selection(request: &LlmRequest, message: String) -> Result<Value, String> {
+  let Some(target) = &request.target else {
+    return Err(message);
+  };
+  failed_generation(
+    request.request_id.clone(),
+    target.provenance(),
+    LlmFailure {
+      code: "invalid_target".into(),
+      message,
+      capability: None,
+      retryable: false,
+    },
+  )
 }
 
-fn resolve_offline_model(
-  route: ModelRoute<'_>,
-  settings: &Settings,
-) -> Result<OfflineModel, String> {
-  let config = route.resolve(settings)?.config();
-  // Match the condition that selects the local implementation in LlmService.
-  if config.base_url == "demo" {
-    Ok(OfflineModel::Demo(config))
-  } else {
-    Ok(OfflineModel::Remote(config.provenance()))
+fn offline_generation(request: &LlmRequest, settings: &Settings) -> Result<Value, String> {
+  // Resolve only saved metadata. A model snapshot can refresh provider credentials.
+  match ModelRoute::applet(request.target.as_ref()).resolve(settings) {
+    Ok(connection) => failed_generation(
+      request.request_id.clone(),
+      connection.config().provenance(),
+      LlmFailure {
+        code: "network_disabled".into(),
+        message: NETWORK_DISABLED.into(),
+        capability: None,
+        retryable: false,
+      },
+    ),
+    Err(message) => invalid_selection(request, message),
   }
 }
 
@@ -321,32 +336,11 @@ pub async fn service_call(
     "llm.generate" => {
       let request: LlmRequest =
         serde_json::from_value(params).map_err(|_| "Invalid LLM request.")?;
+      if !session.manifest.network {
+        return offline_generation(&request, &*host.settings.lock().await);
+      }
       let route = ModelRoute::applet(request.target.as_ref());
-      let selected = if session.manifest.network {
-        snapshot(&app, &host, route).await
-      } else {
-        // Offline calls must never enter snapshot, which can refresh credentials
-        // over the network. Resolve once against the saved settings.
-        match resolve_offline_model(route, &*host.settings.lock().await) {
-          Ok(OfflineModel::Demo(config)) => Ok(ModelSnapshot {
-            config,
-            account: Ok(None),
-          }),
-          Ok(OfflineModel::Remote(provenance)) => {
-            return failed_generation(
-              request.request_id,
-              provenance,
-              LlmFailure {
-                code: "network_disabled".into(),
-                message: NETWORK_DISABLED.into(),
-                capability: None,
-                retryable: false,
-              },
-            );
-          }
-          Err(message) => Err(message),
-        }
-      };
+      let selected = snapshot(&app, &host, route).await;
       if !session.alive.load(Ordering::SeqCst) {
         return Err("Applet session is closed.".into());
       }
@@ -367,19 +361,7 @@ pub async fn service_call(
       };
       let ModelSnapshot { config, account } = match selected {
         Ok(snapshot) => snapshot,
-        Err(message) => {
-          let target = request.target.as_ref().ok_or_else(|| message.clone())?;
-          return failed_generation(
-            request.request_id,
-            target.provenance(),
-            LlmFailure {
-              code: "invalid_target".into(),
-              message,
-              capability: None,
-              retryable: false,
-            },
-          );
-        }
+        Err(message) => return invalid_selection(&request, message),
       };
       let key = match account {
         Ok(account) => account,
@@ -474,7 +456,7 @@ mod network_tests {
   use crate::settings::{credential_ref, Connection};
 
   #[test]
-  fn offline_generation_resolves_local_demo_and_denies_both_remote_routes() {
+  fn offline_generation_denies_configured_targets_and_reports_missing_selection() {
     let mut settings = Settings::default();
     let saved = Connection {
       connection_id: "remote".into(),
@@ -485,25 +467,31 @@ mod network_tests {
       credential: credential_ref("remote"),
     };
     settings.replace(None, saved);
-    assert!(matches!(
-      resolve_offline_model(ModelRoute::applet(None), &settings).unwrap(),
-      OfflineModel::Demo(config) if config.base_url == "demo"
-    ));
+    let mut request = LlmRequest {
+      request_id: "fixture".into(),
+      ..Default::default()
+    };
+    assert_eq!(
+      offline_generation(&request, &settings).unwrap_err(),
+      "Activate a model connection in Apell Settings."
+    );
     let target = LlmTarget {
       connection_id: "remote".into(),
       model_id: "selected-model".into(),
     };
-    assert!(matches!(
-      resolve_offline_model(ModelRoute::applet(Some(&target)), &settings).unwrap(),
-      OfflineModel::Remote(provenance)
-        if provenance.connection_id == "remote" && provenance.requested_model_id == "selected-model"
-    ));
-    settings.active_connection_id = "remote".into();
-    assert!(matches!(
-      resolve_offline_model(ModelRoute::applet(None), &settings).unwrap(),
-      OfflineModel::Remote(provenance)
-        if provenance.connection_id == "remote" && provenance.requested_model_id == "default-model"
-    ));
+    request.target = Some(target);
+    let selected = offline_generation(&request, &settings).unwrap();
+    assert_eq!(selected["error"]["code"], "network_disabled");
+    assert_eq!(selected["provenance"]["connection_id"], "remote");
+    assert_eq!(
+      selected["provenance"]["requested_model_id"],
+      "selected-model"
+    );
+    settings.active_connection_id = Some("remote".into());
+    request.target = None;
+    let active = offline_generation(&request, &settings).unwrap();
+    assert_eq!(active["error"]["code"], "network_disabled");
+    assert_eq!(active["provenance"]["requested_model_id"], "default-model");
   }
 }
 

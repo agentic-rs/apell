@@ -27,7 +27,6 @@ pub struct ProviderModel {
 #[serde(rename_all = "snake_case")]
 pub enum ModelSource {
   Provider,
-  Catalogue,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -43,15 +42,6 @@ pub async fn discover_models(
   config: &LlmConfig,
   account: Option<AccountConfig>,
 ) -> Result<ModelList, String> {
-  if config.provider_id == "demo" {
-    return Ok(ModelList {
-      models: vec![ProviderModel {
-        model_id: "local-demo".into(),
-        name: "Local demo".into(),
-      }],
-      source: ModelSource::Catalogue,
-    });
-  }
   let (url, headers) = model_request(config, account.as_ref())?;
   let mut request = http.get(url).timeout(Duration::from_secs(30));
   for (name, value) in headers.iter() {

@@ -184,7 +184,7 @@ pub fn public_config(config: &LlmConfig) -> Value {
     "provider_name": provider_name,
     "model_id": config.model_id,
     "connection_id": config.connection_id,
-    "mode": if config.base_url == "demo" { "demo" } else { "provider" },
+    "mode": "provider",
     "capabilities": config.capabilities(),
   })
 }
@@ -206,12 +206,18 @@ mod tests {
   #[test]
   fn active_configuration_exposes_no_connection_administration() {
     let (_directory, host) = fixture();
-    let configuration = host.settings.try_lock().unwrap().active().config();
+    assert!(host.settings.try_lock().unwrap().active().is_none());
+    let configuration = LlmConfig {
+      connection_id: "fixture".into(),
+      provider_id: "custom".into(),
+      base_url: "https://provider.example.invalid/v1".into(),
+      model_id: "test-model".into(),
+    };
     let public = public_config(&configuration);
-    assert_eq!(public["connection_id"], "local-demo");
-    assert_eq!(public["mode"], "demo");
-    assert_eq!(public["provider_id"], "demo");
-    assert_eq!(public["provider_name"], "Local demo");
+    assert_eq!(public["connection_id"], "fixture");
+    assert_eq!(public["mode"], "provider");
+    assert_eq!(public["provider_id"], "custom");
+    assert_eq!(public["provider_name"], "OpenAI compatible");
     for private in [
       "base_url",
       "name",

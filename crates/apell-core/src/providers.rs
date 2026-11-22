@@ -32,20 +32,12 @@ pub struct ProviderPreset {
 
 /// Only implemented drivers are advertised, not every models.dev provider.
 pub fn presets() -> Vec<ProviderPreset> {
-  let mut providers = vec![
-    ProviderPreset {
-      provider_id: "demo".into(),
-      name: "Local demo".into(),
-      base_url: "demo".into(),
-      auth_methods: vec![AuthMethod::None],
-    },
-    ProviderPreset {
-      provider_id: "custom".into(),
-      name: "OpenAI compatible".into(),
-      base_url: "https://api.openai.com/v1".into(),
-      auth_methods: vec![AuthMethod::ApiKey, AuthMethod::None],
-    },
-  ];
+  let mut providers = vec![ProviderPreset {
+    provider_id: "custom".into(),
+    name: "OpenAI compatible".into(),
+    base_url: "https://api.openai.com/v1".into(),
+    auth_methods: vec![AuthMethod::ApiKey, AuthMethod::None],
+  }];
   providers.extend(Registry::builtin().iter().map(|descriptor| ProviderPreset {
     provider_id: descriptor.id.into(),
     name: descriptor.display_name.into(),
@@ -63,7 +55,6 @@ pub fn presets() -> Vec<ProviderPreset> {
 
 pub fn default_base_url(provider_id: &str) -> Option<&'static str> {
   match provider_id {
-    "demo" => Some("demo"),
     "custom" => Some("https://api.openai.com/v1"),
     _ => tokn_accounts::native::default_base_url(provider_id),
   }

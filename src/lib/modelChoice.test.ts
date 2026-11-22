@@ -73,7 +73,7 @@ describe('applet model chooser', () => {
     expect(settings.active_connection_id).toBe('different-connection');
     expect(connection.model_id).toBe('default');
     expect(
-      publicSelection(settings, { ...connection, provider_id: 'demo' }, 'model'),
+      publicSelection(settings, { ...connection, provider_id: 'missing-provider' }, 'model'),
     ).toBeUndefined();
     expect(
       publicSelection(settings, { ...connection, credential_status: 'unavailable' }, 'model'),

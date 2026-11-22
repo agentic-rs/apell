@@ -75,8 +75,7 @@ export class AppletModelChooser {
 }
 
 export function selectableProvider(settings: LlmSettings, connection: LlmConnection) {
-  if (connection.provider_id === 'demo' || connection.credential_status === 'unavailable')
-    return undefined;
+  if (connection.credential_status === 'unavailable') return undefined;
   const provider = settings.providers.find((item) => item.provider_id === connection.provider_id);
   return provider &&
     (provider.auth_methods.includes('none') || connection.credential_status === 'present')
