@@ -28,10 +28,15 @@ impl Config {
     )) {
       return None;
     }
-    let issuer = secure_url(option_env!("APELL_ACCOUNT_ISSUER")?)?;
-    let client_id = option_env!("APELL_ACCOUNT_CLIENT_ID")?;
-    let sync_url = secure_url(option_env!("APELL_SYNC_URL")?)?;
-    let resource = option_env!("APELL_SYNC_RESOURCE")?;
+    let issuer = secure_url(
+      option_env!("APELL_ACCOUNT_ISSUER").or(option_env!("TAURI_APELL_ACCOUNT_ISSUER"))?,
+    )?;
+    let client_id =
+      option_env!("APELL_ACCOUNT_CLIENT_ID").or(option_env!("TAURI_APELL_ACCOUNT_CLIENT_ID"))?;
+    let sync_url =
+      secure_url(option_env!("APELL_SYNC_URL").or(option_env!("TAURI_APELL_SYNC_URL"))?)?;
+    let resource =
+      option_env!("APELL_SYNC_RESOURCE").or(option_env!("TAURI_APELL_SYNC_RESOURCE"))?;
     secure_url(resource)?;
     if !is_identifier(client_id, 128) || sync_url.path() != "/" {
       return None;
