@@ -21,6 +21,7 @@ pub(super) struct Config {
   pub client_id: &'static str,
   pub sync_url: Url,
   pub resource: &'static str,
+  pub key_exchange: Option<Url>,
 }
 
 impl Config {
@@ -42,6 +43,10 @@ impl Config {
     let resource =
       option_env!("APELL_SYNC_RESOURCE").or(option_env!("TAURI_APELL_SYNC_RESOURCE"))?;
     secure_url(resource)?;
+    let key_exchange = option_env!("APELL_KEY_EXCHANGE_RESOURCE")
+      .or(option_env!("TAURI_APELL_KEY_EXCHANGE_RESOURCE"))
+      .and_then(secure_url)
+      .filter(|url| url.origin() == issuer.origin() && url.as_str() != resource);
     if !is_identifier(client_id, 128) || sync_url.path() != "/" {
       return None;
     }
@@ -50,6 +55,7 @@ impl Config {
       client_id,
       sync_url,
       resource,
+      key_exchange,
     })
   }
 }
@@ -146,18 +152,18 @@ pub(super) async fn start_device_sign_in(
   provider: &Provider,
 ) -> Result<Challenge, String> {
   let requested = OffsetDateTime::now_utc();
-  let request = post_form(
-    client,
-    provider.device_authorization.clone(),
-    &[
-      ("client_id", config.client_id),
-      (
-        "scope",
-        "openid profile email offline_access config:read config:write",
-      ),
-      ("resource", config.resource),
-    ],
-  );
+  let mut form = vec![
+    ("client_id", config.client_id),
+    ("resource", config.resource),
+  ];
+  let scope = if let Some(resource) = &config.key_exchange {
+    form.push(("resource", resource.as_str()));
+    "openid profile email offline_access config:read config:write credentials:read credentials:write key_exchange:read key_exchange:write"
+  } else {
+    "openid profile email offline_access config:read config:write"
+  };
+  form.push(("scope", scope));
+  let request = post_form(client, provider.device_authorization.clone(), &form);
   let response: DeviceResponse = read(request).await?;
   challenge(config, response, requested).ok_or_else(|| UNAVAILABLE.into())
 }
@@ -327,6 +333,7 @@ pub(super) async fn refresh(
   config: &Config,
   provider: &Provider,
   refresh_token: &str,
+  resource: &str,
 ) -> Result<Tokens, TokenError> {
   token(
     client,
@@ -334,7 +341,7 @@ pub(super) async fn refresh(
     &[
       ("grant_type", "refresh_token"),
       ("client_id", config.client_id),
-      ("resource", config.resource),
+      ("resource", resource),
       ("refresh_token", refresh_token),
     ],
   )
@@ -616,6 +623,7 @@ mod tests {
       client_id: "fixture-native",
       sync_url: Url::parse("https://sync.example.invalid/").unwrap(),
       resource: "https://sync.example.invalid/config-sync",
+      key_exchange: None,
     }
   }
 

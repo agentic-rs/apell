@@ -1,0 +1,5 @@
+{
+  "issuer": "https://account.example.invalid/oidc",
+  "audience": "https://account.example.invalid/api/v1/key-vault",
+  "client_id": "apell-device-client"
+}

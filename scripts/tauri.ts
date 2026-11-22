@@ -7,6 +7,7 @@ if (process.argv[2] === 'ios' || process.argv[2] === 'android') {
     'APELL_ACCOUNT_CLIENT_ID',
     'APELL_SYNC_URL',
     'APELL_SYNC_RESOURCE',
+    'APELL_KEY_EXCHANGE_RESOURCE',
   ]) {
     const value = process.env[name];
     if (value !== undefined) process.env[`TAURI_${name}`] = value;

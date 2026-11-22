@@ -9,6 +9,7 @@ use reqwest::Client;
 use serde::Deserialize;
 use std::{
   io::Read,
+  path::Path,
   time::{Duration, Instant},
 };
 use tokio::sync::{Mutex, Semaphore};
@@ -27,7 +28,13 @@ impl ConfigSyncConfig {
     let Some(path) = std::env::var_os("APELL_STORE_CONFIG_SYNC_FILE") else {
       return Ok(None);
     };
-    let invalid = || "Invalid config sync settings file.".to_owned();
+    Self::from_file(Path::new(&path))
+      .map(Some)
+      .map_err(|_| "Invalid config sync settings file.".to_owned())
+  }
+
+  pub(crate) fn from_file(path: &Path) -> Result<Self> {
+    let invalid = || StoreError::invalid("Invalid OIDC API settings file.");
     let file = std::fs::File::open(path).map_err(|_| invalid())?;
     let metadata = file.metadata().map_err(|_| invalid())?;
     if !metadata.is_file() || metadata.len() > 4096 {
@@ -43,7 +50,7 @@ impl ConfigSyncConfig {
     }
     let config: Self = serde_json::from_slice(&bytes).map_err(|_| invalid())?;
     config.validate().map_err(|_| invalid())?;
-    Ok(Some(config))
+    Ok(config)
   }
 
   fn validate(&self) -> Result<()> {

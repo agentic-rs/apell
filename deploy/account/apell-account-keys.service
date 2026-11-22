@@ -1,0 +1,28 @@
+[Unit]
+Description=Apell Account encrypted key relay
+After=network.target
+
+[Service]
+Type=simple
+DynamicUser=true
+ExecStart=/opt/apell-account/current/apell-account-keys
+Environment=APELL_ACCOUNT_KEY_EXCHANGE_LISTEN=127.0.0.1:5657
+Environment=APELL_ACCOUNT_KEY_EXCHANGE_DATA_DIR=/var/lib/apell-account-keys
+Environment=APELL_ACCOUNT_KEY_EXCHANGE_FILE=/etc/apell-account/keys-oidc.json
+StateDirectory=apell-account-keys
+StateDirectoryMode=0700
+UMask=0077
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

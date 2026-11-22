@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   cancelAccountSignIn,
   getAccountStatus,
@@ -17,9 +17,11 @@ import type {
   ConfigSyncResult,
   ConfigSyncStatus,
   ConfigSyncSummary,
+  LlmConnection,
   LlmProvider,
 } from '../lib/types';
 import { AccountSignIn } from './AccountSignIn';
+import { EncryptedKeySync } from './EncryptedKeySync';
 import { OperationScope } from './providers/state';
 import { Sheet } from './Sheet';
 
@@ -71,6 +73,7 @@ function ConfigVersion({
 }
 
 interface AccountSyncProps {
+  connections: LlmConnection[];
   providers: LlmProvider[];
   disabled: boolean;
   onApplied: () => void;
@@ -78,6 +81,7 @@ interface AccountSyncProps {
 }
 
 export function AccountSync({
+  connections,
   providers,
   disabled,
   onApplied,
@@ -86,12 +90,20 @@ export function AccountSync({
   const [account, setAccount] = useState<AccountStatus>();
   const [sync, setSync] = useState<ConfigSyncStatus>();
   const [busy, setBusy] = useState<Action>();
+  const [keys_busy, setKeysBusy] = useState(false);
   const [conflict, setConflict] = useState<SyncConflict>();
   const [outcome, setOutcome] = useState('');
   const [read_error, setReadError] = useState('');
   const [action_error, setActionError] = useState('');
   const scope = useRef(new OperationScope());
   const read_version = useRef(0);
+  const onKeySyncBusyChange = useCallback(
+    (busy: boolean) => {
+      setKeysBusy(busy);
+      onSyncBusyChange(busy);
+    },
+    [onSyncBusyChange],
+  );
 
   async function refresh() {
     const version = ++read_version.current;
@@ -146,6 +158,7 @@ export function AccountSync({
   }, [onSyncBusyChange]);
 
   async function perform(action: Action, run: (isCurrent: () => boolean) => Promise<void>) {
+    if (keys_busy) return;
     const operation = scope.current.start();
     if (!operation) return;
     read_version.current += 1;
@@ -208,7 +221,10 @@ export function AccountSync({
   const error = action_error || read_error || account?.error;
 
   return (
-    <section className="panel account-sync" aria-busy={!!busy || (!account && !read_error)}>
+    <section
+      className="panel account-sync"
+      aria-busy={!!busy || keys_busy || (!account && !read_error)}
+    >
       <h2>Apell Account</h2>
       {!account && !read_error && <p role="status">Checking sign-in…</p>}
       {account?.state === 'unavailable' && <p>Account sign-in is unavailable in this build.</p>}
@@ -240,7 +256,7 @@ export function AccountSync({
             <span>{account.email ?? 'Signed in'}</span>
             <button
               type="button"
-              disabled={!!busy}
+              disabled={!!busy || keys_busy}
               onClick={() => void changeAccount('sign_out', signOutOfAccount)}
             >
               {busy === 'sign_out' ? 'Signing out…' : 'Sign out'}
@@ -252,15 +268,12 @@ export function AccountSync({
                 <input
                   type="checkbox"
                   checked={sync.state === 'ready'}
-                  disabled={!!busy}
+                  disabled={!!busy || keys_busy}
                   onChange={(event) => void toggleSync(event.target.checked)}
                 />
                 Sync model settings
               </label>
-              <p>
-                Syncs saved model selections for built-in providers. API keys, provider sign-ins,
-                and custom endpoints stay on this device.
-              </p>
+              <p>Syncs saved connections and model selections for built-in providers.</p>
             </>
           )}
           {!sync && !read_error && <p role="status">Checking sync…</p>}
@@ -276,13 +289,20 @@ export function AccountSync({
               <button
                 type="button"
                 className="primary"
-                disabled={disabled || !!busy}
+                disabled={disabled || !!busy || keys_busy}
                 onClick={() => void runSync()}
               >
                 {busy === 'sync' ? 'Syncing…' : 'Sync now'}
               </button>
             </>
           )}
+          <EncryptedKeySync
+            connections={connections}
+            providers={providers}
+            disabled={disabled || !!busy || !!conflict}
+            onApplied={onApplied}
+            onBusyChange={onKeySyncBusyChange}
+          />
         </>
       )}
       {outcome && (

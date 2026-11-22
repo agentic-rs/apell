@@ -60,6 +60,7 @@ impl Store {
     crate::auth::migrate(&connection)?;
     packages::migrate(&connection)?;
     crate::config_sync::migrate(&connection)?;
+    crate::credential_sync::migrate(&connection)?;
     Ok(store)
   }
 

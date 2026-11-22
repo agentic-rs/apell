@@ -251,6 +251,7 @@ export function Settings() {
     <>
       {connections}
       <AccountSync
+        connections={settings?.connections ?? []}
         providers={settings?.providers ?? []}
         disabled={editing_disabled || !settings}
         onApplied={() => setReloadRequested(true)}

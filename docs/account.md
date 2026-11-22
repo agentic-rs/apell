@@ -199,12 +199,53 @@ settings namespace.
 In **Settings → Apell Account**, choose **Sign in** to see the browser address
 and code. Enter the code on the sign-in page on this or another device. When
 Apell shows the signed-in account, turn on config sync and choose **Sync now**.
-Apell syncs connection labels, built-in provider and model selections, and the
-preferred active model. Credentials and custom endpoints stay on each device.
-If a synced provider needs a credential, add it on that device before using the model.
+Model settings sync includes connection labels, built-in provider and model
+selections, and the preferred active model. API keys can be synced separately
+through **Encrypted API keys**.
 When two devices saved different settings, review both versions and choose which
 to use. The Store records each version with its parent revision, and applies
 updates only when the expected cloud revision still matches.
+
+## Sync encrypted API keys
+
+In **Settings → Apell Account → Encrypted API keys**, set up key sync on the
+first device. Save the recovery key offline and confirm that you saved it. Apell
+then registers the encrypted recovery copy with Account. On a new signed-in
+device, choose **Pair with existing device** and enter its short-lived pairing
+code under **Approve another device** on the unlocked device. You can also
+unlock on the new device with your offline recovery key.
+
+Apell generates a random vault key and holds it in native secure storage. The
+pairing and recovery codes each unlock a separate encrypted copy of that key.
+Account relays the encrypted copies, and Store holds the encrypted API keys,
+connection IDs, and revision information. The encrypted records authenticate
+the account, vault, connection, provider, and canonical provider endpoint.
+Apell restores and decrypts keys natively. Losing every unlocked device and the
+recovery key means the encrypted backups cannot be recovered.
+[ChaCha20-Poly1305 authenticated encryption](https://www.rfc-editor.org/rfc/rfc8439.html#section-2.8)
+
+Choose connections explicitly when uploading static keys for built-in provider
+endpoints. Restore fills missing credentials for matching saved connections.
+Sync model settings first to bring over missing connections. Use **Manage cloud
+copies** to remove encrypted backups. Removing a cloud copy leaves any key
+already saved on a device usable there. Provider OAuth sessions and custom
+endpoint credentials stay on the device.
+
+### Enable encrypted key sync in a deployment
+
+1. Add `credentials:read` and `credentials:write` to the existing Store config
+   sync API resource. Register a separate Account API resource on the Account
+   HTTPS origin for `key_exchange:read` and `key_exchange:write`. Assign these
+   permissions to the approved Accounts.
+2. Build both binaries with `cargo build --release --locked -p apell-store --bins`. The updated Store
+   migrates its database on startup. Run the key relay on the Account host
+   with its own data directory and OIDC settings. See the [service example](../deploy/account/apell-account-keys.service),
+   [OIDC settings](../deploy/account/keys-oidc.example.json), and
+   [Account proxy configuration](../deploy/account/key-exchange.nginx.conf.example).
+3. Set `APELL_KEY_EXCHANGE_RESOURCE` to the exact Account key relay audience in
+   the native build, for example `https://account.example.invalid/api/v1/key-vault`.
+   Sign in again on that build so Logto grants the configured resources and
+   scopes. Builds without this setting continue to support model settings sync.
 
 ## Verify locally
 

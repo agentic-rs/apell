@@ -53,6 +53,8 @@ struct StoredSession {
   issuer: String,
   client_id: String,
   resource: String,
+  #[serde(default)]
+  key_exchange_resource: Option<String>,
   subject: String,
   email: Option<String>,
   refresh_token: String,
@@ -63,6 +65,7 @@ impl StoredSession {
     self.issuer == config.issuer.as_str()
       && self.client_id == config.client_id
       && self.resource == config.resource
+      && self.key_exchange_resource.as_deref() == config.key_exchange.as_ref().map(Url::as_str)
       && oidc::visible_ascii(&self.subject, 255)
       && oidc::valid_token(&self.refresh_token)
   }
@@ -100,6 +103,7 @@ struct Session {
   stored: StoredSession,
   pending_vault_write: bool,
   access_token: Option<AccessToken>,
+  key_exchange_token: Option<AccessToken>,
 }
 
 #[derive(Default)]
@@ -151,6 +155,7 @@ impl State {
             stored,
             pending_vault_write: false,
             access_token: None,
+            key_exchange_token: None,
           });
         }
       }
@@ -174,12 +179,7 @@ pub(crate) struct Account {
 
 impl Account {
   pub(crate) fn new() -> Result<Self, String> {
-    let client = Client::builder()
-      .https_only(true)
-      .redirect(reqwest::redirect::Policy::none())
-      .connect_timeout(Duration::from_secs(8))
-      .timeout(Duration::from_secs(20))
-      .build()
+    let client = apell_core::providers::http_client()
       .map_err(|_| "Could not initialize Apell Account networking.")?;
     Ok(Self {
       config: Config::compiled(),
@@ -211,7 +211,34 @@ impl Account {
   }
 
   pub async fn access(&self, app: &AppHandle) -> Result<Access, String> {
+    self.access_for(app, false).await
+  }
+
+  pub fn key_exchange_available(&self) -> bool {
+    self
+      .config
+      .as_ref()
+      .is_some_and(|config| config.key_exchange.is_some())
+  }
+
+  pub async fn key_exchange_access(&self, app: &AppHandle) -> Result<Access, String> {
+    self.access_for(app, true).await
+  }
+
+  async fn access_for(&self, app: &AppHandle, key_exchange: bool) -> Result<Access, String> {
     let config = self.config.as_ref().ok_or(CLIENT_UNAVAILABLE)?;
+    let (resource, origin) = if key_exchange {
+      let resource = config
+        .key_exchange
+        .as_ref()
+        .ok_or("Encrypted API key sync is unavailable.")?;
+      (
+        resource.as_str(),
+        config.issuer.join("/").map_err(|_| CLIENT_UNAVAILABLE)?,
+      )
+    } else {
+      (config.resource, config.sync_url.clone())
+    };
     // One refresh at a time. Logto can rotate the refresh token on each exchange.
     let mut state = self.state.lock().await;
     state.load(app, config).await?;
@@ -220,9 +247,14 @@ impl Account {
       persist(app, Some(&session.stored)).await?;
       session.pending_vault_write = false;
     }
-    if let Some(access_token) = &session.access_token {
+    let cached = if key_exchange {
+      &session.key_exchange_token
+    } else {
+      &session.access_token
+    };
+    if let Some(access_token) = cached {
       if access_token.expires > Instant::now() + Duration::from_secs(30) {
-        return Ok(access(config, session, access_token));
+        return Ok(access(origin, session, access_token));
       }
     }
     let provider = oidc::discover(&self.client, config).await?;
@@ -231,6 +263,7 @@ impl Account {
       config,
       &provider,
       &session.stored.refresh_token,
+      resource,
     )
     .await
     {
@@ -252,8 +285,12 @@ impl Account {
       persist(app, Some(&session.stored)).await?;
       session.pending_vault_write = false;
     }
-    let result = access(config, session, &token);
-    session.access_token = Some(token);
+    let result = access(origin, session, &token);
+    if key_exchange {
+      session.key_exchange_token = Some(token);
+    } else {
+      session.access_token = Some(token);
+    }
     Ok(result)
   }
 
@@ -391,12 +428,14 @@ impl Account {
         issuer: config.issuer.to_string(),
         client_id: config.client_id.into(),
         resource: config.resource.into(),
+        key_exchange_resource: config.key_exchange.as_ref().map(Url::to_string),
         subject: identity.sub,
         email,
         refresh_token,
       },
       pending_vault_write: false,
       access_token: Some(AccessToken::new(tokens.access_token, tokens.expires_in)),
+      key_exchange_token: None,
     })
   }
 
@@ -424,10 +463,10 @@ impl Account {
   }
 }
 
-fn access(config: &Config, session: &Session, token: &AccessToken) -> Access {
+fn access(sync_url: Url, session: &Session, token: &AccessToken) -> Access {
   Access {
     account_key: session.stored.account_key(),
-    sync_url: config.sync_url.clone(),
+    sync_url,
     token: token.value.clone(),
   }
 }

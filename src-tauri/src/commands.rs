@@ -80,14 +80,29 @@ pub async fn shell_command(
 ) -> Result<Value, String> {
   host.authorize(&host_key)?;
   match method.as_str() {
-    "account.status"
-    | "account.sign_in"
-    | "account.open_sign_in"
-    | "account.cancel"
-    | "account.sign_out" => crate::account::dispatch(app, &host.account, &method).await,
+    "account.status" | "account.sign_in" | "account.open_sign_in" | "account.cancel" => {
+      crate::account::dispatch(app, &host.account, &method).await
+    }
+    "account.sign_out" => {
+      let _gate = host.key_sync.gate.lock().await;
+      host.key_sync.clear_pair().await;
+      crate::account::dispatch(app, &host.account, &method).await
+    }
     "sync.status" | "sync.set_enabled" | "sync.run" => {
       crate::config_sync::dispatch(app, &host, &method, params).await
     }
+    "key_sync.status"
+    | "key_sync.create"
+    | "key_sync.confirm_recovery"
+    | "key_sync.recover"
+    | "key_sync.pair_start"
+    | "key_sync.pair_finish"
+    | "key_sync.pair_cancel"
+    | "key_sync.pair_approve"
+    | "key_sync.upload"
+    | "key_sync.list"
+    | "key_sync.remove"
+    | "key_sync.restore" => crate::key_sync::dispatch(app, &method, params).await,
     #[cfg(target_os = "android")]
     "navigation.background" => {
       blocking(move || tauri_plugin_apell_sensors::background_task(&app)).await?;

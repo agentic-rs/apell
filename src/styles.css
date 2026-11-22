@@ -488,6 +488,33 @@ svg {
   min-width: 0;
   overflow-wrap: anywhere;
 }
+.account-key-sync {
+  display: grid;
+  gap: 12px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+.account-key-sync h3,
+.account-key-sync p {
+  margin: 0;
+}
+.account-key-sync p {
+  color: var(--muted);
+  font-size: 14px;
+}
+.account-key-sync > button {
+  justify-self: start;
+}
+.key-sync-code {
+  display: block;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--subtle);
+  overflow-wrap: anywhere;
+  user-select: all;
+  -webkit-user-select: all;
+}
 .sync-versions {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));

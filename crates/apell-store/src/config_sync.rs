@@ -162,7 +162,7 @@ fn bounded_text(value: &str, max_bytes: usize) -> bool {
     && !value.chars().any(char::is_control)
 }
 
-fn identifier(value: &str, max_bytes: usize) -> bool {
+pub(crate) fn identifier(value: &str, max_bytes: usize) -> bool {
   !value.is_empty()
     && value.len() <= max_bytes
     && value
@@ -170,7 +170,7 @@ fn identifier(value: &str, max_bytes: usize) -> bool {
       .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
 }
 
-fn revision_id(value: &str) -> bool {
+pub(crate) fn revision_id(value: &str) -> bool {
   value.len() == 36
     && value.bytes().enumerate().all(|(index, byte)| {
       if matches!(index, 8 | 13 | 18 | 23) {

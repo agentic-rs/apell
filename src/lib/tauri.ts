@@ -18,6 +18,11 @@ import type {
   DraftCredential,
   InstalledApplet,
   InstallProgress,
+  KeySyncCloudCopies,
+  KeySyncPairing,
+  KeySyncResult,
+  KeySyncSetup,
+  KeySyncStatus,
   LlmConnection,
   LlmModels,
   LlmSettings,
@@ -141,6 +146,24 @@ export const setConfigSyncEnabled = (enabled: boolean) =>
   shellCall<ConfigSyncStatus>('sync.set_enabled', { enabled });
 export const syncConfig = (resolution?: ConfigSyncResolution) =>
   shellCall<ConfigSyncResult>('sync.run', resolution ?? {});
+export const getKeySyncStatus = () => shellCall<KeySyncStatus>('key_sync.status');
+export const createKeySync = () => shellCall<KeySyncSetup>('key_sync.create');
+export const confirmKeySyncRecovery = () => shellCall<void>('key_sync.confirm_recovery');
+export const recoverKeySync = (recovery_key: string) =>
+  shellCall<void>('key_sync.recover', { recovery_key });
+export const startKeySyncPairing = () => shellCall<KeySyncPairing>('key_sync.pair_start');
+export const finishKeySyncPairing = (pairing_code: string) =>
+  shellCall<boolean>('key_sync.pair_finish', { pairing_code });
+export const cancelKeySyncPairing = (pairing_code: string) =>
+  shellCall<void>('key_sync.pair_cancel', { pairing_code });
+export const approveKeySyncPairing = (pairing_code: string) =>
+  shellCall<void>('key_sync.pair_approve', { pairing_code });
+export const uploadKeySync = (connection_ids: string[], replace_existing: boolean) =>
+  shellCall<KeySyncResult>('key_sync.upload', { connection_ids, replace_existing });
+export const restoreKeySync = () => shellCall<KeySyncResult>('key_sync.restore');
+export const listKeySyncCopies = () => shellCall<KeySyncCloudCopies>('key_sync.list');
+export const removeKeySyncCopies = (expected_head: string, connection_ids: string[]) =>
+  shellCall<KeySyncResult>('key_sync.remove', { expected_head, connection_ids });
 export const getSettingsTransferCapabilities = () =>
   shellCall<SettingsTransferCapabilities>('settings_transfer.capabilities');
 export const exportSettingsTransfer = (connection_ids: string[], passphrase: string) =>

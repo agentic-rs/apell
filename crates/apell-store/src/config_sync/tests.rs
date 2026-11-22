@@ -1,17 +1,20 @@
 use super::*;
 use crate::{Config, ConfigSyncConfig};
 use axum::{body::Body, response::Response};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use http_body_util::BodyExt;
 use jsonwebtoken::{jwk::Jwk, Algorithm, EncodingKey, Header};
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
 const PATH: &str = "/api/v1/config-sync/head";
+const CREDENTIAL_PATH: &str = "/api/v1/credential-sync/head";
 const CLIENT: &str = "fixture-native-account-app";
 const AUDIENCE: &str = "https://store.example.invalid/api/v1/config-sync";
 const FIRST: &str = "01234567-0123-4012-8012-012345678901";
 const SECOND: &str = "01234567-0123-4012-8012-012345678902";
 const THIRD: &str = "01234567-0123-4012-8012-012345678903";
+const VAULT: &str = "01234567-0123-4012-8012-012345678904";
 
 struct Fixture {
   _directory: tempfile::TempDir,
@@ -87,7 +90,11 @@ impl Fixture {
   }
 
   async fn request(&self, token: Option<&str>, body: Option<Value>) -> Response {
-    let mut request = Request::builder().uri(PATH);
+    self.request_to(PATH, token, body).await
+  }
+
+  async fn request_to(&self, path: &str, token: Option<&str>, body: Option<Value>) -> Response {
+    let mut request = Request::builder().uri(path);
     if let Some(token) = token {
       request = request.header(header::AUTHORIZATION, format!("Bearer {token}"));
     }
@@ -101,6 +108,166 @@ impl Fixture {
     .unwrap();
     self.service.clone().oneshot(request).await.unwrap()
   }
+}
+
+fn sealed_entry(id: &str, flavor: u8) -> Value {
+  json!({
+    "connection_id":id,
+    "nonce":URL_SAFE_NO_PAD.encode([flavor; 12]),
+    "ciphertext":URL_SAFE_NO_PAD.encode([flavor; 32]),
+  })
+}
+
+fn write_credentials(parent: Option<&str>, revision_id: &str, entries: Vec<Value>) -> Value {
+  json!({"expected_head":parent,"revision_id":revision_id,"vault_id":VAULT,"entries":entries})
+}
+
+#[tokio::test]
+async fn encrypted_credential_heads_are_private_atomic_and_idempotent() {
+  let fixture = Fixture::new().await;
+  let token = |subject| {
+    let mut claims = fixture.claims(subject);
+    claims["scope"] = json!("credentials:read credentials:write");
+    fixture.token(&claims)
+  };
+  let first = token("fixture-account-one");
+  let second = token("fixture-account-two");
+  let read = |token| fixture.request_to(CREDENTIAL_PATH, Some(token), None);
+  let write = |token, body| fixture.request_to(CREDENTIAL_PATH, Some(token), Some(body));
+  assert_eq!(ok_body(read(&first).await).await, json!({"head":null}));
+  let entry_a = sealed_entry("connection-a", 1);
+  let entry_b = sealed_entry("connection-b", 2);
+  let initial = write_credentials(None, FIRST, vec![entry_b.clone(), entry_a.clone()]);
+  let created = ok_body(write(&first, initial).await).await;
+  assert_eq!(
+    created,
+    json!({"head":{"revision_id":FIRST,"vault_id":VAULT,"entries":[entry_a,entry_b]}})
+  );
+  let retry = write_credentials(None, FIRST, vec![entry_a.clone(), entry_b.clone()]);
+  assert_eq!(ok_body(write(&first, retry).await).await, created);
+  assert_eq!(ok_body(read(&second).await).await, json!({"head":null}));
+  assert_eq!(
+    write(&second, write_credentials(Some(FIRST), SECOND, vec![]))
+      .await
+      .status(),
+    StatusCode::CONFLICT
+  );
+  assert_eq!(
+    write(&first, write_credentials(None, FIRST, vec![]))
+      .await
+      .status(),
+    StatusCode::CONFLICT
+  );
+
+  let (left, right) = tokio::join!(
+    write(
+      &first,
+      write_credentials(Some(FIRST), SECOND, vec![entry_a])
+    ),
+    write(&first, write_credentials(Some(FIRST), THIRD, vec![entry_b])),
+  );
+  let shared = match (left.status(), right.status()) {
+    (StatusCode::OK, StatusCode::CONFLICT) => ok_body(left).await,
+    (StatusCode::CONFLICT, StatusCode::OK) => ok_body(right).await,
+    result => panic!("Unexpected concurrent write result {result:?}"),
+  };
+  assert_eq!(ok_body(read(&first).await).await, shared);
+  let current = shared["head"]["revision_id"].as_str().unwrap();
+  assert_eq!(
+    write(&first, write_credentials(Some(current), FIRST, vec![]))
+      .await
+      .status(),
+    StatusCode::CONFLICT
+  );
+  assert_eq!(ok_body(read(&second).await).await, json!({"head":null}));
+}
+
+#[tokio::test]
+async fn credential_scopes_and_bounded_opaque_entries_are_enforced() {
+  let fixture = Fixture::new().await;
+  let request = |token, body| fixture.request_to(CREDENTIAL_PATH, token, body);
+  let unauthenticated = request(None, None).await;
+  assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+  assert_eq!(unauthenticated.headers()[header::CACHE_CONTROL], "no-store");
+
+  let mut claims = fixture.claims("fixture-account");
+  let metadata_only = fixture.token(&claims);
+  assert_eq!(
+    request(Some(&metadata_only), None).await.status(),
+    StatusCode::FORBIDDEN
+  );
+  claims["scope"] = json!("credentials:read");
+  let read_only = fixture.token(&claims);
+  assert_eq!(
+    fixture.request(Some(&read_only), None).await.status(),
+    StatusCode::FORBIDDEN
+  );
+  assert_eq!(
+    request(
+      Some(&read_only),
+      Some(write_credentials(None, FIRST, vec![]))
+    )
+    .await
+    .status(),
+    StatusCode::FORBIDDEN
+  );
+  claims["scope"] = json!("credentials:write");
+  let write_only = fixture.token(&claims);
+
+  let entry = sealed_entry("fixture-connection", 1);
+  let mut injected = entry.clone();
+  injected["api_key"] = json!("fixture-private-value");
+  let invalid = |field: &str, value: Value| {
+    let mut invalid = entry.clone();
+    invalid[field] = value;
+    invalid
+  };
+  for entries in [
+    vec![injected],
+    vec![entry.clone(), entry.clone()],
+    vec![invalid("nonce", json!(URL_SAFE_NO_PAD.encode([0; 11])))],
+    vec![invalid("ciphertext", json!("a+b/=="))],
+    vec![invalid(
+      "ciphertext",
+      json!(URL_SAFE_NO_PAD.encode([0; 4113])),
+    )],
+    vec![invalid("connection_id", json!("wrong/path"))],
+    (0..32)
+      .map(|id| sealed_entry(&format!("connection-{id}"), 1))
+      .collect(),
+  ] {
+    assert_eq!(
+      request(
+        Some(&write_only),
+        Some(write_credentials(None, FIRST, entries))
+      )
+      .await
+      .status(),
+      StatusCode::BAD_REQUEST
+    );
+  }
+  let mut invalid_vault = write_credentials(None, FIRST, vec![entry]);
+  invalid_vault["vault_id"] = json!("invalid");
+  assert_eq!(
+    request(Some(&write_only), Some(invalid_vault))
+      .await
+      .status(),
+    StatusCode::BAD_REQUEST
+  );
+  let empty = ok_body(
+    request(
+      Some(&write_only),
+      Some(write_credentials(None, FIRST, vec![])),
+    )
+    .await,
+  )
+  .await;
+  assert_eq!(empty["head"]["entries"], json!([]));
+  assert_eq!(
+    request(Some(&write_only), None).await.status(),
+    StatusCode::FORBIDDEN
+  );
+  assert_eq!(ok_body(request(Some(&read_only), None).await).await, empty);
 }
 
 impl Drop for Fixture {

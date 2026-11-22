@@ -12,6 +12,7 @@ mod host;
 mod install;
 #[cfg(target_os = "ios")]
 mod ios;
+mod key_sync;
 mod media;
 mod navigation;
 mod permissions;

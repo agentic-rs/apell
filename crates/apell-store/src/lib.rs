@@ -1,8 +1,10 @@
 pub mod auth;
 mod config;
 mod config_sync;
+mod credential_sync;
 mod downloads;
 mod error;
+pub mod key_relay;
 mod management;
 mod model;
 mod oidc;
@@ -112,6 +114,7 @@ fn router_with_store(config: &Config, store: Store, oidc: Option<oidc::Oidc>) ->
     .merge(auth::routes())
     .merge(management::routes())
     .merge(config_sync::routes())
+    .merge(credential_sync::routes())
     .fallback(not_found);
   let media = Router::new()
     .route("/", any(not_found))
@@ -160,7 +163,8 @@ fn router_with_store(config: &Config, store: Store, oidc: Option<oidc::Oidc>) ->
 async fn response_headers(request: Request, next: Next) -> Response {
   let authentication = request.uri().path().starts_with("/api/v1/auth/")
     || request.uri().path().starts_with("/api/v1/account/")
-    || request.uri().path().starts_with("/api/v1/config-sync/");
+    || request.uri().path().starts_with("/api/v1/config-sync/")
+    || request.uri().path().starts_with("/api/v1/credential-sync/");
   let mut response = next.run(request).await;
   let headers = response.headers_mut();
   headers.insert(
