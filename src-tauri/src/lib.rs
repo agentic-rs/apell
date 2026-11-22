@@ -34,10 +34,7 @@ pub fn run() {
   let ios_back = ios::BackSignal::default();
   #[cfg(target_os = "ios")]
   let ios_back_setup = ios_back.clone();
-  let builder = tauri::Builder::default();
-  #[cfg(any(target_os = "ios", target_os = "android", target_os = "macos"))]
-  let builder = builder.plugin(tauri_plugin_deep_link::init());
-  builder
+  tauri::Builder::default()
     .register_uri_scheme_protocol("apel", |context, request| {
       assets::respond(context.app_handle(), request)
     })
@@ -57,8 +54,6 @@ pub fn run() {
       let origins = navigation::trusted_origins(app.config().build.dev_url.as_ref());
       let boot = navigation::bootstrap(&host.host_key, &origins)?;
       app.manage(host);
-      #[cfg(any(target_os = "android", target_os = "macos"))]
-      account::register_callbacks(app);
       let window =
         tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("index.html".into()))
           .title("Apell")

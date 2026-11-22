@@ -1,25 +1,20 @@
-#[cfg(target_os = "ios")]
-mod apple;
 mod oidc;
 
 use crate::{commands::blocking, host::Host};
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-use oidc::{Config, Provider, TokenError, Tokens};
+use oidc::{Config, DeviceCode, TokenError};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, Url};
-#[cfg(not(target_os = "ios"))]
 use tauri_plugin_opener::OpenerExt;
-use tokio::sync::Mutex;
+use tokio::sync::{watch, Mutex};
+use uuid::Uuid;
 use zeroize::{Zeroize, Zeroizing};
 
 const EVENT: &str = "apell-account-changed";
 const SESSION_SLOT: &str = "apell-account-session-v1";
-const SIGN_IN_TTL: Duration = Duration::from_secs(10 * 60);
-const SIGN_IN_EXPIRED: &str = "Apell Account sign-in expired. Try again.";
 const CLIENT_UNAVAILABLE: &str = "Apell Account is unavailable in this build.";
 const SIGN_IN_REQUIRED: &str = "Sign in to Apell Account to sync settings.";
 
@@ -37,54 +32,19 @@ struct Status {
   state: SignInState,
   email: Option<String>,
   error: Option<String>,
+  device_code: Option<DeviceCode>,
 }
 
-#[derive(Clone)]
 struct Attempt {
-  #[cfg(target_os = "ios")]
-  presentation_id: u64,
-  state: String,
-  nonce: String,
-  verifier: Zeroizing<String>,
-  expires: Instant,
-  provider: Option<Provider>,
-  completing: bool,
+  id: Uuid,
+  _cancellation: watch::Sender<()>,
+  presentation: Option<Presentation>,
 }
 
-impl Attempt {
-  fn new() -> Result<Self, String> {
-    fn random() -> Result<String, String> {
-      let mut bytes = Zeroizing::new([0u8; 32]);
-      getrandom::fill(bytes.as_mut()).map_err(|_| "Could not start Apell Account sign-in.")?;
-      Ok(URL_SAFE_NO_PAD.encode(bytes.as_ref()))
-    }
-    Ok(Self {
-      #[cfg(target_os = "ios")]
-      presentation_id: apple::next_id(),
-      state: random()?,
-      nonce: random()?,
-      verifier: Zeroizing::new(random()?),
-      expires: Instant::now() + SIGN_IN_TTL,
-      provider: None,
-      completing: false,
-    })
-  }
-
-  fn present(&self, app: &AppHandle, url: &Url) -> Result<(), &'static str> {
-    #[cfg(target_os = "ios")]
-    apple::present(app, self, url)?;
-    #[cfg(not(target_os = "ios"))]
-    app
-      .opener()
-      .open_url(url.as_str(), None::<&str>)
-      .map_err(|_| "Could not open the browser for Apell Account sign-in.")?;
-    Ok(())
-  }
-
-  fn dismiss(&self) {
-    #[cfg(target_os = "ios")]
-    apple::cancel(self.presentation_id);
-  }
+struct Presentation {
+  display: DeviceCode,
+  browser_url: Url,
+  deadline: tokio::time::Instant,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -168,6 +128,12 @@ impl State {
         .as_ref()
         .and_then(|session| session.stored.email.clone()),
       error: self.error.clone(),
+      device_code: self
+        .attempt
+        .as_ref()
+        .and_then(|attempt| attempt.presentation.as_ref())
+        .filter(|presentation| presentation.deadline > tokio::time::Instant::now())
+        .map(|presentation| presentation.display.clone()),
     }
   }
 
@@ -293,77 +259,53 @@ impl Account {
 
   async fn sign_in(&self, app: &AppHandle) -> Result<Status, String> {
     let config = self.config.as_ref().ok_or(CLIENT_UNAVAILABLE)?;
-    let attempt = {
-      let mut state = self.state.lock().await;
-      state.load(app, config).await?;
-      if state.attempt.is_some() || state.session.is_some() {
-        return Ok(state.status(true));
-      }
-      let attempt = Attempt::new()?;
-      state.error = None;
-      state.attempt = Some(attempt.clone());
-      attempt
-    };
-    changed(app);
-    let provider = oidc::discover(&self.client, config).await;
     let mut state = self.state.lock().await;
-    let Some(pending) = state
-      .attempt
-      .as_mut()
-      .filter(|pending| pending.state == attempt.state)
-    else {
+    state.load(app, config).await?;
+    if state.attempt.is_some() || state.session.is_some() {
       return Ok(state.status(true));
-    };
-    match provider {
-      Ok(provider) => {
-        let url = oidc::authorize(
-          config,
-          &provider,
-          &attempt.state,
-          &attempt.nonce,
-          &attempt.verifier,
-        );
-        pending.provider = Some(provider);
-        if let Err(error) = attempt.present(app, &url) {
-          state.attempt = None;
-          state.error = Some(error.into());
-        } else {
-          let app = app.clone();
-          let deadline = attempt.expires;
-          let attempt_id = attempt.state;
-          tauri::async_runtime::spawn(async move {
-            tokio::time::sleep_until(deadline.into()).await;
-            app.state::<Host>().account.expire(&app, &attempt_id).await;
-          });
-        }
-      }
-      Err(error) => {
-        state.attempt = None;
-        state.error = Some(error);
-      }
     }
+    let id = Uuid::new_v4();
+    let (cancellation, mut cancelled) = watch::channel(());
+    state.error = None;
+    state.attempt = Some(Attempt {
+      id,
+      _cancellation: cancellation,
+      presentation: None,
+    });
     changed(app);
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+      let host = app.state::<Host>();
+      let account = &host.account;
+      let Some(config) = &account.config else {
+        return;
+      };
+      let result = tokio::select! {
+        _ = cancelled.changed() => return,
+        result = account.sign_in_with_device_code(&app, config, id) => result,
+      };
+      account.finish_sign_in(&app, id, result).await;
+    });
     Ok(state.status(true))
   }
 
-  async fn expire(&self, app: &AppHandle, attempt_id: &str) {
-    let mut state = self.state.lock().await;
-    if let Some(attempt) = state
+  async fn open_sign_in(&self, app: &AppHandle) -> Result<(), String> {
+    let state = self.state.lock().await;
+    let presentation = state
       .attempt
       .as_ref()
-      .filter(|attempt| attempt.state == attempt_id)
-    {
-      attempt.dismiss();
-      state.attempt = None;
-      state.error = Some(SIGN_IN_EXPIRED.into());
-      changed(app);
-    }
+      .and_then(|attempt| attempt.presentation.as_ref())
+      .filter(|presentation| presentation.deadline > tokio::time::Instant::now())
+      .ok_or("Start a new sign-in to get a device code.")?;
+    app
+      .opener()
+      .open_url(presentation.browser_url.as_str(), None::<&str>)
+      .map_err(|_| "Could not open the browser for Apell Account sign-in.".into())
   }
 
   async fn cancel(&self, app: &AppHandle) -> Result<Status, String> {
     let mut state = self.state.lock().await;
-    if let Some(attempt) = state.attempt.take() {
-      attempt.dismiss();
+    if state.attempt.take().is_some() {
       state.error = None;
       changed(app);
     }
@@ -379,9 +321,7 @@ impl Account {
     if state.session.is_some() {
       persist(app, None).await?;
     }
-    if let Some(attempt) = state.attempt.take() {
-      attempt.dismiss();
-    }
+    state.attempt = None;
     state.error = None;
     if let Some(session) = state.session.take() {
       let app = app.clone();
@@ -406,104 +346,41 @@ impl Account {
     Ok(state.status(true))
   }
 
-  #[cfg(target_os = "ios")]
-  async fn finish_apple_sign_in(
+  async fn sign_in_with_device_code(
     &self,
     app: &AppHandle,
-    attempt_id: &str,
-    result: Result<Option<Url>, &'static str>,
-  ) {
-    let Some(config) = &self.config else { return };
-    let error = match result {
-      Ok(Some(url)) => {
-        if let Some(callback) = oidc::callback(&url).filter(|callback| {
-          callback.state == attempt_id && callback.issuer == config.issuer.as_str()
-        }) {
-          self.complete(app, config, callback).await;
-          return;
-        }
-        Some(apple::INVALID_CALLBACK)
-      }
-      Ok(None) => None,
-      Err(error) => Some(error),
-    };
-    let mut state = self.state.lock().await;
-    if state
-      .attempt
-      .as_ref()
-      .is_some_and(|attempt| attempt.state == attempt_id && !attempt.completing)
+    config: &Config,
+    id: Uuid,
+  ) -> Result<Session, String> {
+    let provider = oidc::discover(&self.client, config).await?;
+    let challenge = oidc::start_device_sign_in(&self.client, config, &provider).await?;
     {
-      state.attempt = None;
-      state.error = error.map(str::to_owned);
+      let mut state = self.state.lock().await;
+      let attempt = state
+        .attempt
+        .as_mut()
+        .filter(|attempt| attempt.id == id)
+        .ok_or("Apell Account sign-in was cancelled.")?;
+      attempt.presentation = Some(Presentation {
+        display: challenge.display.clone(),
+        browser_url: challenge.browser_url.clone(),
+        deadline: challenge.deadline,
+      });
       changed(app);
     }
-  }
 
-  #[cfg(any(target_os = "ios", target_os = "android", target_os = "macos"))]
-  async fn complete(&self, app: &AppHandle, config: &Config, callback: oidc::Callback<'_>) {
-    let (attempt, provider, code) = {
-      let mut state = self.state.lock().await;
-      let Some(attempt) = state.attempt.as_mut() else {
-        return;
-      };
-      if attempt.state != callback.state || attempt.completing || attempt.expires <= Instant::now()
-      {
-        return;
-      }
-      let Some(provider) = attempt.provider.clone() else {
-        return;
-      };
-      let Some(code) = callback.code else {
-        state.attempt = None;
-        state.error = Some("Apell Account sign-in was declined. Try again.".into());
-        changed(app);
-        return;
-      };
-      attempt.completing = true;
-      (attempt.clone(), provider, code)
-    };
-    let session = self.exchange(config, &provider, &attempt, &code).await;
-    let mut state = self.state.lock().await;
-    if !state
-      .attempt
-      .as_ref()
-      .is_some_and(|current| current.state == attempt.state)
-    {
-      return;
-    }
-    state.attempt = None;
-    state.error = match session {
-      Ok(session) => match persist(app, Some(&session.stored)).await {
-        Ok(()) => {
-          state.session = Some(session);
-          None
-        }
-        Err(error) => Some(error),
-      },
-      Err(error) => Some(error),
-    };
-    changed(app);
-  }
-
-  #[cfg(any(target_os = "ios", target_os = "android", target_os = "macos"))]
-  async fn exchange(
-    &self,
-    config: &Config,
-    provider: &Provider,
-    attempt: &Attempt,
-    code: &str,
-  ) -> Result<Session, String> {
-    let tokens = oidc::exchange(&self.client, config, provider, code, &attempt.verifier)
-      .await
-      .map_err(TokenError::message)?;
-    let identity = oidc::verify(&self.client, config, provider, &tokens, &attempt.nonce).await?;
-    let Tokens {
-      refresh_token,
-      access_token,
-      expires_in,
-      ..
-    } = tokens;
-    let refresh_token = refresh_token.ok_or("Apell Account did not grant a persistent session.")?;
+    let tokens = oidc::await_device_approval(&self.client, config, &provider, &challenge).await?;
+    let identity = oidc::verify(
+      &self.client,
+      config,
+      &provider,
+      &tokens,
+      challenge.requested_at,
+    )
+    .await?;
+    let refresh_token = tokens
+      .refresh_token
+      .ok_or("Apell Account did not grant a persistent session.")?;
     let email = identity.email.filter(|email| {
       identity.email_verified == Some(true)
         && email.len() <= 320
@@ -519,8 +396,31 @@ impl Account {
         refresh_token,
       },
       pending_vault_write: false,
-      access_token: Some(AccessToken::new(access_token, expires_in)),
+      access_token: Some(AccessToken::new(tokens.access_token, tokens.expires_in)),
     })
+  }
+
+  async fn finish_sign_in(&self, app: &AppHandle, id: Uuid, result: Result<Session, String>) {
+    let mut state = self.state.lock().await;
+    if state
+      .attempt
+      .as_ref()
+      .is_none_or(|attempt| attempt.id != id)
+    {
+      return;
+    }
+    state.attempt = None;
+    state.error = match result {
+      Ok(session) => match persist(app, Some(&session.stored)).await {
+        Ok(()) => {
+          state.session = Some(session);
+          None
+        }
+        Err(error) => Some(error),
+      },
+      Err(error) => Some(error),
+    };
+    changed(app);
   }
 }
 
@@ -553,34 +453,15 @@ fn changed(app: &AppHandle) {
   let _ = app.emit_to("main", EVENT, ());
 }
 
-#[cfg(any(target_os = "android", target_os = "macos"))]
-pub(crate) fn register_callbacks(app: &tauri::App) {
-  use tauri_plugin_deep_link::DeepLinkExt;
-  let handle = app.handle().clone();
-  app.deep_link().on_open_url(move |event| {
-    for url in event.urls() {
-      let app = handle.clone();
-      tauri::async_runtime::spawn(async move {
-        let host = app.state::<Host>();
-        let account = &host.account;
-        let Some(config) = &account.config else {
-          return;
-        };
-        if let Some(callback) =
-          oidc::callback(&url).filter(|callback| callback.issuer == config.issuer.as_str())
-        {
-          account.complete(&app, config, callback).await;
-        }
-      });
-    }
-  });
-}
-
 pub(crate) async fn dispatch(
   app: AppHandle,
   account: &Account,
   method: &str,
 ) -> Result<Value, String> {
+  if method == "account.open_sign_in" {
+    account.open_sign_in(&app).await?;
+    return Ok(Value::Null);
+  }
   let status = match method {
     "account.status" => account.status(&app).await?,
     "account.sign_in" => account.sign_in(&app).await?,

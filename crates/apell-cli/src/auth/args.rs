@@ -27,6 +27,7 @@ pub(super) struct Args {
   pub post_logout_redirect_uris: Vec<String>,
   pub output: PathBuf,
   pub first_party: bool,
+  pub device_flow: bool,
   pub json: bool,
 }
 
@@ -43,11 +44,13 @@ impl Args {
     let mut post_logout_redirect_uris = Vec::new();
     let mut output = None;
     let mut first_party = false;
+    let mut device_flow = false;
     let mut json = false;
     let mut options = arguments[2..].iter();
     while let Some(option) = options.next() {
       match option.to_str() {
         Some("--first-party") if !first_party => first_party = true,
+        Some("--device-flow") if !device_flow => device_flow = true,
         Some("--json") if !json => json = true,
         Some("--output") if output.is_none() => {
           output = Some(PathBuf::from(
@@ -88,7 +91,14 @@ impl Args {
       return Err("Use an application name of 1–256 characters without surrounding whitespace or control characters.".into());
     }
     let client_type = client_type.ok_or("Choose --type web, native, or spa.")?;
-    if redirect_uris.is_empty() {
+    if device_flow {
+      if client_type != ClientType::Native {
+        return Err("--device-flow requires --type native.".into());
+      }
+      if !redirect_uris.is_empty() || !post_logout_redirect_uris.is_empty() {
+        return Err("Device flow does not use redirect callbacks.".into());
+      }
+    } else if redirect_uris.is_empty() {
       return Err("Specify at least one --redirect-uri callback.".into());
     }
     for value in redirect_uris.iter().chain(&post_logout_redirect_uris) {
@@ -104,8 +114,55 @@ impl Args {
       post_logout_redirect_uris,
       output,
       first_party,
+      device_flow,
       json,
     })
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  fn registration(options: &[&str]) -> Result<Args, String> {
+    let arguments = [
+      "app",
+      "register",
+      "--name",
+      "Fixture",
+      "--output",
+      ".env.fixture.json",
+    ]
+    .into_iter()
+    .chain(options.iter().copied())
+    .map(OsString::from)
+    .collect::<Vec<_>>();
+    Args::parse(&arguments)
+  }
+
+  #[test]
+  fn device_flow_is_a_native_registration_without_callbacks() {
+    let registration = registration(&["--type", "native", "--device-flow"]).unwrap();
+    assert!(registration.device_flow);
+    assert!(registration.redirect_uris.is_empty());
+  }
+
+  #[test]
+  fn rejects_device_flow_with_incompatible_types_and_callback_options() {
+    for client_type in ["web", "spa"] {
+      assert!(registration(&["--type", client_type, "--device-flow"]).is_err());
+    }
+    for callback in ["--redirect-uri", "--post-logout-redirect-uri"] {
+      assert!(registration(&[
+        "--type",
+        "native",
+        "--device-flow",
+        callback,
+        "https://example.invalid/callback"
+      ])
+      .is_err());
+    }
+    assert!(registration(&["--type", "native"]).is_err());
   }
 }
 

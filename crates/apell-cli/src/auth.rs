@@ -13,6 +13,7 @@ use std::ffi::OsString;
 pub const USAGE: &str = "Account application registration (operator access):
   apell auth app register --name NAME --type web|native|spa --redirect-uri URI --output FILE
     [--redirect-uri URI ...] [--post-logout-redirect-uri URI ...] [--first-party] [--json]
+  apell auth app register --name NAME --type native --device-flow --output FILE [--first-party] [--json]
 Set ACCOUNT_MANAGEMENT_ENDPOINT and ACCOUNT_MANAGEMENT_TOKEN in the operator environment.
 Registrations require user consent by default. Use --first-party for trusted services.
 Client credentials are written to a new private file; terminal output contains public fields.";
@@ -31,6 +32,8 @@ struct Application {
   is_third_party: bool,
   #[serde(rename = "oidcClientMetadata")]
   oidc_client_metadata: ClientMetadata,
+  #[serde(rename = "customClientMetadata")]
+  custom_client_metadata: Option<CustomClientMetadata>,
 }
 
 #[derive(Deserialize)]
@@ -39,6 +42,12 @@ struct ClientMetadata {
   redirect_uris: Vec<String>,
   #[serde(rename = "postLogoutRedirectUris")]
   post_logout_redirect_uris: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct CustomClientMetadata {
+  #[serde(default, rename = "isDeviceFlow")]
+  is_device_flow: bool,
 }
 
 #[derive(Deserialize)]
@@ -54,6 +63,7 @@ struct Registration<'a> {
   client_id: &'a str,
   client_type: ClientType,
   is_first_party: bool,
+  device_flow: bool,
   redirect_uris: &'a [String],
   post_logout_redirect_uris: &'a [String],
   #[serde(skip_serializing_if = "Option::is_none")]
@@ -73,19 +83,19 @@ pub fn run(arguments: &[OsString]) -> Result<(), String> {
   let api = Api::from_environment()?;
   let discovery: Discovery = api.discover()?;
   client::secure_url(&discovery.issuer)?;
-  let application: Application = api.json(
-    Method::POST,
-    "/api/applications",
-    Some(&json!({
-      "name": args.name,
-      "type": args.client_type.provider_type(),
-      "isThirdParty": !args.first_party,
-      "oidcClientMetadata": {
-        "redirectUris": args.redirect_uris,
-        "postLogoutRedirectUris": args.post_logout_redirect_uris,
-      },
-    })),
-  )?;
+  let mut metadata = json!({
+    "name": args.name,
+    "type": args.client_type.provider_type(),
+    "isThirdParty": !args.first_party,
+    "oidcClientMetadata": {
+      "redirectUris": args.redirect_uris,
+      "postLogoutRedirectUris": args.post_logout_redirect_uris,
+    },
+  });
+  if args.device_flow {
+    metadata["customClientMetadata"] = json!({ "isDeviceFlow": true });
+  }
+  let application: Application = api.json(Method::POST, "/api/applications", Some(&metadata))?;
   if application.id.is_empty()
     || application.id.len() > 64
     || !application
@@ -115,6 +125,7 @@ pub fn run(arguments: &[OsString]) -> Result<(), String> {
     "client_id": application.id,
     "client_type": args.client_type,
     "is_first_party": args.first_party,
+    "device_flow": args.device_flow,
     "redirect_uris": args.redirect_uris,
     "post_logout_redirect_uris": args.post_logout_redirect_uris,
     "output": args.output.to_string_lossy(),
@@ -139,6 +150,11 @@ fn configure(
 ) -> Result<(), String> {
   if application.application_type != args.client_type.provider_type()
     || application.is_third_party == args.first_party
+    || application
+      .custom_client_metadata
+      .as_ref()
+      .is_some_and(|metadata| metadata.is_device_flow)
+      != args.device_flow
     || application.oidc_client_metadata.redirect_uris != args.redirect_uris
     || application.oidc_client_metadata.post_logout_redirect_uris != args.post_logout_redirect_uris
   {
@@ -171,6 +187,7 @@ fn configure(
     client_id: &application.id,
     client_type: args.client_type,
     is_first_party: args.first_party,
+    device_flow: args.device_flow,
     redirect_uris: &args.redirect_uris,
     post_logout_redirect_uris: &args.post_logout_redirect_uris,
     client_secret,

@@ -65,9 +65,11 @@ pub async fn shell_command(
 ) -> Result<Value, String> {
   host.authorize(&host_key)?;
   match method.as_str() {
-    "account.status" | "account.sign_in" | "account.cancel" | "account.sign_out" => {
-      crate::account::dispatch(app, &host.account, &method).await
-    }
+    "account.status"
+    | "account.sign_in"
+    | "account.open_sign_in"
+    | "account.cancel"
+    | "account.sign_out" => crate::account::dispatch(app, &host.account, &method).await,
     "sync.status" | "sync.set_enabled" | "sync.run" => {
       crate::config_sync::dispatch(app, &host, &method, params).await
     }

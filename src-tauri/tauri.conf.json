@@ -16,14 +16,6 @@
       "dangerousDisableAssetCspModification": ["script-src", "style-src"]
     }
   },
-  "plugins": {
-    "deep-link": {
-      "desktop": { "schemes": ["dev.apell.shell"] },
-      "mobile": [
-        { "scheme": ["dev.apell.shell"], "host": "oauth", "path": ["/callback"], "appLink": false }
-      ]
-    }
-  },
   "bundle": {
     "active": true,
     "targets": "all",

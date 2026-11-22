@@ -3,14 +3,18 @@ use jsonwebtoken::{jwk::JwkSet, Algorithm, DecodingKey, Validation};
 use reqwest::{header, Client, RequestBuilder};
 use serde::{de::DeserializeOwned, Deserialize};
 use sha2::{Digest, Sha256, Sha384};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::Url;
+use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use zeroize::Zeroizing;
 
-pub(super) const REDIRECT_URI: &str = "dev.apell.shell://oauth/callback";
+const DEVICE_GRANT: &str = "urn:ietf:params:oauth:grant-type:device_code";
+const MIN_POLL_INTERVAL: u64 = 5;
+const MAX_CHALLENGE_LIFETIME: u64 = 15 * 60;
 const MAX_REPLY: usize = 256 * 1024;
 const INVALID_IDENTITY: &str = "Apell Account returned an invalid identity.";
 const UNAVAILABLE: &str = "Could not reach Apell Account. Try again.";
+pub(super) const SIGN_IN_EXPIRED: &str = "Apell Account sign-in expired. Try again.";
 
 pub(super) struct Config {
   pub issuer: Url,
@@ -69,16 +73,14 @@ fn secure_url(value: &str) -> Option<Url> {
 #[derive(Deserialize)]
 struct Discovery {
   issuer: String,
-  authorization_endpoint: String,
+  device_authorization_endpoint: Option<String>,
   token_endpoint: String,
   jwks_uri: String,
   revocation_endpoint: String,
-  code_challenge_methods_supported: Vec<String>,
 }
 
-#[derive(Clone)]
 pub(super) struct Provider {
-  authorization: Url,
+  device_authorization: Url,
   token: Url,
   jwks: Url,
   revocation: Url,
@@ -90,12 +92,7 @@ pub(super) async fn discover(client: &Client, config: &Config) -> Result<Provide
     config.issuer.as_str().trim_end_matches('/')
   );
   let doc: Discovery = read(client.get(discovery)).await?;
-  if doc.issuer != config.issuer.as_str()
-    || !doc
-      .code_challenge_methods_supported
-      .iter()
-      .any(|method| method == "S256")
-  {
+  if doc.issuer != config.issuer.as_str() {
     return Err(UNAVAILABLE.into());
   }
   let path_prefix = format!("{}/", config.issuer.path().trim_end_matches('/'));
@@ -105,79 +102,115 @@ pub(super) async fn discover(client: &Client, config: &Config) -> Result<Provide
       .ok_or_else(|| UNAVAILABLE.to_owned())
   };
   Ok(Provider {
-    authorization: endpoint(&doc.authorization_endpoint)?,
+    device_authorization: endpoint(
+      doc
+        .device_authorization_endpoint
+        .as_deref()
+        .ok_or("Apell Account device sign-in is unavailable.")?,
+    )?,
     token: endpoint(&doc.token_endpoint)?,
     jwks: endpoint(&doc.jwks_uri)?,
     revocation: endpoint(&doc.revocation_endpoint)?,
   })
 }
 
-pub(super) fn authorize(
+#[derive(Deserialize)]
+struct DeviceResponse {
+  device_code: String,
+  user_code: String,
+  verification_uri: String,
+  verification_uri_complete: Option<String>,
+  expires_in: u64,
+  interval: Option<u64>,
+}
+
+#[derive(Clone, serde::Serialize)]
+pub(super) struct DeviceCode {
+  pub user_code: String,
+  pub verification_uri: Url,
+  pub expires_at: String,
+}
+
+pub(super) struct Challenge {
+  pub display: DeviceCode,
+  pub browser_url: Url,
+  pub deadline: tokio::time::Instant,
+  pub requested_at: u64,
+  secret: Zeroizing<String>,
+  interval: Duration,
+}
+
+pub(super) async fn start_device_sign_in(
+  client: &Client,
   config: &Config,
   provider: &Provider,
-  state: &str,
-  nonce: &str,
-  verifier: &str,
-) -> Url {
-  let mut url = provider.authorization.clone();
-  url.query_pairs_mut().extend_pairs([
-    ("client_id", config.client_id),
-    ("redirect_uri", REDIRECT_URI),
-    ("response_type", "code"),
-    (
-      "code_challenge",
-      &URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes())),
-    ),
-    ("code_challenge_method", "S256"),
-    ("state", state),
-    ("nonce", nonce),
-    (
-      "scope",
-      "openid profile email offline_access config:read config:write",
-    ),
-    ("resource", config.resource),
-    ("prompt", "consent"),
-  ]);
-  url
+) -> Result<Challenge, String> {
+  let requested = OffsetDateTime::now_utc();
+  let request = post_form(
+    client,
+    provider.device_authorization.clone(),
+    &[
+      ("client_id", config.client_id),
+      (
+        "scope",
+        "openid profile email offline_access config:read config:write",
+      ),
+      ("resource", config.resource),
+    ],
+  );
+  let response: DeviceResponse = read(request).await?;
+  challenge(config, response, requested).ok_or_else(|| UNAVAILABLE.into())
 }
 
-pub(super) struct Callback<'a> {
-  pub state: std::borrow::Cow<'a, str>,
-  pub issuer: std::borrow::Cow<'a, str>,
-  pub code: Option<Zeroizing<String>>,
-}
-
-pub(super) fn callback(url: &Url) -> Option<Callback<'_>> {
-  if url.as_str().len() > 4096 || url.fragment().is_some() {
+fn challenge(
+  config: &Config,
+  response: DeviceResponse,
+  requested: OffsetDateTime,
+) -> Option<Challenge> {
+  let secret = Zeroizing::new(response.device_code);
+  if !valid_token(&secret) || !is_identifier(&response.user_code, 32) || response.expires_in == 0 {
     return None;
   }
-  let mut target = url.clone();
-  target.set_query(None);
-  if target.as_str() != REDIRECT_URI {
-    return None;
-  }
-  let (mut state, mut issuer, mut code, mut error) = (None, None, None, None);
-  for (key, value) in url.query_pairs() {
-    let slot = match key.as_ref() {
-      "state" => &mut state,
-      "iss" => &mut issuer,
-      "code" => &mut code,
-      "error" => &mut error,
-      _ => continue,
-    };
-    if slot.replace(value).is_some() {
-      return None;
-    }
-  }
-  let code = match (code, error) {
-    (Some(code), None) if visible_ascii(&code, 1024) => Some(Zeroizing::new(code.into_owned())),
-    (None, Some(_)) => None,
-    _ => return None,
-  };
-  Some(Callback {
-    state: state?,
-    issuer: issuer?,
-    code,
+  let verification_uri =
+    secure_url(&response.verification_uri).filter(|url| url.origin() == config.issuer.origin())?;
+  let browser_url = response
+    .verification_uri_complete
+    .as_deref()
+    .and_then(|address| {
+      let (base, _) = address.split_once('?')?;
+      if base != verification_uri.as_str() || address.len() > 2048 {
+        return None;
+      }
+      let url = Url::parse(address).ok()?;
+      let mut query = url.query_pairs();
+      let (name, value) = query.next()?;
+      (url.fragment().is_none()
+        && name == "user_code"
+        && value == response.user_code
+        && query.next().is_none())
+      .then_some(url)
+    })
+    .unwrap_or_else(|| verification_uri.clone());
+  let lifetime = Duration::from_secs(response.expires_in.min(MAX_CHALLENGE_LIFETIME));
+  let expires_at = (OffsetDateTime::now_utc() + lifetime)
+    .format(&Rfc3339)
+    .ok()?;
+  Some(Challenge {
+    display: DeviceCode {
+      user_code: response.user_code,
+      verification_uri,
+      expires_at,
+    },
+    browser_url,
+    deadline: tokio::time::Instant::now() + lifetime,
+    requested_at: requested.unix_timestamp().try_into().ok()?,
+    secret,
+    interval: Duration::from_secs(
+      response
+        .interval
+        .unwrap_or(MIN_POLL_INTERVAL)
+        .clamp(MIN_POLL_INTERVAL, MAX_CHALLENGE_LIFETIME),
+    ),
   })
 }
 
@@ -209,26 +242,84 @@ impl TokenError {
   }
 }
 
-pub(super) async fn exchange(
+enum Poll {
+  Pending,
+  SlowDown,
+  Retry,
+  Authorized(Tokens),
+}
+
+pub(super) async fn await_device_approval(
   client: &Client,
   config: &Config,
   provider: &Provider,
-  code: &str,
-  verifier: &str,
-) -> Result<Tokens, TokenError> {
-  token(
+  challenge: &Challenge,
+) -> Result<Tokens, String> {
+  tokio::time::timeout_at(challenge.deadline, async {
+    let mut interval = challenge.interval;
+    loop {
+      tokio::time::sleep(interval).await;
+      match poll_device_code(client, config, provider, &challenge.secret).await? {
+        Poll::Pending => {}
+        Poll::SlowDown => interval += Duration::from_secs(MIN_POLL_INTERVAL),
+        Poll::Retry => interval *= 2,
+        Poll::Authorized(tokens) => return Ok(tokens),
+      }
+    }
+  })
+  .await
+  .map_err(|_| SIGN_IN_EXPIRED.to_owned())?
+}
+
+async fn poll_device_code(
+  client: &Client,
+  config: &Config,
+  provider: &Provider,
+  device_code: &str,
+) -> Result<Poll, String> {
+  let response = post_form(
     client,
-    provider,
+    provider.token.clone(),
     &[
-      ("grant_type", "authorization_code"),
+      ("grant_type", DEVICE_GRANT),
       ("client_id", config.client_id),
-      ("redirect_uri", REDIRECT_URI),
       ("resource", config.resource),
-      ("code", code),
-      ("code_verifier", verifier),
+      ("device_code", device_code),
     ],
   )
-  .await
+  .send()
+  .await;
+  let Ok(response) = response else {
+    return Ok(Poll::Retry);
+  };
+  let status = response.status();
+  if status.is_server_error() {
+    return Ok(Poll::Retry);
+  }
+  if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+    return Ok(Poll::SlowDown);
+  }
+  let body = body(response).await?;
+  if status.is_success() {
+    return parse_tokens(&body)
+      .map(Poll::Authorized)
+      .map_err(TokenError::message);
+  }
+  if status == reqwest::StatusCode::BAD_REQUEST {
+    return device_poll_error(&body);
+  }
+  Err(UNAVAILABLE.into())
+}
+
+fn device_poll_error(body: &[u8]) -> Result<Poll, String> {
+  let error: OAuthError = serde_json::from_slice(body).map_err(|_| UNAVAILABLE)?;
+  match error.error.as_str() {
+    "authorization_pending" => Ok(Poll::Pending),
+    "slow_down" => Ok(Poll::SlowDown),
+    "expired_token" => Err(SIGN_IN_EXPIRED.into()),
+    "access_denied" => Err("Apell Account sign-in was declined. Try again.".into()),
+    _ => Err(UNAVAILABLE.into()),
+  }
 }
 
 pub(super) async fn refresh(
@@ -290,7 +381,12 @@ async fn token(
     }
     return Err(failure());
   }
-  let tokens: Tokens = serde_json::from_slice(&body).map_err(|_| failure())?;
+  parse_tokens(&body)
+}
+
+fn parse_tokens(body: &[u8]) -> Result<Tokens, TokenError> {
+  let tokens: Tokens =
+    serde_json::from_slice(body).map_err(|_| TokenError::Failed(UNAVAILABLE.into()))?;
   if !tokens.token_type.eq_ignore_ascii_case("bearer")
     || tokens.expires_in == 0
     || !valid_token(&tokens.access_token)
@@ -323,7 +419,6 @@ pub(super) struct Identity {
   pub sub: String,
   pub email: Option<String>,
   pub email_verified: Option<bool>,
-  nonce: String,
   iat: u64,
   exp: u64,
   azp: Option<String>,
@@ -343,16 +438,16 @@ pub(super) async fn verify(
   config: &Config,
   provider: &Provider,
   tokens: &Tokens,
-  nonce: &str,
+  requested_at: u64,
 ) -> Result<Identity, String> {
   let jwks = read(client.get(provider.jwks.clone())).await?;
-  verify_with_keys(config, tokens, nonce, &jwks)
+  verify_with_keys(config, tokens, requested_at, &jwks)
 }
 
 fn verify_with_keys(
   config: &Config,
   tokens: &Tokens,
-  nonce: &str,
+  requested_at: u64,
   jwks: &JwkSet,
 ) -> Result<Identity, String> {
   let invalid = || INVALID_IDENTITY.to_string();
@@ -408,8 +503,8 @@ fn verify_with_keys(
   };
   if !visible_ascii(&claims.sub, 255)
     || !audience_matches
-    || claims.nonce != nonce
     || claims.iat == 0
+    || claims.iat < requested_at.saturating_sub(60)
     || claims.iat > now.saturating_add(60)
     || claims.exp <= now
     || claims.iat >= claims.exp
@@ -515,39 +610,84 @@ mod tests {
   use jsonwebtoken::{encode, jwk::Jwk, EncodingKey, Header};
   use serde_json::json;
 
-  #[test]
-  fn callback_requires_exact_target_and_unambiguous_security_parameters() {
-    let url = |value| Url::parse(value).unwrap();
-    let valid = url("dev.apell.shell://oauth/callback?iss=https%3A%2F%2Faccount.example.invalid%2Foidc&state=once&code=code");
-    let parsed = callback(&valid).unwrap();
-    assert_eq!(parsed.issuer, "https://account.example.invalid/oidc");
-    assert_eq!(parsed.state, "once");
-    assert_eq!(
-      parsed.code.as_ref().map(|value| value.as_str()),
-      Some("code")
-    );
-    for wrong in [
-      "dev.apell.shell://oauth/elsewhere?iss=x&state=once&code=code",
-      "dev.apell.shell://other/callback?iss=x&state=once&code=code",
-      "dev.apell.shell://user@oauth/callback?iss=x&state=once&code=code",
-      "dev.apell.shell://oauth/callback?iss=x&state=once&state=twice&code=code",
-      "dev.apell.shell://oauth/callback?iss=x&iss=y&state=once&code=code",
-      "dev.apell.shell://oauth/callback?state=once&code=code",
-      "dev.apell.shell://oauth/callback?iss=x&state=once&code=code&error=access_denied",
-      "dev.apell.shell://oauth/callback?iss=x&state=once&code=code#fragment",
-    ] {
-      assert!(callback(&url(wrong)).is_none());
-    }
-  }
-
-  #[test]
-  fn signed_es384_identity_binds_nonce_audience_and_access_token() {
-    let config = Config {
+  fn fixture() -> Config {
+    Config {
       issuer: Url::parse("https://account.example.invalid/oidc").unwrap(),
       client_id: "fixture-native",
       sync_url: Url::parse("https://sync.example.invalid/").unwrap(),
       resource: "https://sync.example.invalid/config-sync",
-    };
+    }
+  }
+
+  fn device_response(verification_uri: &str, complete: &str) -> DeviceResponse {
+    DeviceResponse {
+      device_code: "private-poll-secret".into(),
+      user_code: "A2BC-DEF3".into(),
+      verification_uri: verification_uri.into(),
+      verification_uri_complete: Some(complete.into()),
+      expires_in: 300,
+      interval: None,
+    }
+  }
+
+  #[test]
+  fn device_code_display_omits_the_secret_and_prefilled_url() {
+    let config = fixture();
+    let base = "https://account.example.invalid/device";
+    let complete = "https://account.example.invalid/device?user_code=A2BC-DEF3";
+    let attempt = challenge(
+      &config,
+      device_response(base, complete),
+      OffsetDateTime::now_utc(),
+    )
+    .unwrap();
+    assert_eq!(attempt.browser_url.as_str(), complete);
+    assert_eq!(attempt.interval, Duration::from_secs(5));
+    let display = serde_json::to_value(attempt.display).unwrap();
+    assert_eq!(display["verification_uri"], base);
+    assert_eq!(display["user_code"], "A2BC-DEF3");
+    assert_eq!(display.as_object().unwrap().len(), 3);
+  }
+
+  #[test]
+  fn verification_rejects_foreign_origins_and_ignores_invalid_complete_urls() {
+    let config = fixture();
+    let base = "https://account.example.invalid/device";
+    let now = OffsetDateTime::now_utc();
+    assert!(challenge(
+      &config,
+      device_response("https://other.example.invalid/device", ""),
+      now
+    )
+    .is_none());
+    for address in [
+      "https://other.example.invalid/device?user_code=A2BC-DEF3",
+      "https://account.example.invalid/elsewhere?user_code=A2BC-DEF3",
+      "https://account.example.invalid/device?user_code=WRONG",
+      "https://account.example.invalid/device?user_code=A2BC-DEF3&next=https://other.example.invalid",
+    ] {
+      let attempt = challenge(&config, device_response(base, address), now).unwrap();
+      assert_eq!(attempt.browser_url.as_str(), base);
+    }
+  }
+
+  #[test]
+  fn device_polling_distinguishes_retryable_and_terminal_responses() {
+    let poll =
+      |error: &str| device_poll_error(&serde_json::to_vec(&json!({"error":error})).unwrap());
+    assert!(matches!(poll("authorization_pending"), Ok(Poll::Pending)));
+    assert!(matches!(poll("slow_down"), Ok(Poll::SlowDown)));
+    assert_eq!(
+      poll("expired_token").err().as_deref(),
+      Some(SIGN_IN_EXPIRED)
+    );
+    assert!(poll("access_denied").is_err());
+    assert!(poll("invalid_grant").is_err());
+  }
+
+  #[test]
+  fn signed_es384_identity_binds_freshness_audience_and_access_token() {
+    let config = fixture();
     // PKCS#8 wrapping a freshly generated SEC1 P-384 test key.
     let mut der = vec![
       0x30, 0x4e, 0x02, 0x01, 0x00, 0x30, 0x10, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02,
@@ -571,7 +711,7 @@ mod tests {
     let access_token = "fixture-access";
     let claims = json!({
       "iss": config.issuer.as_str(), "aud": config.client_id, "sub": "signed-subject",
-      "nonce": "bound-nonce", "iat": now, "exp": now + 60,
+      "iat": now, "exp": now + 60,
       "at_hash": access_hash(header.alg, access_token)
     });
     let mut tokens = Tokens {
@@ -582,18 +722,16 @@ mod tests {
       token_type: "Bearer".into(),
     };
     assert_eq!(
-      verify_with_keys(&config, &tokens, "bound-nonce", &jwks)
-        .unwrap()
-        .sub,
+      verify_with_keys(&config, &tokens, now, &jwks).unwrap().sub,
       "signed-subject"
     );
-    assert!(verify_with_keys(&config, &tokens, "other-nonce", &jwks).is_err());
+    assert!(verify_with_keys(&config, &tokens, now + 61, &jwks).is_err());
     tokens.access_token = "other-access".into();
-    assert!(verify_with_keys(&config, &tokens, "bound-nonce", &jwks).is_err());
+    assert!(verify_with_keys(&config, &tokens, now, &jwks).is_err());
     tokens.access_token = access_token.into();
     let mut wrong_audience = claims;
     wrong_audience["aud"] = json!("other-client");
     tokens.id_token = Some(encode(&header, &wrong_audience, &signer).unwrap());
-    assert!(verify_with_keys(&config, &tokens, "bound-nonce", &jwks).is_err());
+    assert!(verify_with_keys(&config, &tokens, now, &jwks).is_err());
   }
 }

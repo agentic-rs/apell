@@ -7,12 +7,16 @@ import { join } from 'node:path';
 type Discovery = {
   issuer: string;
   authorization_endpoint: string;
+  device_authorization_endpoint: string;
   token_endpoint: string;
   jwks_uri: string;
   userinfo_endpoint: string;
   response_types_supported: string[];
   code_challenge_methods_supported: string[];
+  grant_types_supported: string[];
 };
+
+const device_grant = 'urn:ietf:params:oauth:grant-type:device_code';
 
 const fetchOnce = (url: string | URL, options: RequestInit = {}) =>
   fetch(url, { ...options, redirect: 'manual', signal: AbortSignal.timeout(4000) });
@@ -32,11 +36,13 @@ async function discover(endpoint: string) {
     const discovery: Discovery = await response.json();
     assert.equal(discovery.issuer, issuer);
     assert.equal(discovery.authorization_endpoint, `${issuer}/auth`);
+    assert.equal(discovery.device_authorization_endpoint, `${issuer}/device/auth`);
     assert.equal(discovery.token_endpoint, `${issuer}/token`);
     assert.equal(discovery.jwks_uri, `${issuer}/jwks`);
     assert.equal(discovery.userinfo_endpoint, `${issuer}/me`);
     assert.ok(discovery.response_types_supported.includes('code'));
     assert.ok(discovery.code_challenge_methods_supported.includes('S256'));
+    assert.ok(discovery.grant_types_supported.includes(device_grant));
 
     const jwks = await fetchOnce(discovery.jwks_uri);
     assert.equal(jwks.status, 200);
@@ -45,6 +51,39 @@ async function discover(endpoint: string) {
     return discovery;
   }
   throw new Error('Logto discovery did not become ready');
+}
+
+function postForm(url: string, fields: Record<string, string>) {
+  return fetchOnce(url, { method: 'POST', body: new URLSearchParams(fields) });
+}
+
+async function checkDeviceChallenge(discovery: Discovery, client_id: string) {
+  const authorization = await postForm(discovery.device_authorization_endpoint, {
+    client_id,
+    scope: 'openid profile email offline_access',
+  });
+  assert.equal(authorization.status, 200, 'Logto did not issue a device code');
+  const challenge = await authorization.json();
+  assert.ok(typeof challenge.device_code === 'string' && challenge.device_code.length > 0);
+  assert.ok(typeof challenge.user_code === 'string' && challenge.user_code.length > 0);
+  const verification = new URL(challenge.verification_uri);
+  assert.equal(verification.origin, new URL(discovery.issuer).origin);
+  if (challenge.verification_uri_complete) {
+    const prefilled = new URL(challenge.verification_uri_complete);
+    assert.equal(prefilled.origin, verification.origin);
+    assert.equal(prefilled.searchParams.get('user_code'), challenge.user_code, 'Code mismatch');
+  }
+  const interval = challenge.interval ?? 5;
+  assert.ok(Number.isSafeInteger(interval) && interval >= 1 && interval <= 30);
+  assert.ok(Number.isSafeInteger(challenge.expires_in) && challenge.expires_in > interval);
+  await Bun.sleep(interval * 1000);
+  const poll = await postForm(discovery.token_endpoint, {
+    client_id,
+    grant_type: device_grant,
+    device_code: challenge.device_code,
+  });
+  assert.equal(poll.status, 400);
+  assert.equal((await poll.json()).error, 'authorization_pending');
 }
 
 function authorizationRequest(endpoint: string, discovery: Discovery) {
@@ -145,8 +184,14 @@ async function checkDisposableStack() {
     await Promise.all(reservations.map((server) => server.stop(true)));
     started = true;
     runCompose(compose, ['up', '-d'], env);
-    await checkAuthorization(endpoint, await discover(endpoint));
-    console.log('Disposable Logto smoke passed (discovery, JWKS, and S256 PKCE).');
+    const discovery = await discover(endpoint);
+    await checkAuthorization(endpoint, discovery);
+    const denied = await postForm(discovery.device_authorization_endpoint, {
+      client_id: 'demo-app',
+      scope: 'openid offline_access',
+    });
+    assert.equal(denied.status, 400, 'Device flow should require a device flow client');
+    console.log('Disposable Logto smoke passed (discovery, JWKS, S256 PKCE, and device flow).');
   } finally {
     try {
       if (started) runCompose(compose, ['down', '--volumes', '--remove-orphans'], env);
@@ -157,10 +202,14 @@ async function checkDisposableStack() {
   }
 }
 
-const [option, argument, ...extra] = process.argv.slice(2);
+const [option, argument, extra, client_id, ...rest] = process.argv.slice(2);
 if (!option) {
   await checkDisposableStack();
-} else if (option === '--endpoint' && argument && !extra.length) {
+} else if (
+  option === '--endpoint' &&
+  argument &&
+  (!extra || (extra === '--device-client-id' && client_id && !rest.length))
+) {
   const endpoint = new URL(argument);
   assert.equal(endpoint.href, `${endpoint.origin}/`, '--endpoint must be the Logto origin');
   assert.ok(
@@ -168,8 +217,15 @@ if (!option) {
       (endpoint.protocol === 'http:' && ['127.0.0.1', 'localhost'].includes(endpoint.hostname)),
     'Use a public HTTPS endpoint or a loopback HTTP endpoint',
   );
-  await discover(endpoint.origin);
-  console.log('Logto discovery and public signing keys passed.');
+  const discovery = await discover(endpoint.origin);
+  if (client_id) {
+    await checkDeviceChallenge(discovery, client_id);
+    console.log('Logto discovery, public signing keys, and device code polling passed.');
+  } else {
+    console.log('Logto discovery and public signing keys passed.');
+  }
 } else {
-  throw new Error('Usage: bun deploy/account/smoke.ts [--endpoint https://auth.example.invalid]');
+  throw new Error(
+    'Usage: bun deploy/account/smoke.ts [--endpoint https://auth.example.invalid [--device-client-id CLIENT_ID]]',
+  );
 }

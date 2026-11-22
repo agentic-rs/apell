@@ -132,6 +132,7 @@ export const setPermissionMode = (
 export const getSettings = () => shellCall<LlmSettings>('llm.settings');
 export const getAccountStatus = () => shellCall<AccountStatus>('account.status');
 export const signInToAccount = () => shellCall<AccountStatus>('account.sign_in');
+export const openAccountSignIn = () => shellCall<void>('account.open_sign_in');
 export const cancelAccountSignIn = () => shellCall<AccountStatus>('account.cancel');
 export const signOutOfAccount = () => shellCall<AccountStatus>('account.sign_out');
 export const onAccountChanged = (handler: () => void) => listen('apell-account-changed', handler);

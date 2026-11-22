@@ -144,10 +144,16 @@ export interface LlmSettings {
   connections: LlmConnection[];
   providers: LlmProvider[];
 }
+export interface AccountDeviceCode {
+  user_code: string;
+  verification_uri: string;
+  expires_at: string;
+}
 export interface AccountStatus {
   state: 'unavailable' | 'signed_out' | 'signing_in' | 'signed_in';
   email: string | null;
   error?: string | null;
+  device_code: AccountDeviceCode | null;
 }
 export interface ConfigSyncStatus {
   state: 'disabled' | 'off' | 'ready';

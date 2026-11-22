@@ -5,6 +5,7 @@ import {
   getConfigSyncStatus,
   message,
   onAccountChanged,
+  openAccountSignIn,
   setConfigSyncEnabled,
   signInToAccount,
   signOutOfAccount,
@@ -18,11 +19,12 @@ import type {
   ConfigSyncSummary,
   LlmProvider,
 } from '../lib/types';
+import { AccountSignIn } from './AccountSignIn';
 import { OperationScope } from './providers/state';
 import { Sheet } from './Sheet';
 
 type SyncConflict = Extract<ConfigSyncResult, { state: 'conflict' }>;
-type Action = 'sign_in' | 'cancel' | 'sign_out' | 'toggle' | 'sync';
+type Action = 'sign_in' | 'open_sign_in' | 'cancel' | 'sign_out' | 'toggle' | 'sync';
 
 const sync_messages = {
   current: 'Settings are up to date.',
@@ -219,21 +221,18 @@ export function AccountSync({
             disabled={!!busy}
             onClick={() => void changeAccount('sign_in', signInToAccount)}
           >
-            {busy === 'sign_in' ? 'Opening sign-in…' : 'Sign in'}
+            {busy === 'sign_in' ? 'Requesting a code…' : 'Sign in'}
           </button>
         </>
       )}
       {account?.state === 'signing_in' && (
-        <>
-          <p role="status">Finish signing in to Apell Account.</p>
-          <button
-            type="button"
-            disabled={!!busy}
-            onClick={() => void changeAccount('cancel', cancelAccountSignIn)}
-          >
-            {busy === 'cancel' ? 'Cancelling…' : 'Cancel sign-in'}
-          </button>
-        </>
+        <AccountSignIn
+          challenge={account.device_code}
+          busy={!!busy}
+          error={error}
+          onOpen={() => void perform('open_sign_in', openAccountSignIn)}
+          onCancel={() => void changeAccount('cancel', cancelAccountSignIn)}
+        />
       )}
       {account?.state === 'signed_in' && (
         <>
@@ -291,7 +290,7 @@ export function AccountSync({
           {outcome}
         </p>
       )}
-      {error && !conflict && (
+      {error && !conflict && account?.state !== 'signing_in' && (
         <p className="status error" role="alert">
           {error}
         </p>

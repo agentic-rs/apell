@@ -5,9 +5,9 @@ registered applications. The Logto deployment supports email verification codes,
 passkeys, and GitHub. Account sign-in is optional for local applets and public
 Store browsing and downloads.
 
-Each application has a separate OIDC registration and exact callback. Native
-clients should open the system browser and use authorization code with S256
-PKCE. The Store owns its session and package permissions. GitHub Actions
+Each application has a separate OIDC registration. Browser redirect flows
+register an exact callback, and public redirect clients use S256 PKCE. The Apell
+shell uses device codes. The Store owns its session and package permissions. GitHub Actions
 continues to use the [CI publishing flow](store.md#configure-the-workflow).
 
 ## Stage the issuer
@@ -138,9 +138,9 @@ trusted service operated with Account. `apell package oidc` configures a
 package's GitHub Actions publisher separately from these Account clients.
 
 The command discovers the public issuer and writes a new JSON file containing
-`issuer`, `client_id`, `client_type`, `redirect_uris`, and
-`post_logout_redirect_uris`. Web clients also receive `client_secret`. Public
-native and SPA clients use authorization code with S256 PKCE. The output
+`issuer`, `client_id`, `client_type`, `device_flow`, `redirect_uris`, and
+`post_logout_redirect_uris`. Web clients also receive `client_secret`. Native
+clients registered with callbacks and SPA clients use S256 PKCE. The output
 file has mode `0600`, and its parent directory must exist. Existing output
 files are preserved. The `.env.*` output names above are ignored by Git.
 Terminal output contains the registration summary and client ID, with
@@ -162,29 +162,43 @@ passkeys, or GitHub sign-in with the same package access.
 
 ## Sign in to Apell and sync model settings
 
-Register a first-party Native client for the shell with the exact callback
-`dev.apell.shell://oauth/callback`. Set up a Logto API resource for config sync
-with the permissions `config:read` and `config:write`, and assign them to the
-Accounts that can sync. [Logto API resource setup](https://docs.logto.io/authorization/global-api-resources)
+Register a dedicated first-party Native client with device flow for the shell.
+Logto sets the authorization flow at creation. The equivalent Console option is
+**Device flow** when creating a Native application. [Logto device flow](https://docs.logto.io/quick-starts/device-flow)
+
+```sh
+apell auth app register \
+  --name "Apell Shell Device" \
+  --type native --device-flow --first-party \
+  --output deploy/account/.env.shell-device-oidc.json
+```
+
+Set up a Logto API resource for config sync with `config:read` and
+`config:write`. Assign those permissions through a role to the Accounts
+approved for sync. Keep that role out of the default assignments during a
+pilot. [Logto API resource setup](https://docs.logto.io/authorization/global-api-resources)
 
 Set these public values in the shell's build environment. Keep deployment-specific
 values in local build settings. On mobile, `pnpm tauri` and `apell dev` forward
-these values to the native build. On iOS, sign-in opens the system authentication
-sheet. Android and macOS open the system browser. All three use S256 PKCE and
-keep session credentials in the device's secure store.
+these values to the native build. The shell polls Logto while the user
+approves the device code in a browser and then keeps session credentials in the
+device's secure store.
 
 | Variable                  | Value                                            |
 | ------------------------- | ------------------------------------------------ |
 | `APELL_ACCOUNT_ISSUER`    | Canonical HTTPS Account issuer including `/oidc` |
-| `APELL_ACCOUNT_CLIENT_ID` | Public Native client ID                          |
+| `APELL_ACCOUNT_CLIENT_ID` | Public Native Device flow client ID              |
 | `APELL_SYNC_URL`          | HTTPS origin of the Store serving config sync    |
 | `APELL_SYNC_RESOURCE`     | Exact Logto API resource identifier for sync     |
 
 Configure `APELL_STORE_CONFIG_SYNC_FILE` on the Store host with the same `issuer`,
-`client_id`, and resource `audience`. The Store validates the sync access token and
-uses its issuer and subject for the settings namespace.
+`client_id`, and resource `audience` as the shell. The Store validates the client
+ID, audience, and sync scopes and uses the token's issuer and subject for the
+settings namespace.
 
-In **Settings → Apell Account**, sign in, turn on config sync, and choose **Sync now**.
+In **Settings → Apell Account**, choose **Sign in** to see the browser address
+and code. Enter the code on the sign-in page on this or another device. When
+Apell shows the signed-in account, turn on config sync and choose **Sync now**.
 Apell syncs connection labels, built-in provider and model selections, and the
 preferred active model. Credentials and custom endpoints stay on each device.
 If a synced provider needs a credential, add it on that device before using the model.
@@ -198,3 +212,10 @@ Run `bun deploy/account/smoke.ts` from the repository root with Bun and Docker
 Compose installed. Use the isolated smoke test before changing production
 configuration, then verify the three real sign-in methods in a browser before
 cutover.
+
+To verify that a registered device flow client can request a code and poll for
+approval, pass the Account origin and its client ID to the smoke test.
+
+```sh
+bun deploy/account/smoke.ts --endpoint https://auth.example.invalid --device-client-id "$APELL_ACCOUNT_CLIENT_ID"
+```
