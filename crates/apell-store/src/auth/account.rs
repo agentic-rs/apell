@@ -1,4 +1,4 @@
-mod keys;
+pub(super) mod keys;
 #[cfg(test)]
 mod tests;
 
@@ -82,13 +82,13 @@ struct IdClaims {
 
 #[derive(Deserialize)]
 #[serde(untagged)]
-enum Audience {
+pub(super) enum Audience {
   Single(String),
   Multiple(Vec<String>),
 }
 
 impl Audience {
-  fn is_for(&self, client_id: &str) -> bool {
+  pub(super) fn is_for(&self, client_id: &str) -> bool {
     match self {
       Self::Single(audience) => audience == client_id,
       Self::Multiple(audiences) => audiences.len() == 1 && audiences[0] == client_id,
@@ -376,7 +376,7 @@ fn issuer_url(value: &str) -> Option<Url> {
   (url.path() == "/" || !url.path().ends_with('/')).then_some(url)
 }
 
-fn parse_url(value: &str) -> Option<Url> {
+pub(super) fn parse_url(value: &str) -> Option<Url> {
   if value.len() > 2048
     || value
       .chars()
@@ -402,7 +402,7 @@ fn form_encode(value: &str) -> String {
   url::form_urlencoded::byte_serialize(value.as_bytes()).collect()
 }
 
-fn visible_ascii(value: &str, max_len: usize) -> bool {
+pub(super) fn visible_ascii(value: &str, max_len: usize) -> bool {
   !value.is_empty() && value.len() <= max_len && value.bytes().all(|byte| byte.is_ascii_graphic())
 }
 
@@ -418,7 +418,7 @@ fn access_token_hash(algorithm: Algorithm, token: &str) -> String {
   }
 }
 
-async fn read_json<T: DeserializeOwned>(request: RequestBuilder) -> Result<T> {
+pub(super) async fn read_json<T: DeserializeOwned>(request: RequestBuilder) -> Result<T> {
   let mut response = request
     .header(header::ACCEPT, "application/json")
     .send()

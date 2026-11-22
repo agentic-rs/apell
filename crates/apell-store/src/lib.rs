@@ -1,5 +1,6 @@
 pub mod auth;
 mod config;
+mod config_sync;
 mod downloads;
 mod error;
 mod management;
@@ -8,6 +9,7 @@ mod oidc;
 pub mod packages;
 mod storage;
 
+pub use auth::ConfigSyncConfig;
 use config::validate_token;
 pub use config::Config;
 pub use error::{Result, StoreError};
@@ -39,6 +41,7 @@ pub(crate) struct AppState {
   token_hash: [u8; 32],
   oidc: Option<oidc::Oidc>,
   auth: Option<Arc<auth::Auth>>,
+  config_sync: Option<Arc<auth::ConfigSyncAuth>>,
   uploads: Arc<Semaphore>,
   queries: Arc<Semaphore>,
   downloads: Arc<Semaphore>,
@@ -86,6 +89,12 @@ fn router_with_store(config: &Config, store: Store, oidc: Option<oidc::Oidc>) ->
     token_hash: Sha256::digest(config.publish_token.as_bytes()).into(),
     oidc,
     auth,
+    config_sync: config
+      .config_sync
+      .clone()
+      .map(auth::ConfigSyncAuth::new)
+      .transpose()?
+      .map(Arc::new),
     uploads: Arc::new(Semaphore::new(1)),
     queries: Arc::new(Semaphore::new(4)),
     downloads: Arc::new(Semaphore::new(8)),
@@ -102,6 +111,7 @@ fn router_with_store(config: &Config, store: Store, oidc: Option<oidc::Oidc>) ->
     .route("/v1/auth/github-actions", post(exchange_identity))
     .merge(auth::routes())
     .merge(management::routes())
+    .merge(config_sync::routes())
     .fallback(not_found);
   let media = Router::new()
     .route("/", any(not_found))
@@ -149,7 +159,8 @@ fn router_with_store(config: &Config, store: Store, oidc: Option<oidc::Oidc>) ->
 
 async fn response_headers(request: Request, next: Next) -> Response {
   let authentication = request.uri().path().starts_with("/api/v1/auth/")
-    || request.uri().path().starts_with("/api/v1/account/");
+    || request.uri().path().starts_with("/api/v1/account/")
+    || request.uri().path().starts_with("/api/v1/config-sync/");
   let mut response = next.run(request).await;
   let headers = response.headers_mut();
   headers.insert(

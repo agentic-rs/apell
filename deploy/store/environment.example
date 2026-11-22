@@ -3,6 +3,10 @@ APELL_STORE_TRUSTED_PUBLISHERS_FILE=/etc/apell-store/trusted-publishers.json
 # Optional Apell Account website login. Takes precedence over the legacy provider.
 # Contents: {"issuer":"https://auth.example.invalid/oidc","client_id":"...","client_secret":"..."}
 # APELL_STORE_ACCOUNT_OIDC_FILE=/etc/apell-store/account-oidc.json
+# Optional native config sync. Provision a Logto API resource with config:read
+# and config:write scopes and grant both scopes to its intended users.
+# Contents: {"issuer":"https://auth.example.invalid/oidc","audience":"https://store.example.invalid/api/v1/config-sync","client_id":"..."}
+# APELL_STORE_CONFIG_SYNC_FILE=/etc/apell-store/config-sync.json
 # Optional legacy GitHub website login. Contents: {"client_id":"...","client_secret":"..."}
 # APELL_STORE_GITHUB_OAUTH_FILE=/etc/apell-store/github-oauth.json
 # Migration only: explicitly assign reserved existing packages, then remove this setting.

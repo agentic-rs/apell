@@ -1,5 +1,5 @@
 use crate::{
-  auth::{AccountConfig, OAuthConfig, User},
+  auth::{AccountConfig, ConfigSyncConfig, OAuthConfig, User},
   OidcConfig,
 };
 use std::{net::SocketAddr, path::PathBuf};
@@ -12,6 +12,7 @@ pub struct Config {
   pub oidc: Option<OidcConfig>,
   pub oauth: Option<OAuthConfig>,
   pub account: Option<AccountConfig>,
+  pub config_sync: Option<ConfigSyncConfig>,
   pub bootstrap_owner: Option<User>,
 }
 
@@ -60,6 +61,7 @@ impl Config {
       oidc: OidcConfig::from_env()?,
       oauth,
       account,
+      config_sync: ConfigSyncConfig::from_env()?,
       bootstrap_owner: bootstrap_owner()?,
     })
   }

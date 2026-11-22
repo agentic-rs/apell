@@ -160,8 +160,35 @@ matching its subject to the ID token. Bound Accounts can use email codes,
 passkeys, or GitHub sign-in with the same package access.
 [Store sign-in and operator setup](store-accounts.md)
 
-Register native Apell and other services separately as they adopt Account.
-Each service keeps its own authorization rules and scopes.
+## Sign in to Apell and sync model settings
+
+Register a first-party Native client for the shell with the exact callback
+`dev.apell.shell://oauth/callback`. Set up a Logto API resource for config sync
+with the permissions `config:read` and `config:write`, and assign them to the
+Accounts that can sync. [Logto API resource setup](https://docs.logto.io/authorization/global-api-resources)
+
+Set these public values in the shell's build environment. Keep deployment-specific
+values in local build settings. The shell uses the system browser and S256 PKCE,
+with session credentials in the device's secure store.
+
+| Variable                  | Value                                            |
+| ------------------------- | ------------------------------------------------ |
+| `APELL_ACCOUNT_ISSUER`    | Canonical HTTPS Account issuer including `/oidc` |
+| `APELL_ACCOUNT_CLIENT_ID` | Public Native client ID                          |
+| `APELL_SYNC_URL`          | HTTPS origin of the Store serving config sync    |
+| `APELL_SYNC_RESOURCE`     | Exact Logto API resource identifier for sync     |
+
+Configure `APELL_STORE_CONFIG_SYNC_FILE` on the Store host with the same `issuer`,
+`client_id`, and resource `audience`. The Store validates the sync access token and
+uses its issuer and subject for the settings namespace.
+
+In **Settings → Apell Account**, sign in, turn on config sync, and choose **Sync now**.
+Apell syncs connection labels, built-in provider and model selections, and the
+preferred active model. Credentials and custom endpoints stay on each device.
+If a synced provider needs a credential, add it on that device before using the model.
+When two devices saved different settings, review both versions and choose which
+to use. The Store records each version with its parent revision, and applies
+updates only when the expected cloud revision still matches.
 
 ## Verify locally
 

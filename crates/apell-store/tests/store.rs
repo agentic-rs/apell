@@ -64,6 +64,7 @@ fn app() -> (tempfile::TempDir, Router) {
     oidc: None,
     oauth: None,
     account: None,
+    config_sync: None,
     bootstrap_owner: None,
   };
   let app = router(&config).unwrap();

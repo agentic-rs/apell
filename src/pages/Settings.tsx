@@ -4,6 +4,7 @@ import type { LlmConnection, LlmSettings } from '../lib/types';
 import { ConnectionEditor } from '../components/providers/ConnectionEditor';
 import { OperationScope } from '../components/providers/state';
 import { Icon } from '../components/Icon';
+import { AccountSync } from '../components/AccountSync';
 import { AppletPermissions } from '../components/AppletPermissions';
 import { SettingsTransfer } from '../components/SettingsTransfer';
 
@@ -12,6 +13,8 @@ export function Settings() {
   const [editor, setEditor] = useState<{ connection?: LlmConnection }>();
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [reload_requested, setReloadRequested] = useState(false);
   const [status, setStatus] = useState('');
   const scope = useRef(new OperationScope());
 
@@ -37,6 +40,14 @@ export function Settings() {
     void load();
     return () => scope.current.cancel();
   }, []);
+  useEffect(() => {
+    if (reload_requested && !loading && !busy) {
+      setReloadRequested(false);
+      void load();
+    }
+  }, [reload_requested, loading, busy]);
+
+  const editing_disabled = busy || loading || syncing;
 
   if (editor && settings)
     return (
@@ -97,14 +108,14 @@ export function Settings() {
     );
 
   const connections = (
-    <section className="settings panel" aria-busy={loading || busy}>
+    <section className="settings panel" aria-busy={editing_disabled}>
       <div className="settings-heading">
         <h2>Connections</h2>
         <button
           type="button"
           className="icon-button"
           aria-label="Add connection"
-          disabled={loading || busy || !settings?.providers.length}
+          disabled={editing_disabled || !settings?.providers.length}
           onClick={() => setEditor({})}
         >
           <Icon name="add" />
@@ -142,7 +153,7 @@ export function Settings() {
                 <button
                   type="button"
                   className="connection-detail"
-                  disabled={busy || loading}
+                  disabled={editing_disabled}
                   aria-label={`Edit ${connection.name}`}
                   onClick={editConnection}
                 >
@@ -161,7 +172,7 @@ export function Settings() {
                   <button
                     type="button"
                     className="connection-use"
-                    disabled={busy || loading}
+                    disabled={editing_disabled}
                     aria-label={`${credential_action} for ${connection.name}`}
                     onClick={editConnection}
                   >
@@ -171,7 +182,7 @@ export function Settings() {
                   <button
                     type="button"
                     className="connection-use"
-                    disabled={busy || loading || !connection.model_id}
+                    disabled={editing_disabled || !connection.model_id}
                     aria-label={`Use ${connection.name}`}
                     onClick={async () => {
                       const operation = scope.current.start();
@@ -220,7 +231,7 @@ export function Settings() {
         <button
           type="button"
           className="add-connection"
-          disabled={busy || loading}
+          disabled={editing_disabled}
           onClick={() => setEditor({})}
         >
           <Icon name="add" /> Add connection
@@ -232,11 +243,17 @@ export function Settings() {
   return (
     <>
       {connections}
+      <AccountSync
+        providers={settings?.providers ?? []}
+        disabled={editing_disabled || !settings}
+        onApplied={() => setReloadRequested(true)}
+        onSyncBusyChange={setSyncing}
+      />
       {settings && (
         <SettingsTransfer
           connections={settings.connections}
           providers={settings.providers}
-          disabled={busy || loading}
+          disabled={editing_disabled}
           onImported={() => void load()}
         />
       )}

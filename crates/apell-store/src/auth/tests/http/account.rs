@@ -180,6 +180,7 @@ impl MockAccount {
         client_secret: CLIENT_SECRET.into(),
         origin: super::config().origin,
       }),
+      config_sync: None,
       bootstrap_owner: None,
     })
     .unwrap()

@@ -17,7 +17,7 @@ use url::Url;
 const REFRESH_COOLDOWN: Duration = Duration::from_secs(10);
 
 #[derive(Default)]
-pub(super) struct Cache {
+pub(in crate::auth) struct Cache {
   endpoint: Option<Url>,
   keys: HashMap<String, (Algorithm, DecodingKey)>,
   fetched_at: Option<Instant>,
@@ -25,7 +25,7 @@ pub(super) struct Cache {
 }
 
 impl Cache {
-  pub(super) async fn get(
+  pub(in crate::auth) async fn get(
     &mut self,
     client: &Client,
     endpoint: &Url,

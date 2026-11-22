@@ -1,6 +1,7 @@
 mod account;
 mod cli;
 mod config;
+mod config_sync;
 mod github;
 mod routes;
 mod sessions;
@@ -8,6 +9,8 @@ mod sessions;
 mod tests;
 
 pub use config::{AccountConfig, OAuthConfig};
+pub(crate) use config_sync::ConfigSyncAuth;
+pub use config_sync::ConfigSyncConfig;
 pub use github::RepositoryIdentity;
 pub(crate) use routes::routes;
 pub(crate) use sessions::migrate;

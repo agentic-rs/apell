@@ -59,6 +59,7 @@ impl Store {
       .map_err(|_| StoreError::internal())?;
     crate::auth::migrate(&connection)?;
     packages::migrate(&connection)?;
+    crate::config_sync::migrate(&connection)?;
     Ok(store)
   }
 

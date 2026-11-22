@@ -3,12 +3,16 @@ import { listen } from '@tauri-apps/api/event';
 import { onBackButtonPress } from '@tauri-apps/api/app';
 import type { LlmResult } from '../../packages/applet-sdk/src/types';
 import type {
+  AccountStatus,
   AppletEvent,
   AppletInstallation,
   AppletListReport,
   AppletPermission,
   AppletSession,
   BackendEvent,
+  ConfigSyncResolution,
+  ConfigSyncResult,
+  ConfigSyncStatus,
   GitHubRelease,
   CreateConnectionDraft,
   DraftCredential,
@@ -126,6 +130,16 @@ export const setPermissionMode = (
   mode: PermissionMode,
 ) => shellCall<PermissionMode>('permissions.set_mode', { session_id, view_id, permission, mode });
 export const getSettings = () => shellCall<LlmSettings>('llm.settings');
+export const getAccountStatus = () => shellCall<AccountStatus>('account.status');
+export const signInToAccount = () => shellCall<AccountStatus>('account.sign_in');
+export const cancelAccountSignIn = () => shellCall<AccountStatus>('account.cancel');
+export const signOutOfAccount = () => shellCall<AccountStatus>('account.sign_out');
+export const onAccountChanged = (handler: () => void) => listen('apell-account-changed', handler);
+export const getConfigSyncStatus = () => shellCall<ConfigSyncStatus>('sync.status');
+export const setConfigSyncEnabled = (enabled: boolean) =>
+  shellCall<ConfigSyncStatus>('sync.set_enabled', { enabled });
+export const syncConfig = (resolution?: ConfigSyncResolution) =>
+  shellCall<ConfigSyncResult>('sync.run', resolution ?? {});
 export const getSettingsTransferCapabilities = () =>
   shellCall<SettingsTransferCapabilities>('settings_transfer.capabilities');
 export const exportSettingsTransfer = (connection_ids: string[], passphrase: string) =>

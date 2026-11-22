@@ -144,6 +144,32 @@ export interface LlmSettings {
   connections: LlmConnection[];
   providers: LlmProvider[];
 }
+export interface AccountStatus {
+  state: 'unavailable' | 'signed_out' | 'signing_in' | 'signed_in';
+  email: string | null;
+  error?: string | null;
+}
+export interface ConfigSyncStatus {
+  state: 'disabled' | 'off' | 'ready';
+  last_synced_at: string | null;
+}
+export interface ConfigSyncSummary {
+  connections: { name: string; provider_id: string; model_id: string }[];
+  active_model: string | null;
+}
+export interface ConfigSyncResolution {
+  resolution: 'keep_local' | 'use_cloud';
+  conflict_id: string;
+}
+export type ConfigSyncResult =
+  | { state: 'current' | 'uploaded' | 'downloaded'; status: ConfigSyncStatus }
+  | {
+      state: 'conflict';
+      status: ConfigSyncStatus;
+      conflict_id: string;
+      local: ConfigSyncSummary;
+      cloud: ConfigSyncSummary;
+    };
 export interface SettingsTransferCapabilities {
   qr: boolean;
   capture_protection: 'block' | 'hide' | 'unavailable';

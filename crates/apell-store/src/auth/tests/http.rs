@@ -28,6 +28,7 @@ fn fixture() -> (tempfile::TempDir, Store, Router, String) {
     oidc: None,
     oauth: Some(config()),
     account: None,
+    config_sync: None,
     bootstrap_owner: None,
   };
   let router = crate::router(&configuration).unwrap();
@@ -405,6 +406,7 @@ async fn oauth_callback(resume_cli: bool) {
     token_hash: [0; 32],
     oidc: None,
     auth: Some(Arc::new(auth)),
+    config_sync: None,
     uploads: Arc::new(Semaphore::new(1)),
     queries: Arc::new(Semaphore::new(4)),
     downloads: Arc::new(Semaphore::new(8)),
