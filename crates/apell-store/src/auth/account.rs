@@ -35,7 +35,8 @@ pub(super) struct Account {
 pub(super) struct AccountIdentity {
   pub issuer: String,
   pub subject: String,
-  pub github: Option<GitHubIdentity>,
+  userinfo_endpoint: Url,
+  access_token: String,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -240,25 +241,37 @@ impl Account {
     let claims = self
       .verify_identity(&provider.jwks_uri, &tokens, nonce)
       .await?;
-    let user: UserInfo = read_json(
-      self
-        .client
-        .get(provider.userinfo_endpoint)
-        .bearer_auth(&tokens.access_token),
-    )
-    .await?;
-    if user.sub != claims.sub {
-      return Err(invalid_identity());
-    }
     Ok(AccountIdentity {
       issuer: self.issuer.clone(),
       subject: claims.sub,
-      github: user
-        .identities
-        .and_then(|identities| identities.github)
-        .map(LinkedGitHub::verified)
-        .transpose()?,
+      userinfo_endpoint: provider.userinfo_endpoint,
+      access_token: tokens.access_token,
     })
+  }
+
+  pub(super) async fn linked_github(
+    &self,
+    identity: &AccountIdentity,
+  ) -> Result<Option<GitHubIdentity>> {
+    let _permit = self
+      .requests
+      .try_acquire()
+      .map_err(|_| StoreError::busy())?;
+    let user: UserInfo = read_json(
+      self
+        .client
+        .get(identity.userinfo_endpoint.clone())
+        .bearer_auth(&identity.access_token),
+    )
+    .await?;
+    if user.sub != identity.subject {
+      return Err(invalid_identity());
+    }
+    user
+      .identities
+      .and_then(|identities| identities.github)
+      .map(LinkedGitHub::verified)
+      .transpose()
   }
 
   async fn provider(&self) -> Result<Provider> {

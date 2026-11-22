@@ -153,11 +153,12 @@ URL, including the `/oidc` path, as the `issuer` in the Store's
 `APELL_STORE_ACCOUNT_OIDC_FILE`. The Store uses per-request state and nonce,
 and verifies the ID token before creating its own session.
 
-The stable Account identity is the signed `(iss, sub)`. The Store requests the
-`identities` scope and reads the linked numeric GitHub ID from Account UserInfo
-after matching its subject to the ID token. This preserves existing package
-ownership across email, passkey, and GitHub sign-ins. Each new Store sign-in
-requires a current GitHub link. [Store sign-in and operator setup](store-accounts.md)
+The stable Account identity is the signed `(iss, sub)`. The Store uses it to
+resolve existing Store user bindings. For a first sign-in without a binding,
+the Store reads the linked numeric GitHub ID from Account UserInfo after
+matching its subject to the ID token. Bound Accounts can use email codes,
+passkeys, or GitHub sign-in with the same package access.
+[Store sign-in and operator setup](store-accounts.md)
 
 Register native Apell and other services separately as they adopt Account.
 Each service keeps its own authorization rules and scopes.

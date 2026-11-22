@@ -107,6 +107,24 @@ impl Store {
     transaction.commit().map_err(|_| StoreError::internal())
   }
 
+  pub(super) fn account_user(&self, issuer: &str, subject: &str) -> Result<Option<User>> {
+    self
+      .connection()?
+      .query_row(
+        "SELECT users.github_id, users.github_login FROM auth_account_links JOIN users USING(github_id)
+         WHERE issuer=?1 AND subject=?2",
+        params![issuer, subject],
+        |row| {
+          Ok(User {
+            github_id: row.get(0)?,
+            github_login: row.get(1)?,
+          })
+        },
+      )
+      .optional()
+      .map_err(|_| StoreError::internal())
+  }
+
   pub fn user_by_id(&self, github_id: u64) -> Result<Option<User>> {
     if github_id == 0 || github_id > i64::MAX as u64 {
       return Ok(None);
@@ -390,7 +408,18 @@ mod tests {
     );
     assert_eq!(
       store.user_by_id(original.github_id).unwrap(),
+      Some(original.clone())
+    );
+    assert_eq!(
+      store.account_user(issuer, "account-one").unwrap(),
       Some(original)
+    );
+    assert_eq!(store.account_user(issuer, "account-two").unwrap(), None);
+    assert_eq!(
+      store
+        .account_user("https://other.example.invalid/oidc", "account-one")
+        .unwrap(),
+      None
     );
     let other_user = User {
       github_id: 43,

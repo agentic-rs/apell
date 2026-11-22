@@ -16,7 +16,10 @@ use sha2::{Digest, Sha256};
 use std::{
   collections::HashMap,
   path::Path,
-  sync::{Arc, Mutex, OnceLock},
+  sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc, Mutex, OnceLock,
+  },
 };
 use tower::ServiceExt;
 use url::Url;
@@ -74,11 +77,13 @@ struct MockAccount {
   origin: String,
   issuer: String,
   authorization: Arc<Mutex<Option<Authorization>>>,
+  userinfo_requests: Arc<AtomicUsize>,
   _server: super::super::Server,
 }
 
 impl MockAccount {
   async fn new(identities: Value) -> Self {
+    signing_key();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let origin = format!("http://{}", listener.local_addr().unwrap());
     let issuer = format!("{origin}/oidc");
@@ -91,6 +96,8 @@ impl MockAccount {
     });
     let authorization = Arc::new(Mutex::new(None::<Authorization>));
     let expected = authorization.clone();
+    let userinfo_requests = Arc::new(AtomicUsize::new(0));
+    let requests = userinfo_requests.clone();
     let token_issuer = issuer.clone();
     let account = Router::new()
       .route(
@@ -135,6 +142,7 @@ impl MockAccount {
       .route(
         "/oidc/me",
         get(move |headers: HeaderMap| async move {
+          requests.fetch_add(1, Ordering::Relaxed);
           assert_eq!(
             headers[header::AUTHORIZATION],
             format!("Bearer {ACCESS_TOKEN}")
@@ -153,6 +161,7 @@ impl MockAccount {
       origin,
       issuer,
       authorization,
+      userinfo_requests,
       _server: server,
     }
   }
@@ -316,6 +325,41 @@ async fn account_sign_in_preserves_existing_store_owner_and_disables_direct_gith
     "/account?auth_error=failed"
   );
   assert!(session_cookie(&replay).is_none());
+}
+
+#[tokio::test]
+async fn migrated_account_signs_in_without_a_current_github_link() {
+  let (directory, store, _github_app, _old_secret) = fixture();
+  let owner = super::user();
+  store.register_package("sample", &owner).unwrap();
+  let flow = store.start_cli_authorization(now()).unwrap();
+  for identities in [json!({}), json!({"github": {"userId": "99"}})] {
+    let issuer = MockAccount::new(identities).await;
+    store.bind_account(&issuer.issuer, SUBJECT, &owner).unwrap();
+    let app = issuer.router(directory.path());
+    let callback = issuer.start_login(&app, Some(&flow.user_code)).await;
+    let signed_in = app.clone().oneshot(callback).await.unwrap();
+    assert_eq!(
+      signed_in.headers()[header::LOCATION],
+      format!("/account/cli?code={}", flow.user_code)
+    );
+    let secret = session_cookie(&signed_in).unwrap();
+    let package = app
+      .oneshot(request(
+        "GET",
+        "/api/v1/account/packages/sample",
+        secret,
+        Body::empty(),
+      ))
+      .await
+      .unwrap();
+    assert_eq!(package.status(), StatusCode::OK);
+    let package = json_body(package).await;
+    assert_eq!(package["role"], "owner");
+    assert_eq!(package["owner"]["github_id"], owner.github_id);
+    assert_eq!(issuer.userinfo_requests.load(Ordering::Relaxed), 0);
+  }
+  assert!(store.user_by_id(99).unwrap().is_none());
 }
 
 #[tokio::test]

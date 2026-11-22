@@ -1,11 +1,10 @@
 # Store accounts and publishing access
 
-The website signs publishers in through Apell Account. Link GitHub in Account
-Security before signing in to the Store. Email codes, passkeys, and GitHub
-all work once that identity is linked. Public browsing, downloads, and the
-native Apell Store remain available without an account. The Store finds your
-package ownership using your verified numeric GitHub user ID, which stays the
-same when your GitHub username changes.
+The website signs publishers in through Apell Account. After the Account is
+bound to a Store user, email codes, passkeys, and GitHub sign-in all open the
+same Store account. On the first sign-in for an unbound Account, link GitHub
+in Account Security so the Store can find the matching user. Public browsing,
+downloads, and the native Apell Store remain available without an account.
 
 The [CLI account commands](store-cli.md) support browser approval, registration,
 publishing, OIDC settings, and maintainer management using the same permissions.
@@ -90,10 +89,11 @@ direct GitHub login. Keep actual credentials and deployment values on the server
 Restart after changing the provider.
 
 The server uses browser-bound, single-use state, a nonce, and S256 PKCE. It
-validates the signed ID token and checks that Account UserInfo describes the
-same subject before reading the linked GitHub ID. Each new sign-in checks the
-current link. An existing Account binding cannot claim a different GitHub
-identity. Store sessions use opaque random credentials, stored as hashes
+validates the signed ID token and looks up the Account issuer and subject in
+the Store's bindings. For an unbound Account, it checks that Account UserInfo
+describes the same subject before reading the linked numeric GitHub ID. The
+Store keeps the original user when the Account's social connections change.
+Store sessions use opaque random credentials, stored as hashes
 in SQLite, and host-only Secure/HttpOnly/SameSite cookies. Sessions last seven days;
 sign-out deletes the current session. Browser mutations require both the exact
 Store origin and a session-bound `x-csrf-token` header. Credentials never belong in

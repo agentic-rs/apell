@@ -1,6 +1,6 @@
 use super::{
-  csrf_token, now, random_secret, sessions, unauthorized, Auth, LoginProvider, OAuthConfig, SignIn,
-  User,
+  account::Account, csrf_token, now, random_secret, sessions, unauthorized, Auth, LoginProvider,
+  OAuthConfig, SignIn, User,
 };
 use crate::{AppState, Result, StoreError};
 use axum::{
@@ -299,48 +299,61 @@ async fn complete_callback(
     return Err(unauthorized());
   }
   let code = query.code.ok_or_else(unauthorized)?;
-  let (user, account_identity) = match &auth.sign_in {
-    SignIn::Github(config) => (
-      auth.github.sign_in(config, &code, &flow.verifier).await?,
-      None,
-    ),
-    SignIn::Account(account) => {
-      let nonce = flow.nonce.as_deref().ok_or_else(unauthorized)?;
-      let identity = account.sign_in(&code, &flow.verifier, nonce).await?;
-      let github = identity.github.ok_or_else(|| {
-        StoreError::new(
-          StatusCode::FORBIDDEN,
-          "github_link_required",
-          "Link GitHub in Apell Account to sign in to the Store.",
-        )
-      })?;
-      let user = match github.login {
-        Some(login) => User {
-          github_id: github.id,
-          github_login: login,
-        },
-        None => {
-          let store = auth.store.clone();
-          let id = github.id;
-          match blocking(move || store.user_by_id(id)).await? {
-            Some(user) => user,
-            None => auth.github.lookup_user_id(id).await?,
-          }
-        }
-      };
-      (user, Some((identity.issuer, identity.subject)))
-    }
-  };
   let old_secret = sessions::cookie(headers, sessions::SESSION_COOKIE)?;
+  let user = match &auth.sign_in {
+    SignIn::Github(config) => auth.github.sign_in(config, &code, &flow.verifier).await?,
+    SignIn::Account(account) => account_user(&auth, account, &code, flow).await?,
+  };
   blocking(move || {
-    if let Some((issuer, subject)) = account_identity {
-      auth.store.bind_account(&issuer, &subject, &user)?;
-    } else {
+    if matches!(auth.sign_in, SignIn::Github(_)) {
       auth.store.upsert_user(&user)?;
     }
     auth
       .store
       .create_session(&user, old_secret.as_deref(), now())
+  })
+  .await
+}
+
+async fn account_user(
+  auth: &Auth,
+  account: &Account,
+  code: &str,
+  flow: &sessions::AuthFlow,
+) -> Result<User> {
+  let nonce = flow.nonce.as_deref().ok_or_else(unauthorized)?;
+  let identity = account.sign_in(code, &flow.verifier, nonce).await?;
+  let store = auth.store.clone();
+  let (issuer, subject) = (identity.issuer.clone(), identity.subject.clone());
+  if let Some(user) = blocking(move || store.account_user(&issuer, &subject)).await? {
+    return Ok(user);
+  }
+
+  let github = account.linked_github(&identity).await?.ok_or_else(|| {
+    StoreError::new(
+      StatusCode::FORBIDDEN,
+      "github_link_required",
+      "Link GitHub in Apell Account to sign in to the Store.",
+    )
+  })?;
+  let user = match github.login {
+    Some(login) => User {
+      github_id: github.id,
+      github_login: login,
+    },
+    None => {
+      let store = auth.store.clone();
+      let id = github.id;
+      match blocking(move || store.user_by_id(id)).await? {
+        Some(user) => user,
+        None => auth.github.lookup_user_id(id).await?,
+      }
+    }
+  };
+  let store = auth.store.clone();
+  blocking(move || {
+    store.bind_account(&identity.issuer, &identity.subject, &user)?;
+    Ok(user)
   })
   .await
 }
