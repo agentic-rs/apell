@@ -1,0 +1,46 @@
+name: Shell build profile
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-profile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24.10.0
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 10.30.3
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Test profile validation and mobile and desktop build routing
+        run: pnpm exec vitest run scripts/shell-account.test.ts
+
+  check-configured-profile:
+    if: github.ref == 'refs/heads/main'
+    needs: test-profile
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24.10.0
+      - name: Validate the shared Account and relay profile
+        env:
+          APELL_SHELL_BUILD_PROFILE: ${{ secrets.APELL_SHELL_BUILD_PROFILE }}
+        run: node --experimental-strip-types scripts/check-shell-profile.ts

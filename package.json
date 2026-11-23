@@ -20,6 +20,7 @@
     "android:dev": "pnpm tauri android dev",
     "test": "pnpm build:chatbot && vitest run",
     "check": "pnpm build && cargo test -p apell-core",
+    "check:shell-profile": "node --experimental-strip-types scripts/check-shell-profile.ts",
     "format": "prettier --write . && cargo fmt --all && cargo fmt --manifest-path examples/chatbot/Cargo.toml",
     "format:check": "prettier --check . && cargo fmt --all --check && cargo fmt --manifest-path examples/chatbot/Cargo.toml --check",
     "check:staged": "node --experimental-strip-types scripts/check-staged.ts"

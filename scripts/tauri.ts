@@ -1,17 +1,14 @@
 import { createRequire } from 'node:module';
 import { migrateIosProjectName, syncAndroidAppName } from './mobile-project.ts';
-import { loadShellAccountEnvironment } from './shell-account.ts';
+import { loadShellAccountEnvironment, shellBuildTarget } from './shell-account.ts';
 
-const [, , platform, command, ...args] = process.argv;
-const query = args.some((arg) => ['--help', '-h', '--version', '-V'].includes(arg));
-const mobile_build =
-  (platform === 'ios' || platform === 'android') && ['build', 'dev', 'run'].includes(command);
-if (!query && mobile_build) {
-  if (platform === 'ios') await migrateIosProjectName();
-  if (platform === 'android') await syncAndroidAppName();
-}
-if (!query && (mobile_build || platform === 'dev' || platform === 'build')) {
+const args = process.argv.slice(2);
+const [platform] = args;
+const target = shellBuildTarget(args);
+if (target) {
   await loadShellAccountEnvironment();
+  if (target === 'ios') await migrateIosProjectName();
+  if (target === 'android') await syncAndroidAppName();
 }
 
 // Tauri reads NDK_HOME, while the Whisper CMake build reads ANDROID_NDK_ROOT.

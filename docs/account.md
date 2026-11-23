@@ -179,17 +179,19 @@ approved for sync. Keep that role out of the default assignments during a
 pilot. [Logto API resource setup](https://docs.logto.io/authorization/global-api-resources)
 
 For local builds, put these public values in the ignored
-`deploy/account/.env.shell-pilot` file as `NAME=value` entries. `apell dev` and
-`pnpm tauri` pick up this file from the shell checkout. Exported build variables
+`deploy/account/.env.shell-pilot` file as `NAME=value` entries. This is the shared
+profile for simulator, iPhone, Android, and macOS builds. `apell dev` and
+`pnpm tauri` pick it up from the shell checkout. Exported build variables
 override the file. The shell polls Logto while the user approves the device code
 in a browser and then keeps session credentials in the device's secure store.
 
-| Variable                  | Value                                            |
-| ------------------------- | ------------------------------------------------ |
-| `APELL_ACCOUNT_ISSUER`    | Canonical HTTPS Account issuer including `/oidc` |
-| `APELL_ACCOUNT_CLIENT_ID` | Public Native Device flow client ID              |
-| `APELL_SYNC_URL`          | HTTPS origin of the Store serving config sync    |
-| `APELL_SYNC_RESOURCE`     | Exact Logto API resource identifier for sync     |
+| Variable                      | Value                                                        |
+| ----------------------------- | ------------------------------------------------------------ |
+| `APELL_ACCOUNT_ISSUER`        | Canonical HTTPS Account issuer including `/oidc`             |
+| `APELL_ACCOUNT_CLIENT_ID`     | Public Native Device flow client ID                          |
+| `APELL_SYNC_URL`              | HTTPS origin of the Store serving config sync                |
+| `APELL_SYNC_RESOURCE`         | Exact Logto API resource identifier for sync                 |
+| `APELL_KEY_EXCHANGE_RESOURCE` | Exact Account API resource identifier for encrypted key sync |
 
 Configure `APELL_STORE_CONFIG_SYNC_FILE` on the Store host with the same `issuer`,
 `client_id`, and resource `audience` as the shell. The Store validates the client
@@ -246,6 +248,30 @@ endpoint credentials stay on the device.
    the native build, for example `https://account.example.invalid/api/v1/key-vault`.
    Sign in again on that build so Logto grants the configured resources and
    scopes. Builds without this setting continue to support model settings sync.
+
+### Check the build profile
+
+Run `pnpm check:shell-profile` to validate all five settings. Set
+`APELL_REQUIRE_KEY_SYNC=1` to run the same check before a local native build.
+The check fails before packaging if a required setting is missing or invalid.
+Apell Account sign-in remains optional after installation.
+
+```sh
+APELL_REQUIRE_KEY_SYNC=1 apell dev --target 'Apell iPhone 16 Pro'
+APELL_REQUIRE_KEY_SYNC=1 apell dev --target device
+APELL_REQUIRE_KEY_SYNC=1 pnpm tauri android build --ci --debug --target aarch64 --apk
+APELL_REQUIRE_KEY_SYNC=1 pnpm desktop:build --debug --bundles app
+```
+
+For GitHub Actions, save the complete profile as one repository Actions secret,
+`APELL_SHELL_BUILD_PROFILE`. It contains the public native client ID and service
+addresses. When supplied to a native build, it replaces the local profile and
+individual build variables. CI checks the saved profile on the main branch
+and uses test values for pull requests.
+
+```sh
+gh secret set APELL_SHELL_BUILD_PROFILE < deploy/account/.env.shell-pilot
+```
 
 ## Verify locally
 
