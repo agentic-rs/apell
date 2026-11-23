@@ -12,7 +12,7 @@ use crate::{
   settings::{Connection, MAX_CONNECTIONS},
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-use crypto::{Sealed, Secret, MAX_API_KEY};
+use crypto::{Sealed, Secret};
 use reqwest::{Client, Method, Response, StatusCode};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -361,7 +361,7 @@ pub(crate) async fn dispatch(app: AppHandle, method: &str, params: Value) -> Res
 mod tests {
   use super::*;
   use crate::settings::credential_ref;
-  use crypto::PairCode;
+  use crypto::{PairCode, MAX_API_KEY};
 
   #[test]
   fn paired_and_recovered_devices_can_read_the_same_store_entry() {
