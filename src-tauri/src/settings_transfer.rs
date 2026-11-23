@@ -2,7 +2,7 @@
 use crate::{
   commands::blocking,
   host::{string, Host},
-  provider_commands::{commit_settings, encode_account, finish_snapshot, read_account},
+  provider_commands::{encode_account, finish_snapshot, read_account},
   settings::{Connection, KeyAction, SaveConnection, Settings, MAX_CONNECTIONS},
 };
 use apell_core::providers;
@@ -373,19 +373,14 @@ async fn apply_archive(app: AppHandle, archive: Archive) -> Result<Value, String
     let plan = plan_import(&current, archive)?;
     let skipped = plan.preview.len() - plan.added;
     if plan.added != 0 {
-      let app = app.clone();
-      let root = host.root.clone();
-      let settings = plan.settings.clone();
-      blocking(move || {
-        let updates = plan
-          .credentials
-          .into_iter()
-          .map(|(slot, mut credential)| (slot, Some(std::mem::take(&mut *credential))))
-          .collect();
-        commit_settings(&app, &root, &settings, updates)
-      })
-      .await?;
+      let updates = plan
+        .credentials
+        .into_iter()
+        .map(|(slot, mut credential)| (slot, Some(std::mem::take(&mut *credential))))
+        .collect();
+      crate::key_sync::commit_local_credentials(&app, &host, &plan.settings, updates).await?;
       *current = plan.settings;
+      crate::key_sync::kick(&app);
     }
     Ok(json!({"added": plan.added, "skipped": skipped}))
   })

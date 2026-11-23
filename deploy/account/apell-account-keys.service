@@ -9,6 +9,11 @@ ExecStart=/opt/apell-account/current/apell-account-keys
 Environment=APELL_ACCOUNT_KEY_EXCHANGE_LISTEN=127.0.0.1:5657
 Environment=APELL_ACCOUNT_KEY_EXCHANGE_DATA_DIR=/var/lib/apell-account-keys
 Environment=APELL_ACCOUNT_KEY_EXCHANGE_FILE=/etc/apell-account/keys-oidc.json
+# Configure these with a local drop-in for Account-managed recovery.
+# LoadCredential=apell-vault-master:/etc/apell-account/keys-master.key
+# LoadCredential=apell-recovery-oidc:/etc/apell-account/keys-recovery-oidc.json
+# Environment=APELL_ACCOUNT_KEY_EXCHANGE_MASTER_KEY_FILE=%d/apell-vault-master
+# Environment=APELL_ACCOUNT_KEY_EXCHANGE_RECOVERY_OIDC_FILE=%d/apell-recovery-oidc
 StateDirectory=apell-account-keys
 StateDirectoryMode=0700
 UMask=0077

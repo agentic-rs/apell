@@ -9,7 +9,9 @@ pub(super) const MAX_API_KEY: usize = 4096;
 
 const CANNOT_OPEN: &str =
   "Could not unlock the encrypted data. Check the code or try another device.";
+#[cfg(test)]
 const RECOVERY_PREFIX: &str = "apell-recovery-v1.";
+#[cfg(test)]
 const PAIR_PREFIX: &str = "apell-pair-v1.";
 
 #[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -19,11 +21,13 @@ pub(super) struct Sealed {
   pub ciphertext: String,
 }
 
+#[cfg(test)]
 pub(super) struct PairCode {
   pub id: Uuid,
   pub secret: Secret,
 }
 
+#[cfg(test)]
 impl PairCode {
   pub fn new() -> Result<Self, String> {
     Ok(Self {
@@ -63,10 +67,12 @@ pub(super) fn random() -> Result<Secret, String> {
   Ok(key)
 }
 
+#[cfg(test)]
 pub(super) fn recovery_code(key: &[u8; 32]) -> String {
   format!("{RECOVERY_PREFIX}{}", URL_SAFE_NO_PAD.encode(key))
 }
 
+#[cfg(test)]
 pub(super) fn recovery_key(value: &str) -> Result<Secret, String> {
   value
     .trim()
@@ -149,6 +155,7 @@ pub(super) fn open(
   Ok(plaintext)
 }
 
+#[cfg(test)]
 pub(super) fn open_vault(
   secret: &Secret,
   context: &[u8],

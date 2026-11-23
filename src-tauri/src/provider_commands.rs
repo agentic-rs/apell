@@ -459,9 +459,11 @@ pub async fn dispatch(
       }
       let persist = next.clone();
       let root = host.root.clone();
+      crate::key_sync::suppress_local_restore(host, &connection).await?;
+      let app_write = app.clone();
       blocking(move || {
         commit_settings(
-          &app,
+          &app_write,
           &root,
           &persist,
           vec![(connection.credential.account, None)],
@@ -470,6 +472,7 @@ pub async fn dispatch(
       .await?;
       *current = next;
       drafts::invalidate_source(&host.provider_jobs, id, None);
+      crate::key_sync::kick(&app);
       Ok(Value::Null)
     }
     "llm.test_connection" => {

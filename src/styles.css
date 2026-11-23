@@ -507,13 +507,21 @@ svg {
 }
 .key-sync-code {
   display: block;
+  width: fit-content;
+  max-width: 100%;
   padding: 12px;
   border: 1px solid var(--line);
   border-radius: 12px;
   background: var(--subtle);
-  overflow-wrap: anywhere;
-  user-select: all;
-  -webkit-user-select: all;
+  font-size: clamp(20px, 6vw, 28px);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.14em;
+}
+.key-sync-approval {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
 }
 .sync-versions {
   display: grid;

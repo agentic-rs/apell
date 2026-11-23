@@ -17,7 +17,6 @@ import type {
   ConfigSyncResult,
   ConfigSyncStatus,
   ConfigSyncSummary,
-  LlmConnection,
   LlmProvider,
 } from '../lib/types';
 import { AccountSignIn } from './AccountSignIn';
@@ -73,7 +72,6 @@ function ConfigVersion({
 }
 
 interface AccountSyncProps {
-  connections: LlmConnection[];
   providers: LlmProvider[];
   disabled: boolean;
   onApplied: () => void;
@@ -81,7 +79,6 @@ interface AccountSyncProps {
 }
 
 export function AccountSync({
-  connections,
   providers,
   disabled,
   onApplied,
@@ -297,8 +294,6 @@ export function AccountSync({
             </>
           )}
           <EncryptedKeySync
-            connections={connections}
-            providers={providers}
             disabled={disabled || !!busy || !!conflict}
             onApplied={onApplied}
             onBusyChange={onKeySyncBusyChange}

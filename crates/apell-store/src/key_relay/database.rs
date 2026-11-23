@@ -44,6 +44,7 @@ pub(super) fn open(root: &Path) -> Result<Connection> {
      CREATE INDEX IF NOT EXISTS key_pairs_expiry ON key_pairs (expires_at);",
     )
     .map_err(|_| storage_error())?;
+  super::managed::migrate(&connection)?;
   Ok(connection)
 }
 
@@ -74,6 +75,9 @@ pub(super) fn create_vault(db: &mut Connection, owner: &Owner, incoming: &Vault)
     if &existing == incoming {
       return Ok(());
     }
+    return Err(conflict("This Account already has an encrypted key vault."));
+  }
+  if super::managed::has_account(&tx, owner)? {
     return Err(conflict("This Account already has an encrypted key vault."));
   }
   tx.execute(

@@ -12,7 +12,7 @@ use reqwest::{Method, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use snapshot::Snapshot;
-use std::{io::Read, path::PathBuf, time::Duration};
+use std::{collections::HashSet, io::Read, path::PathBuf, time::Duration};
 use tauri::{AppHandle, Manager};
 use uuid::Uuid;
 
@@ -99,6 +99,9 @@ pub async fn dispatch(
         state.enabled = input.enabled;
         let result = status(Some(&state));
         save_state(&host, &key, state).await?;
+        if input.enabled {
+          crate::key_sync::kick(&app);
+        }
         Ok(result)
       }
       "sync.run" => {
@@ -264,6 +267,7 @@ async fn synchronize(
   });
   let output = json!({"state": outcome, "status": status(Some(&state))});
   save_state(host, &access.account_key, state).await?;
+  crate::key_sync::kick(app);
   Ok(output)
 }
 
@@ -353,6 +357,40 @@ async fn apply_remote(
   let active = next.active_connection_id.clone();
   *current = next;
   Ok(active)
+}
+
+pub(crate) async fn add_credential_connections(
+  app: &AppHandle,
+  host: &Host,
+  access: &Access,
+  ids: &HashSet<String>,
+) -> Result<bool, String> {
+  if ids.is_empty() {
+    return Ok(false);
+  }
+  let _sync_gate = host.config_sync.gate.lock().await;
+  if !load_state(host, &access.account_key).await?.enabled {
+    return Ok(false);
+  }
+  let Some(head) = request_head(host, access, Method::GET, None).await? else {
+    return Ok(false);
+  };
+  let _credential_gate = host.credential_gate.lock().await;
+  let mut current = host.settings.lock().await;
+  require_account(app, host, access).await?;
+  let missing = head.snapshot.missing_key_connections(&current, ids)?;
+  if missing.is_empty() {
+    return Ok(false);
+  }
+  // Credentials require local provider metadata. Fill in only the requested
+  // additions so a background pass cannot resolve settings conflicts for users.
+  let mut next = current.clone();
+  next.connections.extend(missing);
+  let root = host.root.clone();
+  let to_save = next.clone();
+  blocking(move || to_save.persist(&root)).await?;
+  *current = next;
+  Ok(true)
 }
 
 fn can_activate(app: &AppHandle, connection: &Connection) -> Result<bool, String> {

@@ -63,6 +63,10 @@ struct Fixture {
 
 impl Fixture {
   async fn new() -> Self {
+    Self::new_with_master(None).await
+  }
+
+  async fn new_with_master(master_key: Option<managed::Key>) -> Self {
     let directory = tempfile::tempdir().unwrap();
     let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
       .await
@@ -98,6 +102,8 @@ impl Fixture {
       listen,
       data_dir: directory.path().join("key-relay"),
       authentication,
+      master_key,
+      recovery: None,
     })
     .unwrap()
     .router();
@@ -154,6 +160,159 @@ impl Drop for Fixture {
 async fn read(response: Response) -> Value {
   assert_eq!(response.status(), StatusCode::OK);
   serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap()
+}
+
+#[tokio::test]
+async fn managed_pairing_uses_the_same_code_with_independent_approval_and_retrieval_proofs() {
+  const MANAGED: &str = "/api/v1/key-vault/managed";
+  let fixture = Fixture::new_with_master(Some(zeroize::Zeroizing::new([19; 32]))).await;
+  let read_token = fixture.token("fixture-owner", READ, AUDIENCE);
+  let write_token = fixture.token("fixture-owner", WRITE, AUDIENCE);
+  let other_token = fixture.token("other-fixture-owner", READ, AUDIENCE);
+  let key = [9; 32];
+  let request_secret = URL_SAFE_NO_PAD.encode([12; 32]);
+  let signing_key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &key);
+  let proof = |transcript: String| {
+    URL_SAFE_NO_PAD.encode(ring::hmac::sign(&signing_key, transcript.as_bytes()).as_ref())
+  };
+  assert_eq!(
+    read(
+      fixture
+        .request(Method::GET, MANAGED, Some(&read_token), None)
+        .await
+    )
+    .await,
+    json!({ "vault_id": null, "managed": false })
+  );
+  let vault = json!({ "vault_id": VAULT_ID, "vault_key": URL_SAFE_NO_PAD.encode(key) });
+  for token in [&read_token, &write_token, &write_token] {
+    let status = fixture
+      .request(Method::PUT, MANAGED, Some(token), Some(vault.clone()))
+      .await
+      .status();
+    assert_eq!(
+      status,
+      if token == &read_token {
+        StatusCode::FORBIDDEN
+      } else {
+        StatusCode::NO_CONTENT
+      }
+    );
+  }
+
+  let pair = format!("{MANAGED}/pairs/{PAIR_ID}");
+  let started = read(
+    fixture
+      .request(
+        Method::PUT,
+        &pair,
+        Some(&write_token),
+        Some(json!({ "vault_id": VAULT_ID, "request_secret": request_secret })),
+      )
+      .await,
+  )
+  .await;
+  let code = started["code"].as_str().unwrap();
+  assert_eq!(code.len(), 6);
+  assert!(code.bytes().all(|byte| byte.is_ascii_digit()));
+  let list = read(
+    fixture
+      .request(
+        Method::POST,
+        &format!("{MANAGED}/pairs/list"),
+        Some(&read_token),
+        Some(json!({
+          "vault_id": VAULT_ID,
+          "proof": proof(format!("apell-key-relay-v2\nlist\n{VAULT_ID}\n")),
+        })),
+      )
+      .await,
+  )
+  .await;
+  assert_eq!(list["pairs"], json!([started]));
+  let receipt = json!({ "request_secret": request_secret });
+  let finish = format!("{pair}/finish");
+  let first = read(
+    fixture
+      .request(
+        Method::POST,
+        &finish,
+        Some(&read_token),
+        Some(receipt.clone()),
+      )
+      .await,
+  )
+  .await;
+  assert_eq!(first, json!({ "vault_key": null }));
+  let approval_nonce = started["approval_nonce"].as_str().unwrap();
+  let approve = format!("{pair}/approve");
+  assert_eq!(
+    fixture
+      .request(
+        Method::POST,
+        &approve,
+        Some(&write_token),
+        Some(json!({ "vault_id": VAULT_ID, "proof": URL_SAFE_NO_PAD.encode([0; 32]) }))
+      )
+      .await
+      .status(),
+    StatusCode::FORBIDDEN
+  );
+  assert_eq!(
+    fixture.request(
+      Method::POST, &approve, Some(&write_token),
+      Some(json!({
+        "vault_id": VAULT_ID,
+        "proof": proof(format!("apell-key-relay-v2\napprove\n{VAULT_ID}\n{PAIR_ID}\n{approval_nonce}")),
+      }))
+    ).await.status(),
+    StatusCode::NO_CONTENT
+  );
+  assert_eq!(
+    fixture
+      .request(
+        Method::POST,
+        &finish,
+        Some(&other_token),
+        Some(receipt.clone())
+      )
+      .await
+      .status(),
+    StatusCode::NOT_FOUND
+  );
+  assert_eq!(
+    read(
+      fixture
+        .request(
+          Method::POST,
+          &finish,
+          Some(&read_token),
+          Some(receipt.clone())
+        )
+        .await
+    )
+    .await,
+    json!({ "vault_key": URL_SAFE_NO_PAD.encode(key) }),
+  );
+  assert_eq!(
+    fixture
+      .request(
+        Method::POST,
+        &format!("{pair}/consume"),
+        Some(&write_token),
+        Some(receipt.clone())
+      )
+      .await
+      .status(),
+    StatusCode::NO_CONTENT
+  );
+  assert_eq!(
+    fixture
+      .request(Method::POST, &finish, Some(&read_token), Some(receipt))
+      .await
+      .status(),
+    StatusCode::NOT_FOUND
+  );
 }
 
 #[tokio::test]

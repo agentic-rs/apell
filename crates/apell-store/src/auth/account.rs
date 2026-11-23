@@ -15,16 +15,18 @@ use std::time::{Duration, Instant};
 use subtle::ConstantTimeEq;
 use tokio::sync::{Mutex, Semaphore};
 use url::Url;
+use zeroize::Zeroizing;
 
 const CACHE_LIFETIME: Duration = Duration::from_secs(300);
 const MAX_RESPONSE_BYTES: usize = 256 * 1024;
 const MAX_TOKEN_BYTES: usize = 16 * 1024;
+const RECOVERY_ACR: &str = "urn:logto:acr:1fa";
 
-pub(super) struct Account {
+pub(crate) struct Account {
   issuer: String,
   discovery_url: Url,
   client_id: String,
-  client_secret: String,
+  client_secret: Zeroizing<String>,
   redirect_uri: String,
   client: Client,
   discovery: Mutex<Option<(Provider, Instant)>>,
@@ -78,6 +80,8 @@ struct IdClaims {
   nonce: String,
   azp: Option<String>,
   at_hash: Option<String>,
+  acr: Option<String>,
+  auth_time: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -158,7 +162,7 @@ impl Account {
       issuer: issuer.to_owned(),
       discovery_url,
       client_id,
-      client_secret,
+      client_secret: Zeroizing::new(client_secret),
       redirect_uri,
       client: builder.build().map_err(|_| unavailable())?,
       discovery: Mutex::new(None),
@@ -173,11 +177,48 @@ impl Account {
     url
   }
 
+  pub(crate) fn new_recovery(
+    issuer: &str,
+    client_id: String,
+    client_secret: String,
+    callback_path: &str,
+  ) -> Result<Self> {
+    if !visible_ascii(&client_id, 128)
+      || !client_id
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+      || !visible_ascii(&client_secret, 2048)
+    {
+      return Err(StoreError::invalid("Invalid Account recovery client."));
+    }
+    let mut callback = issuer_url(issuer).ok_or_else(unavailable)?;
+    callback.set_path(callback_path);
+    Self::new(issuer, client_id, client_secret, callback.into())
+  }
+
   pub(super) async fn authorization_url(
     &self,
     state: &str,
     verifier: &str,
     nonce: &str,
+  ) -> Result<Url> {
+    self
+      .authorization_request(state, verifier, nonce, false)
+      .await
+  }
+
+  pub(crate) async fn recovery_url(&self, state: &str, verifier: &str, nonce: &str) -> Result<Url> {
+    self
+      .authorization_request(state, verifier, nonce, true)
+      .await
+  }
+
+  async fn authorization_request(
+    &self,
+    state: &str,
+    verifier: &str,
+    nonce: &str,
+    recovery: bool,
   ) -> Result<Url> {
     let _permit = self
       .requests
@@ -189,12 +230,26 @@ impl Account {
       ("response_type", "code"),
       ("client_id", self.client_id.as_str()),
       ("redirect_uri", self.redirect_uri.as_str()),
-      ("scope", "openid identities"),
+      (
+        "scope",
+        if recovery {
+          "openid"
+        } else {
+          "openid identities"
+        },
+      ),
       ("state", state),
       ("nonce", nonce),
       ("code_challenge", challenge.as_str()),
       ("code_challenge_method", "S256"),
     ]);
+    if recovery {
+      url.query_pairs_mut().extend_pairs([
+        ("acr_values", RECOVERY_ACR),
+        ("max_age", "0"),
+        ("prompt", "login"),
+      ]);
+    }
     Ok(url)
   }
 
@@ -204,13 +259,44 @@ impl Account {
     verifier: &str,
     nonce: &str,
   ) -> Result<AccountIdentity> {
-    if !visible_ascii(code, 1024) {
-      return Err(invalid_identity());
-    }
     let _permit = self
       .requests
       .try_acquire()
       .map_err(|_| StoreError::busy())?;
+    let (userinfo_endpoint, tokens, claims) = self.exchange_verified(code, verifier, nonce).await?;
+    Ok(AccountIdentity {
+      issuer: self.issuer.clone(),
+      subject: claims.sub,
+      userinfo_endpoint,
+      access_token: tokens.access_token,
+    })
+  }
+
+  pub(crate) async fn verify_recovery(
+    &self,
+    code: &str,
+    verifier: &str,
+    nonce: &str,
+    subject: &str,
+    started_at: i64,
+  ) -> Result<()> {
+    let _permit = self
+      .requests
+      .try_acquire()
+      .map_err(|_| StoreError::busy())?;
+    let (_, _, claims) = self.exchange_verified(code, verifier, nonce).await?;
+    verify_recovery_claims(&claims, subject, started_at, now())
+  }
+
+  async fn exchange_verified(
+    &self,
+    code: &str,
+    verifier: &str,
+    nonce: &str,
+  ) -> Result<(Url, Tokens, IdClaims)> {
+    if !visible_ascii(code, 1024) {
+      return Err(invalid_identity());
+    }
     let provider = self.provider().await?;
     let body = url::form_urlencoded::Serializer::new(String::new())
       .extend_pairs([
@@ -241,12 +327,7 @@ impl Account {
     let claims = self
       .verify_identity(&provider.jwks_uri, &tokens, nonce)
       .await?;
-    Ok(AccountIdentity {
-      issuer: self.issuer.clone(),
-      subject: claims.sub,
-      userinfo_endpoint: provider.userinfo_endpoint,
-      access_token: tokens.access_token,
-    })
+    Ok((provider.userinfo_endpoint, tokens, claims))
   }
 
   pub(super) async fn linked_github(
@@ -365,6 +446,26 @@ impl Account {
     }
     Ok(claims)
   }
+}
+
+fn verify_recovery_claims(
+  claims: &IdClaims,
+  subject: &str,
+  started_at: i64,
+  time: i64,
+) -> Result<()> {
+  if !constant_time_equal(&claims.sub, subject)
+    || !matches!(
+      claims.acr.as_deref(),
+      Some(RECOVERY_ACR | "urn:logto:acr:mfa")
+    )
+    || !claims.auth_time.is_some_and(|auth_time| {
+      auth_time >= started_at && auth_time <= claims.iat && auth_time <= time
+    })
+  {
+    return Err(invalid_identity());
+  }
+  Ok(())
 }
 
 pub(super) fn validate_issuer(issuer: &str) -> bool {

@@ -82,6 +82,7 @@ pub fn run() {
       desktop::configure_window(&_window);
       #[cfg(target_os = "ios")]
       ios::configure_webview(&_window, ios_back_setup)?;
+      key_sync::start(app.handle());
       let handle = app.handle().clone();
       tauri::async_runtime::spawn(async move {
         loop {
@@ -95,6 +96,11 @@ pub fn run() {
       });
       Ok(())
     })
+    .on_window_event(|window, event| {
+      if window.label() == "main" && matches!(event, tauri::WindowEvent::Focused(true)) {
+        key_sync::kick(window.app_handle());
+      }
+    })
     .invoke_handler(tauri::generate_handler![
       commands::shell_command,
       commands::applet_call
@@ -102,6 +108,9 @@ pub fn run() {
     .build(tauri::generate_context!())
     .expect("Could not start Apell")
     .run(|_app, _event| {
+      if matches!(_event, tauri::RunEvent::Resumed) {
+        key_sync::kick(_app);
+      }
       #[cfg(target_os = "macos")]
       desktop::on_event(_app, &_event);
     });

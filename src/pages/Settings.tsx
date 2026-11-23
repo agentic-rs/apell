@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { activateConnection, getSettings, message } from '../lib/tauri';
+import { activateConnection, getSettings, message, onLlmSettingsChanged } from '../lib/tauri';
 import type { LlmConnection, LlmSettings } from '../lib/types';
 import { ConnectionEditor } from '../components/providers/ConnectionEditor';
 import { OperationScope } from '../components/providers/state';
@@ -41,11 +41,28 @@ export function Settings() {
     return () => scope.current.cancel();
   }, []);
   useEffect(() => {
-    if (reload_requested && !loading && !busy) {
+    let active = true;
+    let unsubscribe: (() => void) | undefined;
+    void onLlmSettingsChanged(() => {
+      if (active) setReloadRequested(true);
+    }).then(
+      (unlisten) => {
+        if (active) unsubscribe = unlisten;
+        else unlisten();
+      },
+      () => {},
+    );
+    return () => {
+      active = false;
+      unsubscribe?.();
+    };
+  }, []);
+  useEffect(() => {
+    if (reload_requested && !editor && !loading && !busy) {
       setReloadRequested(false);
       void load();
     }
-  }, [reload_requested, loading, busy]);
+  }, [reload_requested, editor, loading, busy]);
 
   const editing_disabled = busy || loading || syncing;
 
@@ -251,7 +268,6 @@ export function Settings() {
     <>
       {connections}
       <AccountSync
-        connections={settings?.connections ?? []}
         providers={settings?.providers ?? []}
         disabled={editing_disabled || !settings}
         onApplied={() => setReloadRequested(true)}

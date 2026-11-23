@@ -27,6 +27,32 @@ fn issuer_urls_are_canonical_and_absolute() {
 }
 
 #[test]
+fn recovery_requires_fresh_authentication_for_the_requested_account() {
+  let mut claims: IdClaims = serde_json::from_value(json!({
+    "sub": "fixture-subject",
+    "aud": "fixture-recovery-client",
+    "exp": 1400,
+    "iat": 1020,
+    "nonce": "fixture-nonce",
+    "acr": "urn:logto:acr:1fa",
+    "auth_time": 1010,
+  }))
+  .unwrap();
+  assert!(verify_recovery_claims(&claims, "fixture-subject", 1000, 1030).is_ok());
+  assert!(verify_recovery_claims(&claims, "different-subject", 1000, 1030).is_err());
+  assert!(verify_recovery_claims(&claims, "fixture-subject", 1011, 1030).is_err());
+  claims.auth_time = Some(1021);
+  assert!(verify_recovery_claims(&claims, "fixture-subject", 1000, 1030).is_err());
+  claims.auth_time = None;
+  assert!(verify_recovery_claims(&claims, "fixture-subject", 1000, 1030).is_err());
+  claims.auth_time = Some(1010);
+  claims.acr = None;
+  assert!(verify_recovery_claims(&claims, "fixture-subject", 1000, 1030).is_err());
+  claims.acr = Some("urn:logto:acr:mfa".into());
+  assert!(verify_recovery_claims(&claims, "fixture-subject", 1000, 1030).is_ok());
+}
+
+#[test]
 fn github_binding_uses_the_linked_id_and_cross_checks_the_handle() {
   let user: UserInfo = serde_json::from_value(json!({
     "sub": "fixture-subject",

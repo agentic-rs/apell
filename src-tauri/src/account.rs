@@ -460,6 +460,8 @@ impl Account {
       Err(error) => Some(error),
     };
     changed(app);
+    drop(state);
+    crate::key_sync::kick(app);
   }
 }
 

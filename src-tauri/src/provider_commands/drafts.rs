@@ -1,6 +1,6 @@
 use super::{
-  blocking, commit_settings, credential_status, encode_account, AccountConfig, AppHandle,
-  Connection, Host, KeyAction, ProviderJobs, SaveConnection, Settings,
+  blocking, credential_status, encode_account, AccountConfig, AppHandle, Connection, Host,
+  KeyAction, ProviderJobs, SaveConnection, Settings,
 };
 use apell_core::providers;
 use serde::Deserialize;
@@ -373,12 +373,12 @@ fn final_updates(
 }
 
 pub(super) async fn save(app: AppHandle, host: &Host, input: SaveDraft) -> Result<Value, String> {
-  let root = host.root.clone();
-  let app_write = app.clone();
-  let connection = save_with(host, input, move |settings, updates| {
-    blocking(move || commit_settings(&app_write, &root, &settings, updates))
+  let app_write = &app;
+  let connection = save_with(host, input, move |settings, updates| async move {
+    crate::key_sync::commit_local_credentials(app_write, host, &settings, updates).await
   })
   .await?;
+  crate::key_sync::kick(&app);
   blocking(move || Ok(connection.public(credential_status(&app, &connection)))).await
 }
 

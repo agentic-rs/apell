@@ -126,6 +126,10 @@ impl ConfigSyncAuth {
     &self.config.issuer
   }
 
+  pub(crate) fn client_id(&self) -> &str {
+    &self.config.client_id
+  }
+
   pub(crate) async fn authorize(&self, headers: &HeaderMap, scope: &str) -> Result<String> {
     if headers.get_all(header::AUTHORIZATION).iter().count() != 1 {
       return Err(unauthorized());

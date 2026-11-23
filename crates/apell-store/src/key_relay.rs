@@ -1,6 +1,7 @@
 //! Account-side relay for encrypted vault keys. It runs independently of the Store.
 
 mod database;
+mod managed;
 #[cfg(test)]
 mod tests;
 
@@ -33,6 +34,8 @@ pub struct Config {
   pub listen: SocketAddr,
   data_dir: PathBuf,
   authentication: ConfigSyncConfig,
+  master_key: Option<managed::Key>,
+  recovery: Option<managed::recovery::Config>,
 }
 
 impl Config {
@@ -51,10 +54,17 @@ impl Config {
       .ok_or("Set APELL_ACCOUNT_KEY_EXCHANGE_FILE.")?;
     let authentication = ConfigSyncConfig::from_file(&file)
       .map_err(|_| "Invalid Account key exchange OIDC settings file.")?;
+    let master_key = managed::master_key_from_env()?;
+    let recovery = managed::recovery::Config::from_env()?;
+    if recovery.is_some() != master_key.is_some() {
+      return Err("Configure both the managed key exchange master key and recovery client.".into());
+    }
     Ok(Self {
       listen,
       data_dir,
       authentication,
+      master_key,
+      recovery,
     })
   }
 }
@@ -64,14 +74,25 @@ pub struct Relay {
   auth: Arc<ConfigSyncAuth>,
   database: Arc<Mutex<Connection>>,
   queries: Arc<Semaphore>,
+  master_key: Option<Arc<managed::Key>>,
+  recovery: Option<Arc<managed::recovery::Recovery>>,
 }
 
 impl Relay {
   pub fn open(config: Config) -> Result<Self> {
+    let auth = ConfigSyncAuth::new(config.authentication)?;
+    let recovery = config
+      .recovery
+      .map(|config| managed::recovery::Recovery::new(config, &auth))
+      .transpose()?;
+    let database = database::open(&config.data_dir)?;
+    managed::recovery::migrate(&database)?;
     Ok(Self {
-      auth: Arc::new(ConfigSyncAuth::new(config.authentication)?),
-      database: Arc::new(Mutex::new(database::open(&config.data_dir)?)),
+      auth: Arc::new(auth),
+      database: Arc::new(Mutex::new(database)),
       queries: Arc::new(Semaphore::new(4)),
+      master_key: config.master_key.map(Arc::new),
+      recovery: recovery.map(Arc::new),
     })
   }
 
@@ -87,12 +108,20 @@ impl Relay {
         "/api/v1/key-vault/pairs/{pair_id}/envelope",
         axum::routing::put(publish_pair),
       )
+      .merge(managed::routes())
       .layer(middleware::from_fn(response_headers))
       .with_state(self.clone())
   }
 
   pub async fn prune_expired(&self) -> Result<()> {
-    self.query(|db| database::prune_expired(db, now())).await
+    self
+      .query(|db| {
+        let time = now();
+        database::prune_expired(db, time)?;
+        managed::prune(db, time)?;
+        managed::recovery::prune(db, time)
+      })
+      .await
   }
 
   async fn owner(&self, headers: &HeaderMap, scope: &str) -> Result<Owner> {
@@ -141,6 +170,7 @@ impl Relay {
   }
 }
 
+#[derive(Clone)]
 struct Owner {
   issuer: String,
   subject: String,

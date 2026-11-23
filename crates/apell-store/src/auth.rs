@@ -1,4 +1,4 @@
-mod account;
+pub(crate) mod account;
 mod cli;
 mod config;
 mod config_sync;

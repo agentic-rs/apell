@@ -214,6 +214,7 @@ dependencies = [
  "jsonwebtoken",
  "png 0.17.16",
  "reqwest",
+ "ring",
  "rsa 0.9.10",
  "rusqlite",
  "semver",
@@ -227,6 +228,7 @@ dependencies = [
  "tower",
  "tower-http",
  "url",
+ "zeroize",
  "zip",
 ]
 

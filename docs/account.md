@@ -210,28 +210,25 @@ updates only when the expected cloud revision still matches.
 
 ## Sync encrypted API keys
 
-In **Settings → Apell Account → Encrypted API keys**, set up key sync on the
-first device. Save the recovery key offline and confirm that you saved it. Apell
-then registers the encrypted recovery copy with Account. On a new signed-in
-device, choose **Pair with existing device** and enter its short-lived pairing
-code under **Approve another device** on the unlocked device. You can also
-unlock on the new device with your offline recovery key.
+In **Settings → Apell Account → Encrypted API keys**, choose **Pair this
+device**. The first device creates the vault. On additional devices, open
+**Approve a device** on an already paired device. Compare the six digits on
+both screens and approve the matching request. When all paired devices are
+unavailable, choose **Recover access** and verify your Account again in the
+browser.
 
-Apell generates a random vault key and holds it in native secure storage. The
-pairing and recovery codes each unlock a separate encrypted copy of that key.
-Account relays the encrypted copies, and Store holds the encrypted API keys,
-connection IDs, and revision information. The encrypted records authenticate
-the account, vault, connection, provider, and canonical provider endpoint.
-Apell restores and decrypts keys natively. Losing every unlocked device and the
-recovery key means the encrypted backups cannot be recovered.
-[ChaCha20-Poly1305 authenticated encryption](https://www.rfc-editor.org/rfc/rfc8439.html#section-2.8)
+Apell holds the vault key in native secure storage and encrypts provider keys
+locally. The Account relay keeps a copy of the vault key encrypted under a
+separate server key. Account can release that copy to the requesting device
+after fresh verification. The Store holds encrypted provider keys and revision
+metadata. An existing device with a legacy vault can enroll that same vault
+through Account verification and keep its existing encrypted backups.
 
-Choose connections explicitly when uploading static keys for built-in provider
-endpoints. Restore fills missing credentials for matching saved connections.
-Sync model settings first to bring over missing connections. Use **Manage cloud
-copies** to remove encrypted backups. Removing a cloud copy leaves any key
-already saved on a device usable there. Provider OAuth sessions and custom
-endpoint credentials stay on the device.
+Eligible static API keys sync automatically on paired devices. Enable **Sync
+model settings** to bring missing built-in provider connections onto a new
+device. Apell keeps local and cloud copies when both have changed
+independently. Provider OAuth sessions and custom endpoint credentials stay
+on the device.
 
 ### Enable encrypted key sync in a deployment
 
@@ -244,7 +241,16 @@ endpoint credentials stay on the device.
    with its own data directory and OIDC settings. See the [service example](../deploy/account/apell-account-keys.service),
    [OIDC settings](../deploy/account/keys-oidc.example.json), and
    [Account proxy configuration](../deploy/account/key-exchange.nginx.conf.example).
-3. Set `APELL_KEY_EXCHANGE_RESOURCE` to the exact Account key relay audience in
+3. Create a random 32-byte server wrapping key as one unpadded base64url line.
+   Supply its protected file through `APELL_ACCOUNT_KEY_EXCHANGE_MASTER_KEY_FILE`.
+   Back up the key separately from the relay database.
+4. Register a first-party confidential web client for the recovery callback at
+   `/api/v1/key-vault/managed/recovery/callback` on the Account origin. Supply
+   its `client_id` and `client_secret` JSON through
+   `APELL_ACCOUNT_KEY_EXCHANGE_RECOVERY_OIDC_FILE`. Use systemd
+   `LoadCredential` to give the relay its two files while keeping them
+   protected on disk.
+5. Set `APELL_KEY_EXCHANGE_RESOURCE` to the exact Account key relay audience in
    the native build, for example `https://account.example.invalid/api/v1/key-vault`.
    Sign in again on that build so Logto grants the configured resources and
    scopes. Builds without this setting continue to support model settings sync.

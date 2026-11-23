@@ -18,10 +18,8 @@ import type {
   DraftCredential,
   InstalledApplet,
   InstallProgress,
-  KeySyncCloudCopies,
   KeySyncPairing,
-  KeySyncResult,
-  KeySyncSetup,
+  KeySyncRecovery,
   KeySyncStatus,
   LlmConnection,
   LlmModels,
@@ -147,23 +145,23 @@ export const setConfigSyncEnabled = (enabled: boolean) =>
 export const syncConfig = (resolution?: ConfigSyncResolution) =>
   shellCall<ConfigSyncResult>('sync.run', resolution ?? {});
 export const getKeySyncStatus = () => shellCall<KeySyncStatus>('key_sync.status');
-export const createKeySync = () => shellCall<KeySyncSetup>('key_sync.create');
-export const confirmKeySyncRecovery = () => shellCall<void>('key_sync.confirm_recovery');
-export const recoverKeySync = (recovery_key: string) =>
-  shellCall<void>('key_sync.recover', { recovery_key });
+export const onKeySyncChanged = (handler: () => void) => listen('apell-key-sync-changed', handler);
+export const onLlmSettingsChanged = (handler: () => void) =>
+  listen('apell-llm-settings-changed', handler);
+export const createKeySync = () => shellCall<void>('key_sync.create');
 export const startKeySyncPairing = () => shellCall<KeySyncPairing>('key_sync.pair_start');
-export const finishKeySyncPairing = (pairing_code: string) =>
-  shellCall<boolean>('key_sync.pair_finish', { pairing_code });
-export const cancelKeySyncPairing = (pairing_code: string) =>
-  shellCall<void>('key_sync.pair_cancel', { pairing_code });
-export const approveKeySyncPairing = (pairing_code: string) =>
-  shellCall<void>('key_sync.pair_approve', { pairing_code });
-export const uploadKeySync = (connection_ids: string[], replace_existing: boolean) =>
-  shellCall<KeySyncResult>('key_sync.upload', { connection_ids, replace_existing });
-export const restoreKeySync = () => shellCall<KeySyncResult>('key_sync.restore');
-export const listKeySyncCopies = () => shellCall<KeySyncCloudCopies>('key_sync.list');
-export const removeKeySyncCopies = (expected_head: string, connection_ids: string[]) =>
-  shellCall<KeySyncResult>('key_sync.remove', { expected_head, connection_ids });
+export const listKeySyncPairings = () =>
+  shellCall<{ pairs: KeySyncPairing[] }>('key_sync.pair_list');
+export const finishKeySyncPairing = (pair_id: string) =>
+  shellCall<boolean>('key_sync.pair_finish', { pair_id });
+export const cancelKeySyncPairing = (pair_id: string) =>
+  shellCall<void>('key_sync.pair_cancel', { pair_id });
+export const approveKeySyncPairing = (pair_id: string, approval_nonce: string) =>
+  shellCall<void>('key_sync.pair_approve', { pair_id, approval_nonce });
+export const startKeySyncRecovery = () => shellCall<KeySyncRecovery>('key_sync.recovery_start');
+export const openKeySyncRecovery = () => shellCall<void>('key_sync.recovery_open');
+export const finishKeySyncRecovery = () => shellCall<boolean>('key_sync.recovery_finish');
+export const cancelKeySyncRecovery = () => shellCall<void>('key_sync.recovery_cancel');
 export const getSettingsTransferCapabilities = () =>
   shellCall<SettingsTransferCapabilities>('settings_transfer.capabilities');
 export const exportSettingsTransfer = (connection_ids: string[], passphrase: string) =>

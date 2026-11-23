@@ -187,6 +187,29 @@ impl Snapshot {
     credential_removals.sort_unstable();
     Ok((next, credential_removals))
   }
+
+  pub(super) fn missing_key_connections(
+    &self,
+    current: &Settings,
+    ids: &HashSet<String>,
+  ) -> Result<Vec<Connection>, String> {
+    let remaining = MAX_CONNECTIONS.saturating_sub(current.connections.len());
+    self
+      .connections
+      .iter()
+      .filter(|entry| {
+        ids.contains(&entry.connection_id)
+          && current.connection(&entry.connection_id).is_err()
+          && !matches!(entry.provider_id.as_str(), "codex" | "github-copilot")
+      })
+      .take(remaining)
+      .map(|entry| {
+        let mut connection = entry.connection()?;
+        connection.credential = credential_ref(&Uuid::new_v4().to_string());
+        Ok(connection)
+      })
+      .collect()
+  }
 }
 
 impl Selection {
@@ -274,5 +297,39 @@ mod tests {
       credential_ref("new-connection")
     );
     assert_eq!(next.connection("private").unwrap(), &private);
+  }
+
+  #[test]
+  fn key_sync_metadata_only_adds_missing_requested_static_connections() {
+    let mut local = Settings::default();
+    let openai = saved(
+      "already-local",
+      "openai",
+      built_in_endpoint("openai").unwrap(),
+    );
+    local.connections.push(openai.clone());
+    let mut cloud = local.clone();
+    cloud.connections[0].model_id = "changed-cloud-model".into();
+    cloud.connections.extend([
+      saved("with-key", "openai", built_in_endpoint("openai").unwrap()),
+      saved(
+        "without-key",
+        "openai",
+        built_in_endpoint("openai").unwrap(),
+      ),
+      saved("with-login", "codex", built_in_endpoint("codex").unwrap()),
+    ]);
+    let ids = HashSet::from([
+      "already-local".into(),
+      "with-key".into(),
+      "with-login".into(),
+    ]);
+    let added = Snapshot::capture(&cloud, None)
+      .missing_key_connections(&local, &ids)
+      .unwrap();
+    assert_eq!(added.len(), 1);
+    assert_eq!(added[0].connection_id, "with-key");
+    assert_ne!(added[0].credential, credential_ref("with-key"));
+    assert_eq!(local.connections, vec![openai]);
   }
 }

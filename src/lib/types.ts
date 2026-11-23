@@ -155,26 +155,19 @@ export interface AccountStatus {
   error?: string | null;
   device_code: AccountDeviceCode | null;
 }
-export interface KeySyncStatus {
-  state: 'signed_out' | 'unavailable' | 'setup' | 'locked' | 'unlocked';
-}
-export interface KeySyncSetup {
-  recovery_key: string;
-}
+export type KeySyncStatus =
+  | { state: 'signed_out' | 'unavailable' }
+  | { state: 'paired'; sync_error: string | null }
+  | { state: 'unpaired'; action: 'setup' | 'pair' | 'upgrade' | 'legacy' };
 export interface KeySyncPairing {
-  pairing_code: string;
-  expires_at: string;
+  pair_id: string;
+  code: string;
+  expires_at: number;
+  approved: boolean;
+  approval_nonce: string;
 }
-export interface KeySyncResult {
-  updated: number;
-}
-export interface KeySyncCloudCopy {
-  connection_id: string;
-  name: string | null;
-}
-export interface KeySyncCloudCopies {
-  revision_id: string | null;
-  entries: KeySyncCloudCopy[];
+export interface KeySyncRecovery {
+  expires_at: number;
 }
 export interface ConfigSyncStatus {
   state: 'disabled' | 'off' | 'ready';
