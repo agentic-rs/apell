@@ -12,8 +12,11 @@ members = [
   "src-tauri/plugins/tauri-plugin-apell-credentials",
   "src-tauri/plugins/tauri-plugin-apell-sensors",
 ]
-exclude = ["examples/chatbot"]
+exclude = ["examples/chatbot", "vendor/whisper-rs-sys"]
 resolver = "2"
+
+[patch.crates-io]
+whisper-rs-sys = { path = "vendor/whisper-rs-sys" }
 
 [workspace.package]
 version = "0.1.0"

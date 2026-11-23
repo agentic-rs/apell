@@ -1,0 +1,29 @@
+[package]
+name = "whisper-rs-sys"
+version = "0.15.0"
+edition = "2021"
+rust-version = "1.88.0"
+license = "Unlicense"
+description = "Rust bindings for whisper.cpp (FFI bindings)"
+repository = "https://codeberg.org/tazz4843/whisper-rs"
+links = "whisper"
+publish = false
+
+[features]
+coreml = []
+cuda = []
+force-debug = []
+hipblas = []
+intel-sycl = []
+metal = []
+openblas = []
+openmp = []
+vulkan = []
+
+[build-dependencies]
+bindgen = "0.72"
+cfg-if = "1"
+cmake = "0.1"
+flate2 = "1"
+semver = "1"
+tar = { version = "0.4", default-features = false }
