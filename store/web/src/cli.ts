@@ -143,7 +143,7 @@ export function renderCliApproval(actions: Actions, signal: AbortSignal): HTMLEl
         element(
           'p',
           'field-hint',
-          `Request expires ${new Date(request.expires_at * 1000).toLocaleTimeString()}. You can revoke CLI access from My packages.`,
+          `Request expires ${new Date(request.expires_at * 1000).toLocaleTimeString()}. You can revoke CLI access from Account & access.`,
         ),
       );
       const controls = element('div', 'action-row');
@@ -277,6 +277,9 @@ export function renderCliCredentials(actions: Actions, signal: AbortSignal): HTM
     .catch((error: unknown) => {
       if (signal.aborted || !panel.isConnected) return;
       showError(loading, error);
+      if (!(error instanceof ApiError && error.status === 401)) {
+        content.append(button('Try again', actions.refresh, 'button secondary'));
+      }
     });
   return panel;
 }

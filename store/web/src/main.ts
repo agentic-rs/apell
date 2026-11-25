@@ -1,11 +1,17 @@
 import './styles.css';
 import { api, ApiError } from './api';
-import { renderAccount, renderAccountHeader, renderRegistration, renderSignedOut } from './account';
+import {
+  renderAccount,
+  renderAccountAccess,
+  renderAccountHeader,
+  renderRegistration,
+  renderSignedOut,
+} from './account';
 import type { Actions } from './actions';
 import { catalogEntry, catalogReturn } from './catalog-navigation';
 import { button, element, routeLink, showError } from './dom';
 import { renderPackage } from './manage';
-import { renderCliApproval, renderCliCredentials } from './cli';
+import { renderCliApproval } from './cli';
 import { clearPublicView, renderPublicRoute } from './public-route';
 import { PUBLIC_INVALIDATED } from './public-cache';
 import type { AccountPackages, Applet, AppletDetails, PackageDetails, Session } from './types';
@@ -84,6 +90,7 @@ async function renderRoute(focus = false, force = false): Promise<void> {
     } else if (
       path === '/account' ||
       path === '/account/new' ||
+      path === '/account/access' ||
       path === '/account/cli' ||
       /^\/account\/packages\/[a-z0-9_-]+$/.test(path)
     ) {
@@ -113,12 +120,12 @@ async function renderRoute(focus = false, force = false): Promise<void> {
       }
       if (path === '/account/new') {
         main.replaceChildren(renderRegistration(actions));
+      } else if (path === '/account/access') {
+        main.replaceChildren(renderAccountAccess(actions, signal));
       } else if (path === '/account') {
         const data = await api<AccountPackages>('/api/v1/account/packages', { signal });
         if (current_id !== navigation_id) return;
-        const account = renderAccount(data, actions);
-        account.append(renderCliCredentials(actions, signal));
-        main.replaceChildren(account);
+        main.replaceChildren(renderAccount(data, actions));
       } else {
         const id = path.split('/').at(-1)!;
         const pkg = await api<PackageDetails>(

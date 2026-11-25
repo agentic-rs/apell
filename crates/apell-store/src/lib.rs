@@ -126,6 +126,8 @@ fn router_with_store(config: &Config, store: Store, oidc: Option<oidc::Oidc>) ->
     "/account/",
     "/account/new",
     "/account/new/",
+    "/account/access",
+    "/account/access/",
     "/account/cli",
     "/account/cli/",
     "/account/packages/{id}",

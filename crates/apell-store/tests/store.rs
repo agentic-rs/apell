@@ -604,6 +604,8 @@ async fn frontend_deep_links_serve_html_for_get_and_head() {
     "/account/",
     "/account/new",
     "/account/new/",
+    "/account/access",
+    "/account/access/",
     "/account/cli?code=ABCDE-FGHJK",
     "/account/cli/?code=ABCDE-FGHJK",
     "/account/packages/sample",

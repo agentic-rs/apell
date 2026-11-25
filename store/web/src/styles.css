@@ -429,6 +429,7 @@ h1 {
 .text-link {
   display: inline-flex;
   align-items: center;
+  column-gap: 6px;
   min-height: 44px;
   color: var(--violet);
   font-size: 14px;
@@ -825,6 +826,24 @@ textarea:disabled {
 }
 .account-welcome > .muted {
   max-width: 480px;
+}
+.account-identity {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  margin: 16px 0 0;
+}
+.account-identity dt {
+  color: var(--muted);
+}
+.account-identity dd {
+  margin: 0;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+.account-identity + p {
+  margin-top: 16px;
 }
 .manage-heading {
   display: flex;

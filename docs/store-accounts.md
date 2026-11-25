@@ -8,6 +8,8 @@ downloads, and the native Apell Store remain available without an account.
 
 The [CLI account commands](store-cli.md) support browser approval, registration,
 publishing, OIDC settings, and maintainer management using the same permissions.
+Open **My packages → Account & access** to see the GitHub identity used by the
+Store, open Account Security, or review and revoke connected terminals.
 
 ## Register and publish
 

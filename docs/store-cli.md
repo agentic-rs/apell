@@ -14,14 +14,15 @@ apell whoami
 ```
 
 Login opens the Store in your browser and prints a verification code. Sign in
-with GitHub if needed, compare the browser's code with your terminal, then approve
-CLI access. The terminal finishes automatically. Use `--no-browser` to open the
-printed address yourself, including when the CLI runs on another machine.
+with the Store's configured provider if needed, compare the browser's code with
+your terminal, then approve CLI access. The terminal finishes automatically.
+Use `--no-browser` to open the printed address yourself, including when the CLI
+runs on another machine.
 
-This reuses the Store's existing GitHub OAuth application and callback. The CLI
-never receives the OAuth client secret, GitHub access token, or browser cookie.
-Its own Store credential expires after seven days and has your current package
-permissions. Removing package membership also removes CLI access to that package.
+This uses the same sign-in as the Store website. The CLI receives a Store
+credential after browser approval. It expires after seven days and has your
+current package permissions. Removing package membership also removes CLI
+access to that package.
 
 Login remembers the Store address. Use `--store` to choose another Store for a
 command. Credentials are bound to that exact origin and are never forwarded
@@ -111,8 +112,8 @@ apell logout
 ```
 
 Logout revokes the current CLI credential on the Store and removes its local
-copy. You can also revoke CLI credentials from **My packages → CLI access** on
-the website. Revoking CLI access does not sign out the browser or disconnect a
+copy. You can also revoke CLI credentials from **My packages → Account & access → CLI access**
+on the website. Revoking CLI access does not sign out the browser or disconnect a
 package's GitHub Actions publisher.
 
 An account can have up to 16 active CLI credentials. If login reaches that limit,

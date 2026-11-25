@@ -21,6 +21,16 @@ export function signInOption(session: Session) {
   }
 }
 
+export function accountSecurityLink(): HTMLAnchorElement {
+  const settings = link('Open Account Security', '/api/v1/auth/account/security', 'text-link');
+  const arrow = element('span', '', '↗');
+  arrow.setAttribute('aria-hidden', 'true');
+  settings.append(arrow);
+  settings.target = '_blank';
+  settings.rel = 'noopener noreferrer';
+  return settings;
+}
+
 export function signInNotice(session: Session): HTMLElement | undefined {
   const error = new URLSearchParams(location.search).get('auth_error');
   if (!error) return;
@@ -28,11 +38,9 @@ export function signInNotice(session: Session): HTMLElement | undefined {
   const notice = element('p', 'notice error');
   notice.setAttribute('role', 'alert');
   if (error === 'github_link_required' && signInOption(session)?.provider === 'account') {
-    notice.textContent = 'Link GitHub in Apell Account, then return here to sign in. ';
-    const settings = link('Open Account Security ↗', '/api/v1/auth/account/security', 'text-link');
-    settings.target = '_blank';
-    settings.rel = 'noopener noreferrer';
-    notice.append(settings);
+    notice.textContent =
+      'Link the GitHub account you use for publishing, then return here and sign in again. ';
+    notice.append(accountSecurityLink());
   } else {
     notice.textContent = 'Sign-in could not be completed. Please try again.';
   }
