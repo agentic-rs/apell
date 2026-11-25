@@ -210,12 +210,13 @@ updates only when the expected cloud revision still matches.
 
 ## Sync encrypted API keys
 
-In **Settings → Apell Account → Encrypted API keys**, choose **Pair this
-device**. The first device creates the vault. On additional devices, open
-**Approve a device** on an already paired device. Compare the six digits on
-both screens and approve the matching request. When all paired devices are
-unavailable, choose **Recover access** and verify your Account again in the
-browser.
+In **Settings → Apell Account → Encrypted API keys**, signed-in devices show
+**Verified** or **Unverified**. On the first device, choose **Verify this
+device** to create the vault. On an additional device, choose **Pair this
+device** and open **Approve a device** on a verified device. Compare the six
+digits on both screens and approve the matching request. When all verified
+devices are unavailable, choose **Recover access** and verify your Account
+again in the browser.
 
 Apell holds the vault key in native secure storage and encrypts provider keys
 locally. The Account relay keeps a copy of the vault key encrypted under a
@@ -224,7 +225,7 @@ after fresh verification. The Store holds encrypted provider keys and revision
 metadata. An existing device with a legacy vault can enroll that same vault
 through Account verification and keep its existing encrypted backups.
 
-Eligible static API keys sync automatically on paired devices. Enable **Sync
+Eligible static API keys sync automatically on verified devices. Enable **Sync
 model settings** to bring missing built-in provider connections onto a new
 device. Apell keeps local and cloud copies when both have changed
 independently. Provider OAuth sessions and custom endpoint credentials stay

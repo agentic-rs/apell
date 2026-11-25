@@ -157,8 +157,8 @@ export interface AccountStatus {
 }
 export type KeySyncStatus =
   | { state: 'signed_out' | 'unavailable' }
-  | { state: 'paired'; sync_error: string | null }
-  | { state: 'unpaired'; action: 'setup' | 'pair' | 'upgrade' | 'legacy' };
+  | { state: 'verified'; sync_error: string | null }
+  | { state: 'unverified'; action: 'setup' | 'pair' | 'upgrade' | 'legacy' };
 export interface KeySyncPairing {
   pair_id: string;
   code: string;

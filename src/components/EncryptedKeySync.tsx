@@ -90,8 +90,8 @@ function Joining({ pairing, onPaired }: { pairing: KeySyncPairing; onPaired: () 
   return (
     <>
       <p>
-        Open <strong>Approve a device</strong> on a paired device. Approve only if both devices show
-        this code.
+        Open <strong>Approve a device</strong> on a verified device. Approve only if both devices
+        show this code.
       </p>
       <PairingCode code={pairing.code} />
       {error ? (
@@ -224,7 +224,7 @@ function Verification({
   );
   return (
     <>
-      <p>Complete Account verification in your browser to pair this device.</p>
+      <p>Complete Account verification in your browser to verify this device.</p>
       <button type="button" className="primary" disabled={opening} onClick={onOpen}>
         Open Account verification
       </button>
@@ -291,7 +291,7 @@ export function EncryptedKeySync({ disabled, onApplied, onBusyChange }: Props) {
     };
   }, []);
 
-  function paired() {
+  function deviceVerified() {
     setFlow(undefined);
     setError('');
     onApplied();
@@ -345,10 +345,10 @@ export function EncryptedKeySync({ disabled, onApplied, onBusyChange }: Props) {
     <section className="account-key-sync" aria-label="Encrypted API keys">
       <h3>Encrypted API keys</h3>
       {!status && !status_error && <p role="status">Checking device…</p>}
-      {status?.state === 'paired' && (
+      {status?.state === 'verified' && (
         <>
           <p>
-            <strong>Paired</strong> · API keys sync automatically.
+            <strong>Verified</strong> · API keys sync automatically.
           </p>
           {status.sync_error && (
             <p className="status error" role="alert">
@@ -367,13 +367,13 @@ export function EncryptedKeySync({ disabled, onApplied, onBusyChange }: Props) {
           </button>
         </>
       )}
-      {status?.state === 'unpaired' && (
+      {status?.state === 'unverified' && (
         <>
           <p>
-            <strong>Unpaired</strong>
+            <strong>Unverified</strong>
           </p>
           {(status.action === 'setup' || status.action === 'pair') && (
-            <p>Pair this device to sync eligible API keys with this Account.</p>
+            <p>Verify this device to sync eligible API keys with this Account.</p>
           )}
           {status.action === 'setup' && (
             <button
@@ -383,11 +383,11 @@ export function EncryptedKeySync({ disabled, onApplied, onBusyChange }: Props) {
               onClick={() =>
                 void perform(async (isCurrent) => {
                   await createKeySync();
-                  if (isCurrent()) paired();
+                  if (isCurrent()) deviceVerified();
                 })
               }
             >
-              Pair this device
+              Verify this device
             </button>
           )}
           {status.action === 'pair' && (
@@ -453,7 +453,7 @@ export function EncryptedKeySync({ disabled, onApplied, onBusyChange }: Props) {
       {flow && (
         <Sheet open title={titles[flow.kind]} onClose={close} dismissible={!busy && !approving}>
           <div className="transfer-form">
-            {flow.kind === 'join' && <Joining pairing={flow.pairing} onPaired={paired} />}
+            {flow.kind === 'join' && <Joining pairing={flow.pairing} onPaired={deviceVerified} />}
             {flow.kind === 'approve' && (
               <Approvals
                 onBusyChange={(active) => {
@@ -465,7 +465,7 @@ export function EncryptedKeySync({ disabled, onApplied, onBusyChange }: Props) {
             {flow.kind === 'verify' && (
               <Verification
                 challenge={flow.challenge}
-                onVerified={paired}
+                onVerified={deviceVerified}
                 opening={busy}
                 onOpen={() => void perform(openKeySyncRecovery)}
               />

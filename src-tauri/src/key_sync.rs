@@ -24,7 +24,7 @@ use zeroize::{Zeroize, Zeroizing};
 
 const CLOUD_KEYS: &str = "/api/v1/credential-sync/head";
 const MAX_REPLY: usize = 192 * 1024;
-const LOCKED: &str = "Pair this device to sync encrypted API keys.";
+const LOCKED: &str = "Verify this device to sync encrypted API keys.";
 
 pub(crate) struct KeySync {
   client: Client,

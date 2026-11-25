@@ -114,7 +114,7 @@ pub(super) async fn remote(host: &Host, access: &Access) -> Result<RemoteVault, 
   decode(response).await
 }
 
-fn is_paired(local: &LocalVault) -> bool {
+fn is_verified(local: &LocalVault) -> bool {
   local.managed && !local.pending_managed && local.setup.is_none()
 }
 
@@ -126,9 +126,9 @@ pub(super) async fn status(app: &AppHandle, host: &Host) -> Result<Value, String
     return Ok(json!({ "state": "signed_out" }));
   };
   let local = local_vault(app, &account).await?;
-  if local.as_ref().is_some_and(is_paired) {
+  if local.as_ref().is_some_and(is_verified) {
     return Ok(json!({
-      "state": "paired",
+      "state": "verified",
       "sync_error": host.key_sync.automatic.error(&account).await,
     }));
   }
@@ -137,19 +137,19 @@ pub(super) async fn status(app: &AppHandle, host: &Host) -> Result<Value, String
     return Err("The signed-in Account changed. Try again.".into());
   }
   let remote = remote(host, &access).await?;
-  Ok(unpaired_status(local.as_ref(), &remote))
+  Ok(unverified_status(local.as_ref(), &remote))
 }
 
-fn unpaired_status(local: Option<&LocalVault>, remote: &RemoteVault) -> Value {
+fn unverified_status(local: Option<&LocalVault>, remote: &RemoteVault) -> Value {
   let local_matches = local.is_some_and(|value| Some(value.vault_id) == remote.vault_id);
   if remote.vault_id.is_none() || (remote.managed && local_matches) {
-    json!({ "state": "unpaired", "action": "setup" })
+    json!({ "state": "unverified", "action": "setup" })
   } else if remote.managed {
-    json!({ "state": "unpaired", "action": "pair" })
+    json!({ "state": "unverified", "action": "pair" })
   } else if local_matches {
-    json!({ "state": "unpaired", "action": "upgrade" })
+    json!({ "state": "unverified", "action": "upgrade" })
   } else {
-    json!({ "state": "unpaired", "action": "legacy" })
+    json!({ "state": "unverified", "action": "legacy" })
   }
 }
 
@@ -518,9 +518,12 @@ mod tests {
       vault_id: Some(vault.vault_id),
       managed: false,
     };
-    assert_eq!(unpaired_status(Some(&vault), &remote)["action"], "upgrade");
-    assert_eq!(unpaired_status(None, &remote)["action"], "legacy");
-    assert!(!is_paired(&vault));
+    assert_eq!(
+      unverified_status(Some(&vault), &remote),
+      json!({ "state": "unverified", "action": "upgrade" })
+    );
+    assert_eq!(unverified_status(None, &remote)["action"], "legacy");
+    assert!(!is_verified(&vault));
   }
 
   #[test]
