@@ -21,6 +21,7 @@ tauri-plugin-apell-audio = { path = "plugins/tauri-plugin-apell-audio" }
 tauri-plugin-apell-sensors = { path = "plugins/tauri-plugin-apell-sensors" }
 apell-core = { path = "../crates/apell-core" }
 apell-runtime = { path = "../crates/apell-runtime" }
+apell-vault-keys = { path = "../crates/apell-vault-keys" }
 base64 = "0.22"
 getrandom = "0.3"
 jsonwebtoken = { version = "12", default-features = false, features = ["rust_crypto"] }

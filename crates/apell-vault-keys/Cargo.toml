@@ -1,0 +1,9 @@
+[package]
+name = "apell-vault-keys"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ring = "0.17"
+zeroize = "1"

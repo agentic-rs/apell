@@ -9,6 +9,7 @@ use crate::{
   settings::{Connection, CredentialFormat, Settings, MAX_CONNECTIONS},
 };
 use apell_core::bundles::atomic_write;
+use apell_vault_keys::{derive_api_key_encryption_key, derive_sync_fingerprint_key};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use ring::hmac;
 use serde::{Deserialize, Serialize};
@@ -27,6 +28,9 @@ const STATE_FILE: &str = "key-sync-device.json";
 const MAX_STATE_BYTES: usize = 256 * 1024;
 const SYNC_INTERVAL: Duration = Duration::from_secs(60);
 const OWNERSHIP_CHANGED: &str = "A credential changed accounts during sync. Try again.";
+const FINGERPRINT_V1_DOMAIN: &[u8] = b"apell-api-key-sync-fingerprint-v1";
+const FINGERPRINT_V2_DOMAIN: &[u8] = b"apell-api-key-sync-fingerprint-v2";
+const FINGERPRINT_V2_PREFIX: &str = "v2:";
 
 #[derive(Default)]
 pub(super) struct Automatic {
@@ -355,14 +359,40 @@ fn encode_key(connection: &Connection, key: &[u8]) -> Result<String, String> {
   }
 }
 
-fn fingerprint(secret: &Secret, aad: &[u8], value: &[u8]) -> String {
+fn fingerprint(secret: &Secret, domain: &[u8], aad: &[u8], value: &[u8]) -> String {
   let key = hmac::Key::new(hmac::HMAC_SHA256, secret.as_ref());
   let mut context = hmac::Context::with_key(&key);
-  context.update(b"apell-api-key-sync-fingerprint-v1");
+  context.update(domain);
   context.update(&(aad.len() as u64).to_be_bytes());
   context.update(aad);
   context.update(value);
   URL_SAFE_NO_PAD.encode(context.sign().as_ref())
+}
+
+fn current_fingerprint(key: &Secret, aad: &[u8], value: &[u8]) -> String {
+  format!(
+    "{FINGERPRINT_V2_PREFIX}{}",
+    fingerprint(key, FINGERPRINT_V2_DOMAIN, aad, value)
+  )
+}
+
+fn compatible_baseline<'a>(
+  vault_key: &Secret,
+  aad: &[u8],
+  previous: &'a str,
+  candidates: [Option<(&[u8], &'a str)>; 2],
+) -> &'a str {
+  if previous.starts_with(FINGERPRINT_V2_PREFIX) {
+    return previous;
+  }
+  // Upgrade a v1 baseline only if a current copy still matches it. An
+  // unmatched baseline continues to detect differing edits or a removal.
+  for (value, current_hash) in candidates.into_iter().flatten() {
+    if fingerprint(vault_key, FINGERPRINT_V1_DOMAIN, aad, value) == previous {
+      return current_hash;
+    }
+  }
+  previous
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -521,7 +551,7 @@ fn apply_plan(
   root: &Path,
   settings: &Settings,
   owner: &Owner,
-  secret: &Secret,
+  vault_key: &Secret,
   mut entries: BTreeMap<String, Entry>,
 ) -> Result<Plan, String> {
   let mut device = Device::load(root)?;
@@ -529,6 +559,9 @@ fn apply_plan(
   let mut restores = Vec::new();
   let mut common = Vec::new();
   let mut plan = Plan::default();
+  let vault_id = owner.vault_id.to_string();
+  let encryption_key = derive_api_key_encryption_key(vault_key, &vault_id);
+  let fingerprint_key = derive_sync_fingerprint_key(vault_key, &vault_id);
   for connection in &settings.connections {
     if eligible_endpoint(connection).is_none() {
       continue;
@@ -548,7 +581,7 @@ fn apply_plan(
     let aad = key_context(&owner.account, owner.vault_id, connection)?;
     let cloud = entries
       .get(id)
-      .map(|entry| crypto::open(secret, &aad, &entry.sealed(), MAX_API_KEY))
+      .map(|entry| crypto::open_api_key(&encryption_key, vault_key, &aad, &entry.sealed()))
       .transpose();
     let Ok(cloud) = cloud else {
       plan.invalid = true;
@@ -556,10 +589,23 @@ fn apply_plan(
     };
     let local_hash = local
       .as_ref()
-      .map(|key| fingerprint(secret, &aad, key.as_bytes()));
-    let cloud_hash = cloud.as_ref().map(|key| fingerprint(secret, &aad, key));
+      .map(|key| current_fingerprint(&fingerprint_key, &aad, key.as_bytes()));
+    let cloud_hash = cloud
+      .as_ref()
+      .map(|key| current_fingerprint(&fingerprint_key, &aad, key));
     let previous = record.and_then(|record| record.common.as_deref());
-    match reconcile(local_hash.as_deref(), cloud_hash.as_deref(), previous) {
+    let baseline = previous.map(|previous| {
+      let local_copy = local
+        .as_ref()
+        .zip(local_hash.as_deref())
+        .map(|(key, hash)| (key.as_bytes(), hash));
+      let cloud_copy = cloud
+        .as_ref()
+        .zip(cloud_hash.as_deref())
+        .map(|(key, hash)| (key.as_slice(), hash));
+      compatible_baseline(vault_key, &aad, previous, [local_copy, cloud_copy])
+    });
+    match reconcile(local_hash.as_deref(), cloud_hash.as_deref(), baseline) {
       Merge::Current => {
         if local_hash.as_deref() != previous {
           common.push((id.clone(), local_hash));
@@ -568,7 +614,8 @@ fn apply_plan(
       Merge::Upload if entries.contains_key(id) || entries.len() < MAX_CONNECTIONS => {
         let key = local.ok_or("The saved API key changed during sync.")?;
         let hash = local_hash.ok_or("The saved API key changed during sync.")?;
-        let Sealed { nonce, ciphertext } = crypto::seal(secret, &aad, key.as_bytes())?;
+        let Sealed { nonce, ciphertext } =
+          crypto::seal_api_key(&encryption_key, &aad, key.as_bytes())?;
         entries.insert(
           id.clone(),
           Entry {
@@ -628,6 +675,52 @@ mod tests {
     assert_eq!(reconcile(Some("a"), Some("b"), None), Merge::Conflict);
     assert_eq!(reconcile(None, Some("a"), Some("a")), Merge::Conflict);
     assert_eq!(reconcile(Some("a"), None, Some("a")), Merge::Conflict);
+  }
+
+  #[test]
+  fn legacy_fingerprints_preserve_rotation_and_conflict_decisions() {
+    let vault_key = crypto::random().unwrap();
+    let key = derive_sync_fingerprint_key(&vault_key, &Uuid::new_v4().to_string());
+    let aad = b"fixture-context";
+    let original = b"original";
+    let local_edit = b"local-edit";
+    let cloud_edit = b"cloud-edit";
+    let legacy = fingerprint(&vault_key, FINGERPRINT_V1_DOMAIN, aad, original);
+    let original_hash = current_fingerprint(&key, aad, original);
+    let local_hash = current_fingerprint(&key, aad, local_edit);
+    let cloud_hash = current_fingerprint(&key, aad, cloud_edit);
+    let baseline = |local, cloud| compatible_baseline(&vault_key, aad, &legacy, [local, cloud]);
+
+    let previous = baseline(
+      Some((local_edit, &local_hash)),
+      Some((original, &original_hash)),
+    );
+    assert_eq!(
+      reconcile(Some(&local_hash), Some(&original_hash), Some(previous)),
+      Merge::Upload
+    );
+    let previous = baseline(
+      Some((original, &original_hash)),
+      Some((cloud_edit, &cloud_hash)),
+    );
+    assert_eq!(
+      reconcile(Some(&original_hash), Some(&cloud_hash), Some(previous)),
+      Merge::Restore
+    );
+    let previous = baseline(
+      Some((local_edit, &local_hash)),
+      Some((cloud_edit, &cloud_hash)),
+    );
+    assert_eq!(previous, legacy);
+    assert_eq!(
+      reconcile(Some(&local_hash), Some(&cloud_hash), Some(previous)),
+      Merge::Conflict
+    );
+    let previous = baseline(None, Some((original, &original_hash)));
+    assert_eq!(
+      reconcile(None, Some(&original_hash), Some(previous)),
+      Merge::Conflict
+    );
   }
 
   #[test]

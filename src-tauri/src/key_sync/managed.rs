@@ -2,6 +2,7 @@ use super::{
   acknowledged, automatic, crypto, decode, kick, local_vault, save_vault, unlocked, verify_account,
   Access, AppHandle, Host, LocalVault, Method, Secret, LOCKED,
 };
+use apell_vault_keys::derive_pairing_proof_key;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use ring::hmac;
 use serde::{Deserialize, Serialize};
@@ -213,17 +214,19 @@ fn encode_proof(
   vault: &LocalVault,
   approval: Option<&ApproveInput>,
 ) -> Result<Zeroizing<String>, String> {
-  let key = vault.key()?;
-  let key = hmac::Key::new(hmac::HMAC_SHA256, key.as_ref());
+  let vault_id = vault.vault_id.to_string();
   let message = match approval {
     Some(approval) if valid_approval_nonce(&approval.approval_nonce) => format!(
-      "apell-key-relay-v2\napprove\n{}\n{}\n{}",
-      vault.vault_id, approval.pair_id, approval.approval_nonce
+      "apell-key-relay-v2\napprove\n{vault_id}\n{}\n{}",
+      approval.pair_id, approval.approval_nonce
     ),
     Some(_) => return Err("Invalid device approval.".into()),
-    None => format!("apell-key-relay-v2\nlist\n{}\n", vault.vault_id),
+    None => format!("apell-key-relay-v2\nlist\n{vault_id}\n"),
   };
-  let tag = hmac::sign(&key, message.as_bytes());
+  let vault_key = vault.key()?;
+  let proof_key = derive_pairing_proof_key(&vault_key, &vault_id);
+  let signing_key = hmac::Key::new(hmac::HMAC_SHA256, proof_key.as_ref());
+  let tag = hmac::sign(&signing_key, message.as_bytes());
   Ok(Zeroizing::new(URL_SAFE_NO_PAD.encode(tag.as_ref())))
 }
 
@@ -510,6 +513,26 @@ fn now() -> i64 {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn managed_pairing_matches_relay_proof_vectors() {
+    let vault_id = "00112233-4455-4677-8899-aabbccddeeff".parse().unwrap();
+    let root = Zeroizing::new(std::array::from_fn(|index| index as u8));
+    let vault = LocalVault::new(vault_id, &root);
+
+    assert_eq!(
+      encode_proof(&vault, None).unwrap().as_str(),
+      "lwFvvozDsCpFztU4CVt25Ti5AoU67HP07aio1Mqkx7k"
+    );
+    let approval = ApproveInput {
+      pair_id: "a3068f26-2a3a-41dd-8c8a-6f7af0b8912c".parse().unwrap(),
+      approval_nonce: URL_SAFE_NO_PAD.encode([0; 16]),
+    };
+    assert_eq!(
+      encode_proof(&vault, Some(&approval)).unwrap().as_str(),
+      "GqsUeUMDshZ7kH_rIE5f0gFqCWyPTXiSmhOIuLa2PtQ"
+    );
+  }
 
   #[test]
   fn vault_upgrades_preserve_the_existing_key_and_require_verification() {

@@ -4,6 +4,7 @@ members = [
   "crates/apell-store",
   "crates/apell-core",
   "crates/apell-speech",
+  "crates/apell-vault-keys",
   "crates/apell-guest",
   "crates/apell-runtime",
   "crates/apell-cli",

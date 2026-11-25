@@ -7,6 +7,7 @@ use super::{
   busy, conflict, missing_pair, now, payload, storage_error, validate_id, Owner, Relay, READ, WRITE,
 };
 use crate::{Result, StoreError};
+use apell_vault_keys::derive_pairing_proof_key;
 use axum::{
   extract::{Path, Request, State},
   http::{HeaderMap, StatusCode},
@@ -166,7 +167,7 @@ fn random_code() -> Result<String> {
 }
 
 fn verify_proof(
-  key: &Key,
+  vault_key: &Key,
   proof: &[u8],
   operation: &str,
   vault_id: &str,
@@ -178,8 +179,9 @@ fn verify_proof(
     input.push('\n');
     input.push_str(approval_nonce);
   }
+  let proof_key = derive_pairing_proof_key(vault_key, vault_id);
   hmac::verify(
-    &hmac::Key::new(hmac::HMAC_SHA256, key.as_ref()),
+    &hmac::Key::new(hmac::HMAC_SHA256, proof_key.as_ref()),
     input.as_bytes(),
     proof,
   )

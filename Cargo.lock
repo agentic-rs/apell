@@ -66,6 +66,7 @@ dependencies = [
  "apell-core",
  "apell-runtime",
  "apell-speech",
+ "apell-vault-keys",
  "base64 0.22.1",
  "block2",
  "cc",
@@ -205,6 +206,7 @@ name = "apell-store"
 version = "0.1.0"
 dependencies = [
  "apell-package",
+ "apell-vault-keys",
  "axum",
  "base64 0.22.1",
  "chrono",
@@ -230,6 +232,14 @@ dependencies = [
  "url",
  "zeroize",
  "zip",
+]
+
+[[package]]
+name = "apell-vault-keys"
+version = "0.1.0"
+dependencies = [
+ "ring",
+ "zeroize",
 ]
 
 [[package]]

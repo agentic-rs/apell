@@ -9,6 +9,7 @@ pub(super) const MAX_API_KEY: usize = 4096;
 
 const CANNOT_OPEN: &str =
   "Could not unlock the encrypted data. Check the code or try another device.";
+const API_KEY_AAD_V2: &[u8] = b"apell-key-sync-v2\0";
 #[cfg(test)]
 const RECOVERY_PREFIX: &str = "apell-recovery-v1.";
 #[cfg(test)]
@@ -155,6 +156,35 @@ pub(super) fn open(
   Ok(plaintext)
 }
 
+pub(super) fn seal_api_key(
+  encryption_key: &Secret,
+  legacy_aad: &[u8],
+  value: &[u8],
+) -> Result<Sealed, String> {
+  seal(
+    encryption_key,
+    &[API_KEY_AAD_V2, legacy_aad].concat(),
+    value,
+  )
+}
+
+pub(super) fn open_api_key(
+  encryption_key: &Secret,
+  vault_key: &Secret,
+  legacy_aad: &[u8],
+  record: &Sealed,
+) -> Result<Zeroizing<Vec<u8>>, String> {
+  // The authenticated context selects the format without changing the Store
+  // record. Older ciphertexts used the vault key directly with v1 context.
+  open(
+    encryption_key,
+    &[API_KEY_AAD_V2, legacy_aad].concat(),
+    record,
+    MAX_API_KEY,
+  )
+  .or_else(|_| open(vault_key, legacy_aad, record, MAX_API_KEY))
+}
+
 #[cfg(test)]
 pub(super) fn open_vault(
   secret: &Secret,
@@ -198,22 +228,23 @@ mod tests {
   }
 
   #[test]
-  fn encrypted_api_key_is_bound_to_its_account_and_endpoint() {
-    let key = random().unwrap();
+  fn legacy_and_derived_api_keys_are_bound_to_their_account_and_endpoint() {
+    let vault_key = random().unwrap();
     let id = Uuid::new_v4();
+    let encryption_key =
+      apell_vault_keys::derive_api_key_encryption_key(&vault_key, &id.to_string());
     let destination = [
       "connection-a",
       "provider-a",
       "https://provider.example.invalid/v1",
     ];
     let aad = context("api-key", "account-a", id, &destination).unwrap();
-    let sealed = seal(&key, &aad, b"fixture-api-key").unwrap();
-    assert_eq!(
-      open(&key, &aad, &sealed, MAX_API_KEY).unwrap().as_slice(),
-      b"fixture-api-key"
-    );
+    let legacy = seal(&vault_key, &aad, b"fixture-api-key").unwrap();
+    let derived = seal_api_key(&encryption_key, &aad, b"fixture-api-key").unwrap();
+    assert_eq!(legacy.ciphertext.len(), derived.ciphertext.len());
+    assert!(open(&vault_key, &aad, &derived, MAX_API_KEY).is_err());
+    assert!(open(&encryption_key, &aad, &derived, MAX_API_KEY).is_err());
     let another_account = context("api-key", "account-b", id, &destination).unwrap();
-    assert!(open(&key, &another_account, &sealed, MAX_API_KEY).is_err());
     let another_destination = context(
       "api-key",
       "account-a",
@@ -225,6 +256,21 @@ mod tests {
       ],
     )
     .unwrap();
-    assert!(open(&key, &another_destination, &sealed, MAX_API_KEY).is_err());
+    for record in [&legacy, &derived] {
+      assert_eq!(
+        open_api_key(&encryption_key, &vault_key, &aad, record)
+          .unwrap()
+          .as_slice(),
+        b"fixture-api-key"
+      );
+      assert!(open_api_key(&encryption_key, &vault_key, &another_account, record).is_err());
+      assert!(open_api_key(&encryption_key, &vault_key, &another_destination, record).is_err());
+
+      let mut changed = record.clone();
+      let mut bytes = URL_SAFE_NO_PAD.decode(&changed.ciphertext).unwrap();
+      bytes[0] ^= 1;
+      changed.ciphertext = URL_SAFE_NO_PAD.encode(bytes);
+      assert!(open_api_key(&encryption_key, &vault_key, &aad, &changed).is_err());
+    }
   }
 }

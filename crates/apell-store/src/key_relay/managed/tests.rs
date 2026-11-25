@@ -12,7 +12,8 @@ fn owner(subject: &str) -> Owner {
 }
 
 fn approval(key: &Key, summary: &PairSummary) -> Key {
-  let sign = hmac::Key::new(hmac::HMAC_SHA256, key.as_ref());
+  let proof_key = derive_pairing_proof_key(key, VAULT);
+  let sign = hmac::Key::new(hmac::HMAC_SHA256, proof_key.as_ref());
   let message = format!(
     "apell-key-relay-v2\napprove\n{VAULT}\n{}\n{}",
     summary.pair_id, summary.approval_nonce
@@ -23,6 +24,35 @@ fn approval(key: &Key, summary: &PairSummary) -> Key {
       .try_into()
       .unwrap(),
   )
+}
+
+#[test]
+fn managed_pairing_accepts_app_proof_vectors() {
+  let vault_id = "00112233-4455-4677-8899-aabbccddeeff";
+  let root = Zeroizing::new(std::array::from_fn(|index| index as u8));
+  let list = decode_key("lwFvvozDsCpFztU4CVt25Ti5AoU67HP07aio1Mqkx7k").unwrap();
+  verify_proof(&root, list.as_ref(), "list", vault_id, "", None).unwrap();
+
+  let approval = decode_key("GqsUeUMDshZ7kH_rIE5f0gFqCWyPTXiSmhOIuLa2PtQ").unwrap();
+  let nonce = URL_SAFE_NO_PAD.encode([0; 16]);
+  verify_proof(
+    &root,
+    approval.as_ref(),
+    "approve",
+    vault_id,
+    PAIR,
+    Some(&nonce),
+  )
+  .unwrap();
+  assert!(verify_proof(
+    &root,
+    approval.as_ref(),
+    "approve",
+    VAULT,
+    PAIR,
+    Some(&nonce)
+  )
+  .is_err());
 }
 
 #[test]

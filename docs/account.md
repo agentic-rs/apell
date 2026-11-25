@@ -218,8 +218,12 @@ digits on both screens and approve the matching request. When all verified
 devices are unavailable, choose **Recover access** and verify your Account
 again in the browser.
 
-Apell holds the vault key in native secure storage and encrypts provider keys
-locally. The Account relay keeps a copy of the vault key encrypted under a
+Apell holds the vault key in native secure storage. It uses HKDF-SHA256 to
+derive separate keys for encrypting provider API keys, proving device approval,
+and tracking credential changes. New API-key backups use the derived encryption
+key. Apell can also restore earlier encrypted backups.
+
+The Account relay keeps a copy of the vault key encrypted under a
 separate server key. Account can release that copy to the requesting device
 after fresh verification. The Store holds encrypted provider keys and revision
 metadata. An existing device with a legacy vault can enroll that same vault

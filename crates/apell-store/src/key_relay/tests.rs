@@ -171,9 +171,11 @@ async fn managed_pairing_uses_the_same_code_with_independent_approval_and_retrie
   let other_token = fixture.token("other-fixture-owner", READ, AUDIENCE);
   let key = [9; 32];
   let request_secret = URL_SAFE_NO_PAD.encode([12; 32]);
-  let signing_key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &key);
-  let proof = |transcript: String| {
-    URL_SAFE_NO_PAD.encode(ring::hmac::sign(&signing_key, transcript.as_bytes()).as_ref())
+  let proof_key = apell_vault_keys::derive_pairing_proof_key(&key, VAULT_ID);
+  let signing_key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, proof_key.as_ref());
+  let raw_root = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &key);
+  let proof = |key: &ring::hmac::Key, transcript: &str| {
+    URL_SAFE_NO_PAD.encode(ring::hmac::sign(key, transcript.as_bytes()).as_ref())
   };
   assert_eq!(
     read(
@@ -215,15 +217,32 @@ async fn managed_pairing_uses_the_same_code_with_independent_approval_and_retrie
   let code = started["code"].as_str().unwrap();
   assert_eq!(code.len(), 6);
   assert!(code.bytes().all(|byte| byte.is_ascii_digit()));
+  let list_url = format!("{MANAGED}/pairs/list");
+  let list_transcript = format!("apell-key-relay-v2\nlist\n{VAULT_ID}\n");
+  assert_eq!(
+    fixture
+      .request(
+        Method::POST,
+        &list_url,
+        Some(&read_token),
+        Some(json!({
+          "vault_id": VAULT_ID,
+          "proof": proof(&raw_root, &list_transcript),
+        }))
+      )
+      .await
+      .status(),
+    StatusCode::FORBIDDEN
+  );
   let list = read(
     fixture
       .request(
         Method::POST,
-        &format!("{MANAGED}/pairs/list"),
+        &list_url,
         Some(&read_token),
         Some(json!({
           "vault_id": VAULT_ID,
-          "proof": proof(format!("apell-key-relay-v2\nlist\n{VAULT_ID}\n")),
+          "proof": proof(&signing_key, &list_transcript),
         })),
       )
       .await,
@@ -246,26 +265,36 @@ async fn managed_pairing_uses_the_same_code_with_independent_approval_and_retrie
   assert_eq!(first, json!({ "vault_key": null }));
   let approval_nonce = started["approval_nonce"].as_str().unwrap();
   let approve = format!("{pair}/approve");
+  let approval_transcript =
+    format!("apell-key-relay-v2\napprove\n{VAULT_ID}\n{PAIR_ID}\n{approval_nonce}");
   assert_eq!(
     fixture
       .request(
         Method::POST,
         &approve,
         Some(&write_token),
-        Some(json!({ "vault_id": VAULT_ID, "proof": URL_SAFE_NO_PAD.encode([0; 32]) }))
+        Some(json!({
+          "vault_id": VAULT_ID,
+          "proof": proof(&raw_root, &approval_transcript),
+        }))
       )
       .await
       .status(),
     StatusCode::FORBIDDEN
   );
   assert_eq!(
-    fixture.request(
-      Method::POST, &approve, Some(&write_token),
-      Some(json!({
-        "vault_id": VAULT_ID,
-        "proof": proof(format!("apell-key-relay-v2\napprove\n{VAULT_ID}\n{PAIR_ID}\n{approval_nonce}")),
-      }))
-    ).await.status(),
+    fixture
+      .request(
+        Method::POST,
+        &approve,
+        Some(&write_token),
+        Some(json!({
+          "vault_id": VAULT_ID,
+          "proof": proof(&signing_key, &approval_transcript),
+        }))
+      )
+      .await
+      .status(),
     StatusCode::NO_CONTENT
   );
   assert_eq!(
