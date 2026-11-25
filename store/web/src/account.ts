@@ -44,7 +44,7 @@ export function renderSignedOut(session: Session): HTMLElement {
   );
   const notice = signInNotice(session);
   if (notice) root.append(notice);
-  const sign_in = signInOption(session);
+  const sign_in = signInOption(session, location);
   if (sign_in) {
     if (sign_in.provider === 'account' && !notice) {
       root.append(

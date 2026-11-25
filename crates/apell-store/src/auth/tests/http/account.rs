@@ -190,7 +190,11 @@ impl MockAccount {
     let path = cli_code
       .map(|code| format!("/api/v1/auth/account/login?cli_code={code}"))
       .unwrap_or_else(|| "/api/v1/auth/account/login".into());
-    let login = get_page(app, &path).await;
+    self.start_login_at(app, &path).await
+  }
+
+  async fn start_login_at(&self, app: &Router, path: &str) -> Request<Body> {
+    let login = get_page(app, path).await;
     assert_eq!(login.status(), StatusCode::TEMPORARY_REDIRECT);
     let authorize = Url::parse(login.headers()[header::LOCATION].to_str().unwrap()).unwrap();
     assert_eq!(authorize.origin().ascii_serialization(), self.origin);
@@ -289,12 +293,39 @@ async fn account_sign_in_preserves_existing_store_owner_and_disables_direct_gith
     format!("{}/account/security", issuer.origin)
   );
 
-  let callback = issuer.start_login(&app, None).await;
+  let destination = "/account/packages/sample?tab=people";
+  let query = url::form_urlencoded::Serializer::new(String::new())
+    .append_pair("return_to", destination)
+    .finish();
+  let login = format!("/api/v1/auth/account/login?{query}");
+  let denied = issuer.start_login_at(&app, &login).await;
+  let denied_uri = denied
+    .uri()
+    .to_string()
+    .replace("code=fixture-code", "error=access_denied");
+  let denied = app
+    .clone()
+    .oneshot(
+      Request::get(denied_uri)
+        .header(header::COOKIE, &denied.headers()[header::COOKIE])
+        .body(Body::empty())
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+  assert_eq!(denied.status(), StatusCode::SEE_OTHER);
+  assert_eq!(
+    denied.headers()[header::LOCATION],
+    "/account/packages/sample?tab=people&auth_error=failed"
+  );
+  assert!(session_cookie(&denied).is_none());
+
+  let callback = issuer.start_login_at(&app, &login).await;
   let replay_path = callback.uri().clone();
   let replay_cookie = callback.headers()[header::COOKIE].clone();
   let signed_in = app.clone().oneshot(callback).await.unwrap();
   assert_eq!(signed_in.status(), StatusCode::SEE_OTHER);
-  assert_eq!(signed_in.headers()[header::LOCATION], "/account");
+  assert_eq!(signed_in.headers()[header::LOCATION], destination);
   assert_eq!(signed_in.headers()[header::CACHE_CONTROL], "no-store");
   let secret = session_cookie(&signed_in).unwrap();
   let package = app

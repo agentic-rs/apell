@@ -1,3 +1,4 @@
+use super::sessions::LoginResume;
 use super::{
   account::Account, csrf_token, now, random_secret, sessions, unauthorized, Auth, LoginProvider,
   OAuthConfig, SignIn, User,
@@ -108,6 +109,7 @@ async fn me(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Me
 #[serde(deny_unknown_fields)]
 struct Login {
   cli_code: Option<String>,
+  return_to: Option<String>,
 }
 
 async fn github_login(
@@ -134,10 +136,7 @@ async fn account_security(State(state): State<AppState>) -> Result<Redirect> {
 
 async fn login(state: &AppState, query: Login, provider: LoginProvider) -> Result<Response> {
   let auth = for_provider(state, provider)?;
-  let cli_code = query
-    .cli_code
-    .map(|code| super::cli::user_code(&code))
-    .transpose()?;
+  let resume = LoginResume::parse(query.cli_code.as_deref(), query.return_to.as_deref())?;
   let state_secret = random_secret()?;
   let browser = random_secret()?;
   let verifier = random_secret()?;
@@ -153,7 +152,7 @@ async fn login(state: &AppState, query: Login, provider: LoginProvider) -> Resul
   };
   let browser_for_db = browser.clone();
   blocking(move || {
-    if let Some(code) = &cli_code {
+    if let LoginResume::Cli(code) = &resume {
       auth.store.cli_authorization(code, now())?;
     }
     auth.store.create_auth_flow(
@@ -161,7 +160,7 @@ async fn login(state: &AppState, query: Login, provider: LoginProvider) -> Resul
       &browser_for_db,
       &verifier,
       nonce.as_deref(),
-      cli_code.as_deref(),
+      &resume,
       now(),
     )
   })
@@ -220,16 +219,16 @@ async fn callback(
   provider: LoginProvider,
 ) -> Result<Response> {
   let auth = for_provider(state, provider)?;
-  let (result, cli_code) = match take_callback_flow(&auth, &headers, &query, provider).await {
+  let (result, resume) = match take_callback_flow(&auth, &headers, &query, provider).await {
     Ok(flow) => {
       let result = complete_callback(auth, &headers, query, &flow).await;
-      (result, flow.cli_code)
+      (result, flow.resume)
     }
-    Err(error) => (Err(error), None),
+    Err(error) => (Err(error), LoginResume::Account),
   };
   let mut response = match result {
     Ok(secret) => {
-      let destination = callback_destination(cli_code.as_deref(), None);
+      let destination = callback_destination(&resume, None);
       let mut response = Redirect::to(&destination).into_response();
       set_cookie(
         &mut response,
@@ -244,25 +243,25 @@ async fn callback(
         "github_link_required" => "github_link_required",
         _ => "failed",
       };
-      let resume_code = if provider == LoginProvider::Account {
-        cli_code.as_deref()
-      } else {
-        None
+      let resume = match (provider, resume) {
+        (LoginProvider::Github, LoginResume::Cli(_)) => LoginResume::Account,
+        (_, resume) => resume,
       };
-      Redirect::to(&callback_destination(resume_code, Some(reason))).into_response()
+      Redirect::to(&callback_destination(&resume, Some(reason))).into_response()
     }
   };
   set_cookie(&mut response, sessions::FLOW_COOKIE, "", 0)?;
   Ok(response)
 }
 
-fn callback_destination(cli_code: Option<&str>, error: Option<&str>) -> String {
-  let mut destination = match cli_code {
-    Some(code) => format!("/account/cli?code={code}"),
-    None => "/account".into(),
+fn callback_destination(resume: &LoginResume, error: Option<&str>) -> String {
+  let mut destination = match resume {
+    LoginResume::Account => "/account".into(),
+    LoginResume::Cli(code) => format!("/account/cli?code={code}"),
+    LoginResume::Page(path) => path.clone(),
   };
   if let Some(error) = error {
-    destination.push(if cli_code.is_some() { '&' } else { '?' });
+    destination.push(if destination.contains('?') { '&' } else { '?' });
     destination.push_str("auth_error=");
     destination.push_str(error);
   }

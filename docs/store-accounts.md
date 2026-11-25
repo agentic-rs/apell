@@ -10,6 +10,8 @@ The [CLI account commands](store-cli.md) support browser approval, registration,
 publishing, OIDC settings, and maintainer management using the same permissions.
 Open **My packages → Account & access** to see the GitHub identity used by the
 Store, open Account Security, or review and revoke connected terminals.
+If a link to account access, registration, or package settings asks you to sign
+in, the Store returns to that page afterward.
 
 ## Register and publish
 

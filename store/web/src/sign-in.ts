@@ -1,3 +1,4 @@
+import { accountReturnTo } from './account-navigation';
 import { element, link } from './dom';
 import type { Session } from './types';
 
@@ -14,10 +15,13 @@ export const loginOptions = {
   },
 } as const;
 
-export function signInOption(session: Session) {
+export function signInOption(session: Session, location?: Pick<Location, 'pathname' | 'search'>) {
   const provider = session.login_provider;
   if (session.login_available && (provider === 'account' || provider === 'github')) {
-    return loginOptions[provider];
+    const option = loginOptions[provider];
+    const return_to = location && accountReturnTo(location);
+    if (return_to) return { ...option, url: `${option.url}?${new URLSearchParams({ return_to })}` };
+    return option;
   }
 }
 

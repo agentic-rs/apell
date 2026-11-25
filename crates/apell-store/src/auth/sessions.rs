@@ -10,7 +10,41 @@ pub(super) const SESSION_SECONDS: i64 = 7 * 24 * 60 * 60;
 pub(super) struct AuthFlow {
   pub(super) verifier: String,
   pub(super) nonce: Option<String>,
-  pub(super) cli_code: Option<String>,
+  pub(super) resume: LoginResume,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum LoginResume {
+  Account,
+  Cli(String),
+  Page(String),
+}
+
+impl LoginResume {
+  pub(super) fn parse(cli_code: Option<&str>, return_to: Option<&str>) -> Result<Self> {
+    match (cli_code, return_to) {
+      (Some(code), None) => super::cli::user_code(code).map(Self::Cli),
+      (None, Some(path)) if valid_account_page(path) => Ok(Self::Page(path.to_owned())),
+      (None, None) => Ok(Self::Account),
+      _ => Err(StoreError::invalid("Invalid Store sign-in destination.")),
+    }
+  }
+}
+
+fn valid_account_page(value: &str) -> bool {
+  if matches!(value, "/account/access" | "/account/new") {
+    return true;
+  }
+  let Some(package) = value.strip_prefix("/account/packages/") else {
+    return false;
+  };
+  match package.split_once('?') {
+    Some((id, tab)) => {
+      apell_package::valid_name(id)
+        && matches!(tab, "tab=releases" | "tab=publishing" | "tab=people")
+    }
+    None => apell_package::valid_name(package),
+  }
 }
 
 pub(crate) fn migrate(connection: &Connection) -> Result<()> {
@@ -39,6 +73,10 @@ pub(crate) fn migrate(connection: &Connection) -> Result<()> {
     CREATE TABLE IF NOT EXISTS auth_cli_resumes (
       state_hash BLOB PRIMARY KEY REFERENCES auth_flows(state_hash) ON DELETE CASCADE,
       user_code TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS auth_page_resumes (
+      state_hash BLOB PRIMARY KEY REFERENCES auth_flows(state_hash) ON DELETE CASCADE,
+      return_to TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS auth_account_flows (
       state_hash BLOB PRIMARY KEY REFERENCES auth_flows(state_hash) ON DELETE CASCADE,
@@ -223,7 +261,7 @@ impl Store {
     verifier: &str,
     now: i64,
   ) -> Result<()> {
-    self.create_auth_flow(state, browser, verifier, None, None, now)
+    self.create_auth_flow(state, browser, verifier, None, &LoginResume::Account, now)
   }
 
   #[cfg(test)]
@@ -235,7 +273,8 @@ impl Store {
     cli_code: Option<&str>,
     now: i64,
   ) -> Result<()> {
-    self.create_auth_flow(state, browser, verifier, None, cli_code, now)
+    let resume = LoginResume::parse(cli_code, None)?;
+    self.create_auth_flow(state, browser, verifier, None, &resume, now)
   }
 
   pub(super) fn create_auth_flow(
@@ -244,10 +283,9 @@ impl Store {
     browser: &str,
     verifier: &str,
     nonce: Option<&str>,
-    cli_code: Option<&str>,
+    resume: &LoginResume,
     now: i64,
   ) -> Result<()> {
-    let cli_code = cli_code.map(super::cli::user_code).transpose()?;
     let mut connection = self.connection()?;
     let transaction = connection
       .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -275,12 +313,20 @@ impl Store {
         )
         .map_err(|_| StoreError::internal())?;
     }
-    if let Some(cli_code) = cli_code {
+    let destination = match resume {
+      LoginResume::Cli(code) => Some((
+        "INSERT INTO auth_cli_resumes(state_hash,user_code) VALUES (?1,?2)",
+        code,
+      )),
+      LoginResume::Page(path) => Some((
+        "INSERT INTO auth_page_resumes(state_hash,return_to) VALUES (?1,?2)",
+        path,
+      )),
+      LoginResume::Account => None,
+    };
+    if let Some((statement, value)) = destination {
       transaction
-        .execute(
-          "INSERT INTO auth_cli_resumes(state_hash,user_code) VALUES (?1,?2)",
-          params![hash(state), cli_code],
-        )
+        .execute(statement, params![hash(state), value])
         .map_err(|_| StoreError::internal())?;
     }
     transaction.commit().map_err(|_| StoreError::internal())
@@ -299,7 +345,11 @@ impl Store {
     now: i64,
   ) -> Result<(String, Option<String>)> {
     let flow = self.consume_auth_flow(state, browser, false, now)?;
-    Ok((flow.verifier, flow.cli_code))
+    let cli_code = match flow.resume {
+      LoginResume::Cli(code) => Some(code),
+      _ => None,
+    };
+    Ok((flow.verifier, cli_code))
   }
 
   pub(super) fn consume_auth_flow(
@@ -313,34 +363,34 @@ impl Store {
     let transaction = connection
       .transaction_with_behavior(TransactionBehavior::Immediate)
       .map_err(|_| StoreError::internal())?;
-    let flow = transaction
+    let (verifier, nonce, cli_code, return_to): (
+      String,
+      Option<String>,
+      Option<String>,
+      Option<String>,
+    ) = transaction
       .query_row(
-        "SELECT verifier,nonce,user_code FROM auth_flows
+        "SELECT verifier,nonce,user_code,return_to FROM auth_flows
          LEFT JOIN auth_account_flows USING(state_hash)
          LEFT JOIN auth_cli_resumes USING(state_hash)
+         LEFT JOIN auth_page_resumes USING(state_hash)
          WHERE state_hash=?1 AND browser_hash=?2 AND expires_at>?3 AND (nonce IS NOT NULL)=?4",
         params![hash(state), hash(browser), now, expect_account],
-        |row| {
-          Ok(AuthFlow {
-            verifier: row.get(0)?,
-            nonce: row.get(1)?,
-            cli_code: row.get(2)?,
-          })
-        },
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
       )
       .optional()
       .map_err(|_| StoreError::internal())?
       .ok_or_else(unauthorized)?;
-    let cli_code = flow
-      .cli_code
-      .as_deref()
-      .map(super::cli::user_code)
-      .transpose()?;
+    let resume = LoginResume::parse(cli_code.as_deref(), return_to.as_deref())?;
     transaction
       .execute("DELETE FROM auth_flows WHERE state_hash=?1", [hash(state)])
       .map_err(|_| StoreError::internal())?;
     transaction.commit().map_err(|_| StoreError::internal())?;
-    Ok(AuthFlow { cli_code, ..flow })
+    Ok(AuthFlow {
+      verifier,
+      nonce,
+      resume,
+    })
   }
 }
 
@@ -439,6 +489,36 @@ mod tests {
   }
 
   #[test]
+  fn sign_in_accepts_only_recognized_store_destinations() {
+    for path in [
+      "/account/access",
+      "/account/new",
+      "/account/packages/applet_1",
+      "/account/packages/applet-2?tab=publishing",
+    ] {
+      assert_eq!(
+        LoginResume::parse(None, Some(path)).unwrap(),
+        LoginResume::Page(path.into())
+      );
+    }
+    for path in [
+      "//example.invalid/account/access",
+      "https://example.invalid/account/access",
+      "/account/packages/../access",
+      "/account/packages/%2Fapp",
+      "/account/packages/app\\new",
+      "/account/packages/app\r\n",
+      "/account/packages/app?tab=people&tab=publishing",
+      "/account/packages/app?tab=people#editor",
+      "/account/cli?code=ABCDE-FGHJK",
+      "/account/access?auth_error=failed",
+    ] {
+      assert!(LoginResume::parse(None, Some(path)).is_err(), "{path:?}");
+    }
+    assert!(LoginResume::parse(Some("ABCDE-FGHJK"), Some("/account/access")).is_err());
+  }
+
+  #[test]
   fn account_flow_is_bound_to_provider_and_browser_and_consumes_nonce_once() {
     let directory = tempfile::tempdir().unwrap();
     let store = Store::open(directory.path()).unwrap();
@@ -449,7 +529,7 @@ mod tests {
         "browser",
         "verifier",
         Some("nonce"),
-        Some(&cli.user_code),
+        &LoginResume::Cli(cli.user_code.clone()),
         1000,
       )
       .unwrap();
@@ -464,13 +544,20 @@ mod tests {
       .unwrap();
     assert_eq!(flow.verifier, "verifier");
     assert_eq!(flow.nonce.as_deref(), Some("nonce"));
-    assert_eq!(flow.cli_code, Some(cli.user_code));
+    assert_eq!(flow.resume, LoginResume::Cli(cli.user_code));
     assert!(store
       .consume_auth_flow("state", "browser", true, 1001)
       .is_err());
 
     store
-      .create_auth_flow("state", "browser", "verifier", None, None, 1002)
+      .create_auth_flow(
+        "state",
+        "browser",
+        "verifier",
+        None,
+        &LoginResume::Account,
+        1002,
+      )
       .unwrap();
     assert!(store
       .consume_auth_flow("state", "browser", true, 1003)
