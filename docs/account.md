@@ -200,7 +200,8 @@ settings namespace.
 
 In **Settings → Apell Account**, choose **Sign in** to see the browser address
 and code. Enter the code on the sign-in page on this or another device. When
-Apell shows the signed-in account, turn on config sync and choose **Sync now**.
+Apell shows the signed-in account, turn on **Sync model settings**. The first
+sync starts automatically. Use **Sync now** to retry or sync later changes.
 Model settings sync includes connection labels, built-in provider and model
 selections, and the preferred active model. API keys can be synced separately
 through **Encrypted API keys**.

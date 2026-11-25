@@ -4,6 +4,7 @@ use super::{
 };
 use apell_vault_keys::derive_pairing_proof_key;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use reqwest::{Response, StatusCode};
 use ring::hmac;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -112,6 +113,16 @@ pub(super) async fn remote(host: &Host, access: &Access) -> Result<RemoteVault, 
     .key_sync
     .request(access, Method::GET, MANAGED, None)
     .await?;
+  decode_remote(response).await
+}
+
+async fn decode_remote(response: Response) -> Result<RemoteVault, String> {
+  if matches!(
+    response.status(),
+    StatusCode::NOT_FOUND | StatusCode::GONE | StatusCode::SERVICE_UNAVAILABLE
+  ) {
+    return Err("Device verification is temporarily unavailable. Try again later.".into());
+  }
   decode(response).await
 }
 
@@ -513,6 +524,24 @@ fn now() -> i64 {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[tokio::test]
+  async fn missing_managed_service_reports_unavailability() {
+    for status in [
+      StatusCode::NOT_FOUND,
+      StatusCode::GONE,
+      StatusCode::SERVICE_UNAVAILABLE,
+    ] {
+      let response = tauri::http::Response::builder()
+        .status(status)
+        .body("")
+        .unwrap();
+      assert_eq!(
+        decode_remote(response.into()).await.err().as_deref(),
+        Some("Device verification is temporarily unavailable. Try again later.")
+      );
+    }
+  }
 
   #[test]
   fn managed_pairing_matches_relay_proof_vectors() {

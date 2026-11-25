@@ -22,6 +22,7 @@
     <link rel="alternate" hreflang="zh-CN" href="https://agentic-rs.github.io/apell/cn/" />
     <link rel="icon" href="./icon.png" type="image/png" />
     <link rel="stylesheet" href="./styles.css" />
+    <script defer src="./navigation.js"></script>
     <title>Apell — A home for your applets</title>
   </head>
   <body>
@@ -42,6 +43,7 @@
           <nav class="site-links" aria-label="Main navigation">
             <a href="https://tokn-ai.dev/#tools">Tools</a>
             <a href="https://tokn-ai.dev/#workshop">Workshop</a>
+            <a href="#get-started">Get started</a>
             <a href="#applets">Applets</a>
             <a href="#developers">For developers</a>
             <a href="https://github.com/agentic-rs/apell">GitHub</a>
@@ -54,6 +56,7 @@
             <nav aria-label="Main navigation">
               <a href="https://tokn-ai.dev/#tools">Tools</a>
               <a href="https://tokn-ai.dev/#workshop">Workshop</a>
+              <a href="#get-started">Get started</a>
               <a href="#applets">Applets</a>
               <a href="#developers">For developers</a>
               <a href="https://github.com/agentic-rs/apell">GitHub</a>
@@ -73,8 +76,8 @@
               once and keep each applet's local data private.
             </p>
             <div class="actions">
-              <a class="button build" href="https://github.com/agentic-rs/apell#first-run"
-                >Build Apell <span aria-hidden="true">↗</span></a
+              <a class="button build" href="#get-started"
+                >Get started <span aria-hidden="true">↓</span></a
               >
               <a class="button write" href="#developers"
                 >Build an applet <span aria-hidden="true">↓</span></a
@@ -130,6 +133,76 @@
               Illustration of the Apell launcher and the included Companion applet
             </figcaption>
           </figure>
+        </div>
+      </section>
+      <section
+        class="shell getting-started"
+        id="get-started"
+        aria-labelledby="get-started-title"
+        tabindex="-1"
+      >
+        <div class="section-heading">
+          <h2 id="get-started-title">Get started</h2>
+          <p>Build Apell for your device, then add your first applet.</p>
+        </div>
+        <div class="start-grid">
+          <div class="start-panel">
+            <h3>Build from source</h3>
+            <a class="text-link" href="https://github.com/agentic-rs/apell#first-run"
+              >Build prerequisites <span aria-hidden="true">↗</span></a
+            >
+            <ul class="platform-list">
+              <li>
+                <a href="https://github.com/agentic-rs/apell#mobile-development">
+                  <strong>iOS</strong><span>Use Xcode on a Mac</span
+                  ><span aria-hidden="true">↗</span>
+                </a>
+              </li>
+              <li>
+                <a href="https://github.com/agentic-rs/apell#mobile-development">
+                  <strong>Android</strong><span>Use the Android SDK, NDK, and Java</span
+                  ><span aria-hidden="true">↗</span>
+                </a>
+              </li>
+              <li>
+                <a href="https://github.com/agentic-rs/apell#macos-app">
+                  <strong>macOS</strong><span>Build a standalone desktop app</span
+                  ><span aria-hidden="true">↗</span>
+                </a>
+              </li>
+            </ul>
+          </div>
+          <div class="start-panel">
+            <h3>Install an applet</h3>
+            <dl class="install-options">
+              <div>
+                <dt>
+                  <a
+                    href="https://github.com/agentic-rs/apell/blob/main/docs/store.md#browse-and-install-inside-apell"
+                    >Apell Store <span aria-hidden="true">↗</span></a
+                  >
+                </dt>
+                <dd>
+                  Open <strong>Store</strong> in the library, add a store’s HTTPS address, then
+                  choose an applet and select <strong>Install</strong>.
+                </dd>
+              </div>
+              <div>
+                <dt>.apel file</dt>
+                <dd>
+                  Choose <strong>+ → Install an .apel file</strong> and select the package on your
+                  device.
+                </dd>
+              </div>
+              <div>
+                <dt>Public GitHub release</dt>
+                <dd>
+                  Choose <strong>+ → Install from GitHub</strong> and enter a public repository or
+                  release URL.
+                </dd>
+              </div>
+            </dl>
+          </div>
         </div>
       </section>
       <section class="shell applets" id="applets" aria-labelledby="applets-title">
@@ -240,15 +313,8 @@
         </ul>
       </section>
       <section class="shell features" aria-labelledby="features-title">
-        <h2 id="features-title">Install an applet. Open it and get started.</h2>
+        <h2 id="features-title">Shared models. Private applet data.</h2>
         <dl>
-          <div>
-            <dt>Install from a file or GitHub</dt>
-            <dd>
-              Open a local .apel package or install one from a public GitHub release. Applets appear
-              in the launcher as soon as they're installed.
-            </dd>
-          </div>
           <div>
             <dt>Share model connections</dt>
             <dd>

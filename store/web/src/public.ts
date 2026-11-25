@@ -1,5 +1,6 @@
 import type { Applet, AppletDetails, Release } from './types';
 import { button, element, link } from './dom';
+import { catalogReturn } from './catalog-navigation';
 import {
   channel_labels,
   availableChannel,
@@ -319,7 +320,9 @@ export function renderDetails(
     const url = new URL(location.href);
     setChannel(url, channel);
     history.replaceState(history.state, '', url);
-    back.href = '/';
+    const return_link = catalogReturn(history.state);
+    back.href = return_link.href;
+    back.textContent = return_link.label;
 
     const available = releases.filter((release) => getReleaseChannel(release) === channel);
     const latest = latestInChannel(applet, channel, releases);

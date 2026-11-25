@@ -469,10 +469,12 @@ html:lang(zh-CN) h1 em {
   text-align: center;
 }
 
+.getting-started,
 .applets,
 .features {
   padding-block: clamp(45px, 7vw, 90px);
 }
+.getting-started,
 .applets {
   scroll-margin-top: 28px;
   border-bottom: 1px solid var(--apell-rule);
@@ -488,6 +490,71 @@ html:lang(zh-CN) h1 em {
   max-width: 22rem;
   color: var(--apell-muted-light);
   text-wrap: pretty;
+}
+.start-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: clamp(16px, 3vw, 32px);
+  margin-top: 28px;
+}
+.start-panel {
+  min-width: 0;
+  padding: clamp(18px, 3vw, 30px);
+  border: 1px solid var(--apell-rule);
+  border-radius: 16px;
+  background: var(--apell-surface);
+}
+.start-panel h3 {
+  margin: 0;
+  font-size: 1.25rem;
+  letter-spacing: -0.025em;
+}
+.platform-list,
+.install-options {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.platform-list li,
+.install-options > div {
+  border-top: 1px solid var(--apell-rule);
+}
+.platform-list a {
+  display: grid;
+  grid-template-columns: 4rem minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 52px;
+  padding-block: 8px;
+}
+.platform-list a:hover strong,
+.install-options a:hover {
+  text-decoration: underline;
+  text-underline-offset: 4px;
+}
+.platform-list span,
+.install-options dd {
+  color: var(--apell-muted-light);
+  font-size: 0.9375rem;
+}
+.platform-list a > span:last-child,
+.install-options a {
+  color: var(--apell-plum);
+}
+.install-options {
+  margin-top: 14px;
+}
+.install-options > div {
+  padding-top: 10px;
+}
+.install-options > div + div {
+  margin-top: 10px;
+}
+.install-options dt {
+  font-weight: 650;
+}
+.install-options dd {
+  margin: 2px 0 0;
 }
 .applet-gallery {
   display: grid;
@@ -580,7 +647,7 @@ html:lang(zh-CN) h2 {
 }
 .features dl {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: clamp(20px, 4vw, 54px);
   margin: 32px 0 0;
 }
@@ -655,6 +722,7 @@ html:lang(zh-CN) h2 {
     width: min(100%, 35rem);
     margin-inline: auto;
   }
+  .start-grid,
   .features dl,
   .developer-inner {
     grid-template-columns: minmax(0, 1fr);

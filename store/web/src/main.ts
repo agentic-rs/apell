@@ -2,6 +2,7 @@ import './styles.css';
 import { api, ApiError } from './api';
 import { renderAccount, renderAccountHeader, renderRegistration, renderSignedOut } from './account';
 import type { Actions } from './actions';
+import { catalogEntry, catalogReturn } from './catalog-navigation';
 import { button, element, routeLink, showError } from './dom';
 import { renderPackage } from './manage';
 import { renderCliApproval, renderCliCredentials } from './cli';
@@ -15,8 +16,10 @@ let navigation_id = 0;
 let session: Session | undefined;
 
 function navigate(path: string): void {
-  if (new URL(path, location.origin).href === location.href) return;
-  history.pushState(null, '', path);
+  const current = new URL(location.href);
+  const destination = new URL(path, current.origin);
+  if (destination.href === current.href) return;
+  history.pushState(catalogEntry(current, destination), '', destination);
   window.scrollTo(0, 0);
   void renderRoute(true);
 }
@@ -148,7 +151,8 @@ async function renderRoute(focus = false, force = false): Promise<void> {
       message,
       button('Try again', () => void renderRoute(), 'button secondary'),
     );
-    main.replaceChildren(routeLink('← All applets', '/', 'back-link'), state);
+    const back = catalogReturn(history.state);
+    main.replaceChildren(routeLink(back.label, back.href, 'back-link'), state);
   } finally {
     if (current_id === navigation_id) main.removeAttribute('aria-busy');
   }

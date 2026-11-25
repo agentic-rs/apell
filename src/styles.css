@@ -488,6 +488,25 @@ svg {
   min-width: 0;
   overflow-wrap: anywhere;
 }
+.account-model-sync {
+  display: grid;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+.account-model-sync-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+}
+.account-model-sync p,
+.account-model-sync-state {
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+}
 .account-key-sync {
   display: grid;
   gap: 12px;
