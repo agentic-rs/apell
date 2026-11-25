@@ -121,7 +121,7 @@ async fn fresh_browser_approval_releases_vault_once_to_the_requesting_native_cli
 
   let local_secret = [9u8; 32];
   let finish_body = json!({"request_secret": URL_SAFE_NO_PAD.encode(local_secret)});
-  for subject in ["different-account", SUBJECT] {
+  for subject in [None, Some("different-account"), Some(SUBJECT)] {
     let start_response = request(
       &relay,
       Method::POST,
@@ -154,18 +154,26 @@ async fn fresh_browser_approval_releases_vault_once_to_the_requesting_native_cli
     assert_eq!(params["max_age"], "0");
     assert_eq!(params["acr_values"], "urn:logto:acr:1fa");
     assert_eq!(params["code_challenge_method"], "S256");
-    *grant.lock().unwrap() = Some(BrowserGrant {
-      nonce: params["nonce"].clone(),
-      pkce: params["code_challenge"].clone(),
-      subject: subject.into(),
-    });
-    let callback_uri = format!(
-      "{CALLBACK}?state={}&code=fixture-browser-code",
-      params["state"]
-    );
+    let state = &params["state"];
+    let callback_uri = if let Some(subject) = subject {
+      *grant.lock().unwrap() = Some(BrowserGrant {
+        nonce: params["nonce"].clone(),
+        pkce: params["code_challenge"].clone(),
+        subject: subject.into(),
+      });
+      format!("{CALLBACK}?state={state}&code=fixture-browser-code")
+    } else {
+      format!("{CALLBACK}?state={state}&error=access_denied&error_description=fixture-reason")
+    };
     let verified = request(&relay, Method::GET, &callback_uri, None, None).await;
-    if subject != SUBJECT {
-      assert_eq!(verified.status(), StatusCode::BAD_REQUEST);
+    if subject != Some(SUBJECT) {
+      assert_result_page(
+        verified,
+        StatusCode::BAD_REQUEST,
+        "Account verification incomplete",
+        state,
+      )
+      .await;
       let finish = request(
         &relay,
         Method::POST,
@@ -177,8 +185,15 @@ async fn fresh_browser_approval_releases_vault_once_to_the_requesting_native_cli
       assert_eq!(finish.status(), StatusCode::FORBIDDEN);
       continue;
     }
-    assert_eq!(verified.status(), StatusCode::OK);
-    assert_eq!(verified.headers()[header::CACHE_CONTROL], "no-store");
+    assert_result_page(verified, StatusCode::OK, "Account verified", state).await;
+    let used_callback = request(&relay, Method::GET, &callback_uri, None, None).await;
+    assert_result_page(
+      used_callback,
+      StatusCode::BAD_REQUEST,
+      "Verification request unavailable",
+      state,
+    )
+    .await;
     let wrong_account = request(
       &relay,
       Method::POST,
@@ -221,7 +236,31 @@ async fn fresh_browser_approval_releases_vault_once_to_the_requesting_native_cli
     .await;
     assert_eq!(replay.status(), StatusCode::NOT_FOUND);
   }
+  let malformed = format!("{CALLBACK}?state=fixture-malformed&state=fixture-malformed");
+  assert_result_page(
+    request(&relay, Method::GET, &malformed, None, None).await,
+    StatusCode::BAD_REQUEST,
+    "Verification request unavailable",
+    "fixture-malformed",
+  )
+  .await;
   server.abort();
+}
+
+async fn assert_result_page(response: Response, status: StatusCode, title: &str, state: &str) {
+  assert_eq!(response.status(), status);
+  let headers = response.headers();
+  assert_eq!(headers[header::CACHE_CONTROL], "no-store");
+  assert_eq!(headers[header::REFERRER_POLICY], "no-referrer");
+  assert_eq!(headers[header::CONTENT_SECURITY_POLICY], *RESULT_CSP);
+  assert_eq!(headers[header::CONTENT_TYPE], "text/html; charset=utf-8");
+  let bytes = response.into_body().collect().await.unwrap().to_bytes();
+  let body = std::str::from_utf8(&bytes).unwrap();
+  assert!(body.contains(&format!("<h1>{title}</h1>")));
+  assert!(body.contains(&format!("<style>{RESULT_STYLES}</style>")));
+  for value in [state, SUBJECT, "fixture-browser-code", "fixture-reason"] {
+    assert!(!body.contains(value));
+  }
 }
 
 async fn request(

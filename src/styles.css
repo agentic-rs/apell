@@ -551,8 +551,13 @@ svg {
   color: var(--muted);
   font-size: 14px;
 }
-.account-key-sync > button {
+.account-key-sync > button,
+.key-sync-option > button {
   justify-self: start;
+}
+.key-sync-option {
+  display: grid;
+  gap: 8px;
 }
 .key-sync-code {
   display: block;

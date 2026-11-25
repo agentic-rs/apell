@@ -173,10 +173,14 @@ impl KeySync {
   }
 }
 
-async fn decode<T: DeserializeOwned>(mut response: Response) -> Result<T, String> {
+async fn decode<T: DeserializeOwned>(response: Response) -> Result<T, String> {
   if response.status() != StatusCode::OK {
     return Err(response_error(response.status()));
   }
+  decode_body(response).await
+}
+
+async fn decode_body<T: DeserializeOwned>(mut response: Response) -> Result<T, String> {
   let mut body = Zeroizing::new(Vec::new());
   while let Some(chunk) = response
     .chunk()

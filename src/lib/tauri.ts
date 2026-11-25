@@ -160,7 +160,8 @@ export const approveKeySyncPairing = (pair_id: string, approval_nonce: string) =
   shellCall<void>('key_sync.pair_approve', { pair_id, approval_nonce });
 export const startKeySyncRecovery = () => shellCall<KeySyncRecovery>('key_sync.recovery_start');
 export const openKeySyncRecovery = () => shellCall<void>('key_sync.recovery_open');
-export const finishKeySyncRecovery = () => shellCall<boolean>('key_sync.recovery_finish');
+export const finishKeySyncRecovery = () =>
+  shellCall<boolean | 'rejected'>('key_sync.recovery_finish');
 export const cancelKeySyncRecovery = () => shellCall<void>('key_sync.recovery_cancel');
 export const getSettingsTransferCapabilities = () =>
   shellCall<SettingsTransferCapabilities>('settings_transfer.capabilities');

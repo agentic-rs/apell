@@ -217,7 +217,9 @@ device** to create the vault. On an additional device, choose **Pair this
 device** and open **Approve a device** on a verified device. Compare the six
 digits on both screens and approve the matching request. When all verified
 devices are unavailable, choose **Recover access** and verify your Account
-again in the browser.
+again in the browser. Return to Apell after the browser confirms verification.
+If your pairing code expires, choose **Get a new code**. If browser verification
+expires or is incomplete, restart it from Apell.
 
 Apell holds the vault key in native secure storage. It uses HKDF-SHA256 to
 derive separate keys for encrypting provider API keys, proving device approval,

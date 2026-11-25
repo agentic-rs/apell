@@ -1,6 +1,7 @@
 use super::{
-  acknowledged, automatic, crypto, decode, kick, local_vault, save_vault, unlocked, verify_account,
-  Access, AppHandle, Host, LocalVault, Method, Secret, LOCKED,
+  acknowledged, automatic, crypto, decode, decode_body, kick, local_vault, response_error,
+  save_vault, unlocked, verify_account, Access, AppHandle, Host, LocalVault, Method, Secret,
+  LOCKED,
 };
 use apell_vault_keys::derive_pairing_proof_key;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
@@ -105,7 +106,11 @@ struct Challenge {
 enum RecoveryResult {
   Pending,
   Verified,
-  Complete { vault_key: Option<String> },
+  Complete {
+    vault_key: Option<String>,
+  },
+  #[serde(skip)]
+  Rejected,
 }
 
 pub(super) async fn remote(host: &Host, access: &Access) -> Result<RemoteVault, String> {
@@ -473,8 +478,12 @@ pub(super) async fn finish_recovery(
       Some(json!({ "request_secret": proof.as_str() })),
     )
     .await?;
-  let vault = match decode::<RecoveryResult>(response).await? {
+  let vault = match decode_recovery(response).await? {
     RecoveryResult::Pending => return Ok(json!(false)),
+    RecoveryResult::Rejected => {
+      *pending = None;
+      return Ok(json!("rejected"));
+    }
     RecoveryResult::Verified if request.enrolling => {
       let vault = local_vault(app, &access.account_key)
         .await?
@@ -512,6 +521,20 @@ pub(super) async fn finish_recovery(
   Ok(json!(true))
 }
 
+async fn decode_recovery(response: Response) -> Result<RecoveryResult, String> {
+  if response.status() == StatusCode::FORBIDDEN {
+    if let Ok(error) = decode_body::<Value>(response).await {
+      if error.pointer("/error/code").and_then(Value::as_str)
+        == Some("key_recovery_verification_failed")
+      {
+        return Ok(RecoveryResult::Rejected);
+      }
+    }
+    return Err(response_error(StatusCode::FORBIDDEN));
+  }
+  decode(response).await
+}
+
 pub(super) async fn cancel_recovery(host: &Host) -> Result<Value, String> {
   *host.key_sync.managed.recovery.lock().await = None;
   Ok(Value::Null)
@@ -524,6 +547,25 @@ fn now() -> i64 {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[tokio::test]
+  async fn recovery_rejection_is_distinct_from_a_forbidden_account() {
+    let response = |code| {
+      tauri::http::Response::builder()
+        .status(StatusCode::FORBIDDEN)
+        .body(json!({ "error": { "code": code } }).to_string())
+        .unwrap()
+        .into()
+    };
+    assert!(matches!(
+      decode_recovery(response("key_recovery_verification_failed")).await,
+      Ok(RecoveryResult::Rejected)
+    ));
+    assert_eq!(
+      decode_recovery(response("permission_denied")).await.err(),
+      Some(response_error(StatusCode::FORBIDDEN))
+    );
+  }
 
   #[tokio::test]
   async fn missing_managed_service_reports_unavailability() {

@@ -19,17 +19,26 @@ import { OperationScope } from './providers/state';
 import { Sheet } from './Sheet';
 
 const poll_interval = 3_000;
+const expired_request_error = 'This request expired. Start again.';
+const expired_approval_error =
+  'This pairing code expired. Ask the other device to show a new code.';
 
-type Flow =
+type VerificationRequest =
   | { kind: 'join'; pairing: KeySyncPairing }
-  | { kind: 'approve' }
-  | { kind: 'verify'; challenge: KeySyncRecovery };
+  | { kind: 'recover' | 'upgrade'; challenge: KeySyncRecovery };
+type Flow = VerificationRequest | { kind: 'approve' };
+type Progress = 'waiting' | 'expired' | 'rejected' | { error: string };
 
 const titles = {
   join: 'Pair this device',
   approve: 'Approve a device',
-  verify: 'Verify your Account',
+  recover: 'Recover access',
+  upgrade: 'Verify your Account',
 };
+
+function hasExpired(expires_at: number) {
+  return expires_at * 1000 <= Date.now();
+}
 
 function PairingCode({ code }: { code: string }) {
   return (
@@ -41,65 +50,125 @@ function PairingCode({ code }: { code: string }) {
 
 function waitUntilComplete(
   expires_at: number,
-  finish: () => Promise<boolean>,
+  finish: () => Promise<boolean | 'rejected'>,
   onComplete: () => void,
-  onError: (error: string) => void,
+  onProgress: (progress: Progress) => void,
 ): () => void {
   let active = true;
   let timer: number | undefined;
+  function schedule() {
+    const remaining = expires_at * 1000 - Date.now();
+    timer = window.setTimeout(() => void poll(), Math.max(0, Math.min(poll_interval, remaining)));
+  }
   async function poll() {
-    if (Date.now() >= expires_at * 1000) {
-      onError('This request expired. Close this sheet to try again.');
+    if (hasExpired(expires_at)) {
+      onProgress('expired');
       return;
     }
     try {
       const done = await finish();
       if (!active) return;
+      if (done === 'rejected') {
+        onProgress('rejected');
+        return;
+      }
       if (done) {
         onComplete();
         return;
       }
-      onError('');
+      onProgress('waiting');
     } catch (error) {
-      if (active) onError(message(error));
+      if (!active) return;
+      const text = message(error);
+      if (text === expired_request_error) {
+        onProgress('expired');
+        return;
+      }
+      onProgress({ error: text });
     }
-    if (active) timer = window.setTimeout(() => void poll(), poll_interval);
+    schedule();
   }
-  timer = window.setTimeout(() => void poll(), poll_interval);
+  schedule();
   return () => {
     active = false;
     window.clearTimeout(timer);
   };
 }
 
-function Joining({ pairing, onPaired }: { pairing: KeySyncPairing; onPaired: () => void }) {
-  const [error, setError] = useState('');
-  const done = useRef(onPaired);
-  done.current = onPaired;
-  useEffect(
-    () =>
-      waitUntilComplete(
-        pairing.expires_at,
-        () => finishKeySyncPairing(pairing.pair_id),
-        () => done.current(),
-        setError,
-      ),
-    [pairing],
-  );
+function Verification({
+  request,
+  onComplete,
+  onOpen,
+  onRestart,
+  busy,
+}: {
+  request: VerificationRequest;
+  onComplete: () => void;
+  onOpen: () => void;
+  onRestart: () => void;
+  busy: boolean;
+}) {
+  const [result, setResult] = useState<{ request: VerificationRequest; progress: Progress }>();
+  const done = useRef(onComplete);
+  done.current = onComplete;
+  useEffect(() => {
+    const [expires_at, finish] =
+      request.kind === 'join'
+        ? [request.pairing.expires_at, () => finishKeySyncPairing(request.pairing.pair_id)]
+        : [request.challenge.expires_at, finishKeySyncRecovery];
+    return waitUntilComplete(
+      expires_at,
+      finish,
+      () => done.current(),
+      (progress) => setResult({ request, progress }),
+    );
+  }, [request]);
+
+  const progress = result?.request === request ? result.progress : 'waiting';
+  const pairing = request.kind === 'join' ? request.pairing : undefined;
+  if (progress === 'expired' || progress === 'rejected') {
+    const feedback =
+      progress === 'rejected'
+        ? 'Account could not verify this request.'
+        : pairing
+          ? 'This pairing code expired.'
+          : 'Account verification expired.';
+    return (
+      <>
+        <p role="alert" className="status error">
+          {feedback}
+        </p>
+        <button type="button" className="primary" disabled={busy} onClick={onRestart}>
+          {busy ? 'Starting…' : pairing ? 'Get a new code' : 'Restart Account verification'}
+        </button>
+      </>
+    );
+  }
 
   return (
     <>
-      <p>
-        Open <strong>Approve a device</strong> on a verified device. Approve only if both devices
-        show this code.
-      </p>
-      <PairingCode code={pairing.code} />
-      {error ? (
+      {pairing ? (
+        <>
+          <p>
+            In <strong>Settings → Account</strong> on a verified device, choose{' '}
+            <strong>Approve a device</strong>. Approve only if the six digits match.
+          </p>
+          <PairingCode code={pairing.code} />
+        </>
+      ) : (
+        <>
+          <p>Complete verification in your browser, then return to Apell.</p>
+          <button type="button" className="primary" disabled={busy} onClick={onOpen}>
+            Open Account verification
+          </button>
+        </>
+      )}
+      {typeof progress === 'object' ? (
         <p role="alert" className="status error">
-          {error}
+          {progress.error}
         </p>
       ) : (
-        <p role="status">Waiting for approval…</p>
+        <p role="status">{pairing ? 'Waiting for approval…' : 'Waiting for verification…'}</p>
       )}
     </>
   );
@@ -119,11 +188,21 @@ function Approvals({ onBusyChange }: { onBusyChange: (busy: boolean) => void }) 
     let timer: number | undefined;
     async function refresh() {
       if (!pending.current) {
+        setPairs((previous) =>
+          previous?.some((pair) => hasExpired(pair.expires_at))
+            ? previous.filter((pair) => !hasExpired(pair.expires_at))
+            : previous,
+        );
         try {
           const result = await listKeySyncPairings();
           if (active && !pending.current) {
             setPairs(
-              result.pairs.filter((pair) => !pair.approved && !dismissed.current.has(pair.pair_id)),
+              result.pairs.filter(
+                (pair) =>
+                  !pair.approved &&
+                  !hasExpired(pair.expires_at) &&
+                  !dismissed.current.has(pair.pair_id),
+              ),
             );
             setError('');
           }
@@ -141,7 +220,17 @@ function Approvals({ onBusyChange }: { onBusyChange: (busy: boolean) => void }) 
     };
   }, []);
 
+  function dismissPair(pair_id: string) {
+    dismissed.current.add(pair_id);
+    setPairs((previous) => previous?.filter((pair) => pair.pair_id !== pair_id));
+  }
+
   async function approve(pair: KeySyncPairing) {
+    if (hasExpired(pair.expires_at)) {
+      dismissPair(pair.pair_id);
+      setError(expired_approval_error);
+      return;
+    }
     const operation = scope.current.start();
     if (!operation) return;
     pending.current = true;
@@ -151,11 +240,14 @@ function Approvals({ onBusyChange }: { onBusyChange: (busy: boolean) => void }) 
     try {
       await approveKeySyncPairing(pair.pair_id, pair.approval_nonce);
       if (!operation.isCurrent()) return;
-      dismissed.current.add(pair.pair_id);
-      setPairs((previous) => previous?.filter((item) => item.pair_id !== pair.pair_id));
+      dismissPair(pair.pair_id);
       setApproved(true);
     } catch (error) {
-      if (operation.isCurrent()) setError(message(error));
+      if (operation.isCurrent()) {
+        const text = message(error);
+        if (text === expired_request_error) dismissPair(pair.pair_id);
+        setError(text === expired_request_error ? expired_approval_error : text);
+      }
     } finally {
       pending.current = false;
       onBusyChange(false);
@@ -169,12 +261,16 @@ function Approvals({ onBusyChange }: { onBusyChange: (busy: boolean) => void }) 
   return (
     <>
       <p>
-        Choose <strong>Pair this device</strong> on the new device. Approve only when the six digits
-        match.
+        In <strong>Settings → Account</strong> on the new device, choose{' '}
+        <strong>Pair this device</strong>. Approve only when the six digits match.
       </p>
       {!pairs && !error && <p role="status">Checking for devices…</p>}
-      {pairs?.length === 0 && (
-        <p role="status">{approved ? 'Device approved.' : 'Waiting for a pairing request…'}</p>
+      {pairs?.length === 0 && !error && (
+        <p role="status">
+          {approved
+            ? 'Device approved. It will finish verification.'
+            : 'Waiting for a pairing request…'}
+        </p>
       )}
       {pairs?.map((pair) => (
         <div className="key-sync-approval" key={pair.pair_id}>
@@ -182,6 +278,7 @@ function Approvals({ onBusyChange }: { onBusyChange: (busy: boolean) => void }) 
           <button
             type="button"
             className="primary"
+            aria-label={`Approve code ${[...pair.code].join(' ')}`}
             disabled={!!busy}
             onClick={() => void approve(pair)}
           >
@@ -198,51 +295,18 @@ function Approvals({ onBusyChange }: { onBusyChange: (busy: boolean) => void }) 
   );
 }
 
-function Verification({
-  challenge,
-  onVerified,
-  onOpen,
-  opening,
-}: {
-  challenge: KeySyncRecovery;
-  onVerified: () => void;
-  onOpen: () => void;
-  opening: boolean;
-}) {
-  const [error, setError] = useState('');
-  const done = useRef(onVerified);
-  done.current = onVerified;
-  useEffect(
-    () =>
-      waitUntilComplete(
-        challenge.expires_at,
-        finishKeySyncRecovery,
-        () => done.current(),
-        setError,
-      ),
-    [challenge],
-  );
-  return (
-    <>
-      <p>Complete Account verification in your browser to verify this device.</p>
-      <button type="button" className="primary" disabled={opening} onClick={onOpen}>
-        Open Account verification
-      </button>
-      {error ? (
-        <p role="alert" className="status error">
-          {error}
-        </p>
-      ) : (
-        <p role="status">Waiting for verification…</p>
-      )}
-    </>
-  );
-}
-
 interface Props {
   disabled: boolean;
   onApplied: () => void;
   onBusyChange: (busy: boolean) => void;
+}
+
+async function cancelRequest(flow: Flow | undefined) {
+  if (flow?.kind === 'join') {
+    await cancelKeySyncPairing(flow.pairing.pair_id).catch(() => {});
+  } else if (flow && flow.kind !== 'approve') {
+    await cancelKeySyncRecovery().catch(() => {});
+  }
 }
 
 export function EncryptedKeySync({ disabled, onApplied, onBusyChange }: Props) {
@@ -321,20 +385,24 @@ export function EncryptedKeySync({ disabled, onApplied, onBusyChange }: Props) {
   }
 
   function close() {
-    const previous = flow;
     setFlow(undefined);
     setError('');
-    if (previous?.kind === 'join')
-      void cancelKeySyncPairing(previous.pairing.pair_id).catch(() => {});
-    if (previous?.kind === 'verify') void cancelKeySyncRecovery().catch(() => {});
+    void cancelRequest(flow);
   }
 
-  function startVerification() {
+  function startRequest(kind: VerificationRequest['kind']) {
     return perform(async (isCurrent) => {
-      const challenge = await startKeySyncRecovery();
+      if (flow) await cancelRequest(flow);
       if (!isCurrent()) return;
-      setFlow({ kind: 'verify', challenge });
-      await openKeySyncRecovery();
+      if (kind === 'join') {
+        const pairing = await startKeySyncPairing();
+        if (isCurrent()) setFlow({ kind, pairing });
+      } else {
+        const challenge = await startKeySyncRecovery();
+        if (!isCurrent()) return;
+        setFlow({ kind, challenge });
+        await openKeySyncRecovery();
+      }
     });
   }
 
@@ -372,46 +440,52 @@ export function EncryptedKeySync({ disabled, onApplied, onBusyChange }: Props) {
           <p>
             <strong>Unverified</strong>
           </p>
-          {(status.action === 'setup' || status.action === 'pair') && (
-            <p>Verify this device to sync eligible API keys with this Account.</p>
-          )}
           {status.action === 'setup' && (
-            <button
-              type="button"
-              className="primary"
-              disabled={button_disabled}
-              onClick={() =>
-                void perform(async (isCurrent) => {
-                  await createKeySync();
-                  if (isCurrent()) deviceVerified();
-                })
-              }
-            >
-              Verify this device
-            </button>
-          )}
-          {status.action === 'pair' && (
             <>
+              <p>
+                Set up encrypted sync for this Account. Eligible API keys sync automatically after
+                verification.
+              </p>
               <button
                 type="button"
                 className="primary"
                 disabled={button_disabled}
                 onClick={() =>
                   void perform(async (isCurrent) => {
-                    const pairing = await startKeySyncPairing();
-                    if (isCurrent()) setFlow({ kind: 'join', pairing });
+                    await createKeySync();
+                    if (isCurrent()) deviceVerified();
                   })
                 }
               >
-                Pair this device
+                Verify this device
               </button>
-              <button
-                type="button"
-                disabled={button_disabled}
-                onClick={() => void startVerification()}
-              >
-                Recover access
-              </button>
+            </>
+          )}
+          {status.action === 'pair' && (
+            <>
+              <div className="key-sync-option">
+                <p>Approve this device from another device that is already verified.</p>
+                <button
+                  type="button"
+                  className="primary"
+                  disabled={button_disabled}
+                  onClick={() => void startRequest('join')}
+                >
+                  Pair this device
+                </button>
+              </div>
+              <div className="key-sync-option">
+                <p>
+                  If you can’t use another verified device, verify your Account again in a browser.
+                </p>
+                <button
+                  type="button"
+                  disabled={button_disabled}
+                  onClick={() => void startRequest('recover')}
+                >
+                  Recover access
+                </button>
+              </div>
             </>
           )}
           {status.action === 'upgrade' && (
@@ -421,7 +495,7 @@ export function EncryptedKeySync({ disabled, onApplied, onBusyChange }: Props) {
                 type="button"
                 className="primary"
                 disabled={button_disabled}
-                onClick={() => void startVerification()}
+                onClick={() => void startRequest('upgrade')}
               >
                 Verify Account
               </button>
@@ -453,7 +527,6 @@ export function EncryptedKeySync({ disabled, onApplied, onBusyChange }: Props) {
       {flow && (
         <Sheet open title={titles[flow.kind]} onClose={close} dismissible={!busy && !approving}>
           <div className="transfer-form">
-            {flow.kind === 'join' && <Joining pairing={flow.pairing} onPaired={deviceVerified} />}
             {flow.kind === 'approve' && (
               <Approvals
                 onBusyChange={(active) => {
@@ -462,12 +535,13 @@ export function EncryptedKeySync({ disabled, onApplied, onBusyChange }: Props) {
                 }}
               />
             )}
-            {flow.kind === 'verify' && (
+            {flow.kind !== 'approve' && (
               <Verification
-                challenge={flow.challenge}
-                onVerified={deviceVerified}
-                opening={busy}
+                request={flow}
+                onComplete={deviceVerified}
+                busy={busy}
                 onOpen={() => void perform(openKeySyncRecovery)}
+                onRestart={() => void startRequest(flow.kind)}
               />
             )}
             {error && (

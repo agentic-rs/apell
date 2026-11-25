@@ -9,23 +9,35 @@ use crate::{
   Result, StoreError,
 };
 use axum::{
-  extract::{Path, Query, Request, State},
+  extract::{rejection::QueryRejection, Path, Query, Request, State},
   http::{header, HeaderValue, StatusCode},
   response::{Html, IntoResponse, Response},
   routing::{get, post},
   Json, Router,
 };
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use base64::{
+  engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
+  Engine,
+};
 use ring::hmac;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize, Serializer};
 use sha2::{Digest, Sha256};
-use std::{fs::File, io::Read};
+use std::{fs::File, io::Read, sync::LazyLock};
 use zeroize::{Zeroize, Zeroizing};
 
 const CALLBACK: &str = "/api/v1/key-vault/managed/recovery/callback";
 const LIFETIME: i64 = 300;
 const INVALID_CONFIG: &str = "Invalid Account recovery OIDC settings file.";
+const EXPIRED_CODE: &str = "key_recovery_expired";
+const RESULT_STYLES: &str = include_str!("recovery/result.css");
+static RESULT_CSP: LazyLock<HeaderValue> = LazyLock::new(|| {
+  let hash = STANDARD.encode(Sha256::digest(RESULT_STYLES));
+  HeaderValue::from_str(&format!(
+    "default-src 'none'; style-src 'sha256-{hash}'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'"
+  ))
+  .expect("a base64 digest is valid in a CSP header")
+});
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -183,27 +195,41 @@ struct CallbackInput {
   iss: Option<String>,
 }
 
-async fn callback(State(relay): State<Relay>, Query(input): Query<CallbackInput>) -> Response {
-  let result = verify_callback(&relay, input).await;
-  let (status, message) = if result.is_ok() {
-    (
+async fn callback(
+  State(relay): State<Relay>,
+  input: std::result::Result<Query<CallbackInput>, QueryRejection>,
+) -> Response {
+  let result = match input {
+    Ok(Query(input)) => verify_callback(&relay, input).await,
+    Err(_) => Err(expired()),
+  };
+  let (status, title, message) = match result {
+    Ok(()) => (
       StatusCode::OK,
-      "Account verified. Return to Apell to continue.",
-    )
-  } else {
-    (
+      "Account verified",
+      "Return to Apell to finish verifying this device. You can close this browser tab.",
+    ),
+    Err(error) if error.code == EXPIRED_CODE => (
       StatusCode::BAD_REQUEST,
-      "Account verification could not be completed. Return to Apell and try again.",
-    )
+      "Verification request unavailable",
+      "This request may have expired or already been used. Return to Apell to start a new one.",
+    ),
+    Err(_) => (
+      StatusCode::BAD_REQUEST,
+      "Account verification incomplete",
+      "Return to Apell and try again. When prompted, sign in with the same Apell Account.",
+    ),
   };
   let body = format!(
-    "<!doctype html><html lang=\"en\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Apell Account verification</title><p>{message}</p></html>"
+    include_str!("recovery/result.html"),
+    styles = RESULT_STYLES,
+    title = title,
+    message = message,
   );
   let mut response = (status, Html(body)).into_response();
-  response.headers_mut().insert(
-    header::CONTENT_SECURITY_POLICY,
-    HeaderValue::from_static("default-src 'none'; base-uri 'none'; frame-ancestors 'none'"),
-  );
+  response
+    .headers_mut()
+    .insert(header::CONTENT_SECURITY_POLICY, RESULT_CSP.clone());
   response
 }
 
@@ -240,7 +266,9 @@ async fn verify_callback(relay: &Relay, input: CallbackInput) -> Result<()> {
       )
       .await
   } else {
-    Err(expired())
+    Err(StoreError::invalid(
+      "Account verification did not complete.",
+    ))
   };
   let verified = verification.is_ok();
   relay
@@ -369,7 +397,7 @@ fn unavailable() -> StoreError {
 fn expired() -> StoreError {
   StoreError::new(
     StatusCode::NOT_FOUND,
-    "key_recovery_expired",
+    EXPIRED_CODE,
     "The Account verification request is unavailable or has expired.",
   )
 }
