@@ -227,9 +227,12 @@ export function AccountSync({
   return (
     <section
       className="panel account-sync"
+      aria-labelledby="settings-account"
       aria-busy={!!busy || keys_busy || (!account && !read_error)}
     >
-      <h2>Apell Account</h2>
+      <h2 id="settings-account" className="settings-section-title" tabIndex={-1}>
+        Apell Account
+      </h2>
       {!account && !read_error && <p role="status">Checking sign-in…</p>}
       {account?.state === 'unavailable' && <p>Account sign-in is unavailable in this build.</p>}
       {account?.state === 'signed_out' && (

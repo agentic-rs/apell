@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type MouseEvent } from 'react';
 import { activateConnection, getSettings, message, onLlmSettingsChanged } from '../lib/tauri';
 import type { LlmConnection, LlmSettings } from '../lib/types';
 import { ConnectionEditor } from '../components/providers/ConnectionEditor';
@@ -7,6 +7,25 @@ import { Icon } from '../components/Icon';
 import { AccountSync } from '../components/AccountSync';
 import { AppletPermissions } from '../components/AppletPermissions';
 import { SettingsTransfer } from '../components/SettingsTransfer';
+
+const settings_sections = [
+  { id: 'settings-connections', label: 'Connections' },
+  { id: 'settings-account', label: 'Account' },
+  { id: 'settings-backup', label: 'Backup' },
+  { id: 'settings-permissions', label: 'Permissions' },
+];
+
+function jumpToSection(event: MouseEvent<HTMLAnchorElement>) {
+  const heading = document.getElementById(event.currentTarget.hash.slice(1));
+  const nav = event.currentTarget.closest('nav');
+  if (!heading || !nav) return;
+  event.preventDefault();
+  const pinned_top = Number.parseFloat(window.getComputedStyle(nav).top);
+  heading.focus({ preventScroll: true });
+  window.scrollTo({
+    top: window.scrollY + heading.getBoundingClientRect().top - nav.offsetHeight - pinned_top - 12,
+  });
+}
 
 export function Settings() {
   const [settings, setSettings] = useState<LlmSettings>();
@@ -124,9 +143,15 @@ export function Settings() {
     );
 
   const connections = (
-    <section className="settings panel" aria-busy={editing_disabled}>
+    <section
+      className="settings panel"
+      aria-labelledby="settings-connections"
+      aria-busy={editing_disabled}
+    >
       <div className="settings-heading">
-        <h2>Connections</h2>
+        <h2 id="settings-connections" className="settings-section-title" tabIndex={-1}>
+          Connections
+        </h2>
         <button
           type="button"
           className="icon-button"
@@ -266,6 +291,13 @@ export function Settings() {
 
   return (
     <>
+      <nav className="settings-shortcuts" aria-label="Settings sections">
+        {settings_sections.map(({ id, label }) => (
+          <a key={id} href={`#${id}`} onClick={jumpToSection}>
+            {label}
+          </a>
+        ))}
+      </nav>
       {connections}
       <AccountSync
         providers={settings?.providers ?? []}
@@ -273,14 +305,12 @@ export function Settings() {
         onApplied={() => setReloadRequested(true)}
         onSyncBusyChange={setSyncing}
       />
-      {settings && (
-        <SettingsTransfer
-          connections={settings.connections}
-          providers={settings.providers}
-          disabled={editing_disabled}
-          onImported={() => void load()}
-        />
-      )}
+      <SettingsTransfer
+        connections={settings?.connections ?? []}
+        providers={settings?.providers ?? []}
+        disabled={editing_disabled || !settings}
+        onImported={() => void load()}
+      />
       <AppletPermissions />
     </>
   );

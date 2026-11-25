@@ -485,8 +485,10 @@ function TransferSheet({
 export function SettingsTransfer({ connections, providers, disabled, onImported }: TransferProps) {
   const [mode, setMode] = useState<TransferMode>();
   return (
-    <section className="panel settings-transfer">
-      <h2>Transfer connections</h2>
+    <section className="panel settings-transfer" aria-labelledby="settings-backup">
+      <h2 id="settings-backup" className="settings-section-title" tabIndex={-1}>
+        Transfer connections
+      </h2>
       <p>Move your provider settings and saved API keys with an encrypted backup.</p>
       <div className="button-row">
         <button type="button" disabled={disabled} onClick={() => setMode('import')}>

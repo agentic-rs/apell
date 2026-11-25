@@ -88,6 +88,8 @@ button:focus-visible,
 summary:focus-visible,
 input:focus-visible,
 select:focus-visible,
+.settings-shortcuts a:focus-visible,
+.settings-section-title:focus-visible,
 .file-option:focus-within {
   outline: 3px solid var(--focus);
   outline-offset: 3px;
@@ -424,6 +426,34 @@ svg {
   margin: 0;
   color: var(--muted);
   font-size: 14px;
+}
+.settings-shortcuts {
+  position: sticky;
+  top: env(safe-area-inset-top, 0px);
+  z-index: 1;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(max-content, 1fr));
+  gap: 6px;
+  max-width: 540px;
+  margin: 0 auto 16px;
+  padding: 4px 0 8px;
+  background: var(--canvas);
+}
+.settings-shortcuts a {
+  display: grid;
+  place-items: center;
+  min-height: 44px;
+  padding: 6px 3px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.2;
+  text-align: center;
+  text-decoration: none;
+  touch-action: manipulation;
 }
 .settings form {
   display: grid;
@@ -995,6 +1025,9 @@ svg {
   color: var(--muted);
 }
 @media (hover: hover) {
+  .settings-shortcuts a:hover {
+    background: var(--subtle);
+  }
   .icon-button:not(:disabled):hover {
     background: var(--subtle);
   }
@@ -1014,6 +1047,11 @@ svg {
   }
   .panel {
     margin-top: 12px;
+  }
+}
+@media (max-width: 375px) {
+  .settings-shortcuts {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 @media (prefers-reduced-motion: reduce) {

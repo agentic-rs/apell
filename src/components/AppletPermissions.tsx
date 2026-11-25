@@ -42,8 +42,10 @@ export function AppletPermissions() {
   }, []);
 
   return (
-    <section className="panel applet-permissions" aria-labelledby="applet-permissions-title">
-      <h2 id="applet-permissions-title">Applet permissions</h2>
+    <section className="panel applet-permissions" aria-labelledby="settings-permissions">
+      <h2 id="settings-permissions" className="settings-section-title" tabIndex={-1}>
+        Applet permissions
+      </h2>
       <p>Reset saved microphone, camera, or location access to make an applet ask again.</p>
       {applets?.length ? (
         <div className="connection-list" aria-busy={busy}>
