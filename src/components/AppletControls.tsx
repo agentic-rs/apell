@@ -12,6 +12,7 @@ import {
   getAppletInstallation,
   getPermissionMode,
   message,
+  onAppletInstallationChanged,
   onPermissionsChanged,
   setPermissionMode,
 } from '../lib/tauri';
@@ -19,7 +20,7 @@ import type {
   AppletSession,
   ManagedPermission,
   PermissionMode,
-  PermissionStatus,
+  ViewPermissionStatus,
 } from '../lib/types';
 import { Icon } from './Icon';
 import { Sheet } from './Sheet';
@@ -27,6 +28,13 @@ import { AppletChannel } from './AppletChannel';
 import { SystemPermissionAccess } from './SystemPermissionAccess';
 import { OperationScope } from './providers/state';
 import './AppletControls.css';
+
+const edit_blocker_labels = {
+  source_changed: 'Restart this applet before changing permissions for its new source.',
+  permission_removed:
+    'The installed version no longer requests this permission. Restart to open the installed version.',
+  installation_unavailable: 'The installed package is unavailable. Open Library to check it.',
+} satisfies Record<NonNullable<ViewPermissionStatus['edit_blocker']>, string>;
 
 function PermissionAccess({
   session,
@@ -40,10 +48,12 @@ function PermissionAccess({
   unavailable_reason?: string;
 }) {
   const { session_id, view_id } = session;
+  const { applet_id } = session.manifest;
   const label_id = useId();
-  const [status, setStatus] = useState<PermissionStatus>();
+  const [status, setStatus] = useState<ViewPermissionStatus>();
   const [busy, setBusy] = useState(true);
-  const [error, setError] = useState('');
+  const [read_error, setReadError] = useState('');
+  const [edit_error, setEditError] = useState('');
   const [refresh_requested, setRefreshRequested] = useState(false);
   const scope = useRef(new OperationScope());
 
@@ -53,15 +63,23 @@ function PermissionAccess({
       const operation = scope.current.start();
       if (!operation) return;
       setBusy(true);
-      setError('');
+      setReadError('');
+      setEditError('');
       try {
-        const saved =
-          next === undefined
-            ? await getPermissionMode(session_id, view_id, permission)
-            : await setPermissionMode(session_id, view_id, permission, next);
+        if (next !== undefined) {
+          try {
+            const saved = await setPermissionMode(session_id, view_id, permission, next);
+            if (operation.isCurrent()) setStatus(saved);
+            return;
+          } catch (error) {
+            if (!operation.isCurrent()) return;
+            setEditError(message(error));
+          }
+        }
+        const saved = await getPermissionMode(session_id, view_id, permission);
         if (operation.isCurrent()) setStatus(saved);
       } catch (error) {
-        if (operation.isCurrent()) setError(message(error));
+        if (operation.isCurrent()) setReadError(message(error));
       } finally {
         if (operation.isCurrent()) {
           operation.finish();
@@ -76,18 +94,24 @@ function PermissionAccess({
     if (read_only || unavailable_reason) return;
     const operations = scope.current;
     let open = true;
-    const unsubscribe = onPermissionsChanged(() => {
+    const refresh = () => {
       if (open) setRefreshRequested(true);
-    }).catch(() => undefined);
-    void unsubscribe.then(() => {
+    };
+    const unsubscribe = [
+      onPermissionsChanged(refresh),
+      onAppletInstallationChanged((changed_id) => {
+        if (changed_id === applet_id) refresh();
+      }),
+    ].map((subscription) => subscription.catch(() => undefined));
+    void Promise.all(unsubscribe).then(() => {
       if (open) void update();
     });
     return () => {
       open = false;
       operations.cancel();
-      void unsubscribe.then((unlisten) => unlisten?.());
+      for (const stop of unsubscribe) void stop.then((unlisten) => unlisten?.());
     };
-  }, [read_only, unavailable_reason, update]);
+  }, [applet_id, read_only, unavailable_reason, update]);
 
   useEffect(() => {
     if (!refresh_requested || busy || read_only || unavailable_reason) return;
@@ -96,8 +120,12 @@ function PermissionAccess({
   }, [refresh_requested, busy, read_only, unavailable_reason, update]);
 
   const mode = status?.mode;
+  const blocker = !read_error && status?.edit_blocker && edit_blocker_labels[status.edit_blocker];
+  const locked = read_only || !!read_error || !!blocker;
+  const refreshing = busy || refresh_requested;
+  const problem = read_error || (!blocker && edit_error);
   const system_label =
-    status && mode !== 'unavailable' && !unavailable_reason
+    status && !read_error && mode !== 'unavailable' && !unavailable_reason
       ? systemPermissionLabel(status.system_authorization)
       : undefined;
 
@@ -109,7 +137,7 @@ function PermissionAccess({
           unavailable_reason
         ) : mode === 'unavailable' ? (
           permission_unavailable
-        ) : read_only ? (
+        ) : locked ? (
           mode ? (
             permission_mode_labels[mode]
           ) : (
@@ -120,7 +148,7 @@ function PermissionAccess({
             aria-labelledby={label_id}
             aria-describedby={system_label ? `${label_id}-system` : undefined}
             value={mode}
-            disabled={busy}
+            disabled={refreshing}
             onChange={(event) => {
               const value = event.currentTarget.value;
               if (isPermissionMode(value)) void update(value);
@@ -132,13 +160,9 @@ function PermissionAccess({
               </option>
             ))}
           </select>
-        ) : busy ? (
+        ) : refreshing ? (
           <span role="status">Loading…</span>
-        ) : (
-          <button type="button" onClick={() => void update()}>
-            Try again
-          </button>
-        )}
+        ) : null}
         {system_label && status && mode && mode !== 'unavailable' && (
           <SystemPermissionAccess
             id={`${label_id}-system`}
@@ -147,13 +171,25 @@ function PermissionAccess({
             authorization={status.system_authorization}
             mode={mode}
             can_open_system_settings={!read_only && status.can_open_system_settings}
-            disabled={busy}
+            disabled={refreshing}
           />
         )}
       </dd>
-      {!read_only && error && (
-        <dd className="applet-access-error status error" role="alert">
-          {error}
+      {blocker && (
+        <dd className="applet-access-note">
+          <span role="status">{blocker}</span>
+        </dd>
+      )}
+      {!read_only && problem && (
+        <dd className="applet-access-error">
+          <span className="status error" role="alert">
+            {problem}
+          </span>
+          {read_error && (
+            <button type="button" disabled={refreshing} onClick={() => void update()}>
+              Try again
+            </button>
+          )}
         </dd>
       )}
     </div>

@@ -1,5 +1,11 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { getStoreDetail, installStoreRelease, message, onInstallProgress } from '../lib/tauri';
+import {
+  getStoreDetail,
+  installStoreRelease,
+  message,
+  onAppletInstallationChanged,
+  onInstallProgress,
+} from '../lib/tauri';
 import {
   newStoreAccess,
   recommendedStoreRelease,
@@ -62,6 +68,7 @@ export function AppletChannel({
   const [installation, setInstallation] = useState(initial_installation);
   const [review, setReview] = useState<Review>();
   const [phase, setPhase] = useState<Phase>();
+  const [refresh_requested, setRefreshRequested] = useState(false);
   const [progress, setProgress] = useState<InstallProgress>();
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
@@ -129,27 +136,60 @@ export function AppletChannel({
   };
   const load = () =>
     void run('loading', async (operation) => {
-      await reload(operation);
+      const previous = current_installation.current;
+      try {
+        const next = await reload(operation);
+        if (operation.isCurrent() && !sameInstallation(previous, next)) {
+          setReview(undefined);
+          if (review) setError(installation_changed);
+        }
+      } catch (error) {
+        if (operation.isCurrent()) {
+          current_installation.current = undefined;
+          setInstallation(undefined);
+          setReview(undefined);
+        }
+        throw error;
+      }
     });
   useEffect(() => {
-    if (!last_initial.current) load();
-    return () => scope.current.cancel();
+    if (last_initial.current) return () => scope.current.cancel();
+    let open = true;
+    const subscription = onAppletInstallationChanged((changed_id) => {
+      if (open && changed_id === applet_id) setRefreshRequested(true);
+    }).catch(() => undefined);
+    void subscription.then(() => {
+      if (open) setRefreshRequested(true);
+    });
+    return () => {
+      open = false;
+      scope.current.cancel();
+      void subscription.then((unlisten) => unlisten?.());
+    };
   }, [applet_id]);
+  useEffect(() => {
+    if (!refresh_requested || phase) return;
+    setRefreshRequested(false);
+    load();
+  }, [refresh_requested, phase]);
 
   const source = installation?.store_source;
+  const controls_disabled = disabled || !!phase || refresh_requested;
   if (!installation) {
     if (!error) return <p role="status">Checking installation…</p>;
     return (
       <div className="applet-channel">
         <p role="alert">{error}</p>
-        <button onClick={load}>Retry installation check</button>
+        <button disabled={controls_disabled} onClick={load}>
+          Retry installation check
+        </button>
       </div>
     );
   }
   const restart = installation.restart_required && !review && (
     <>
       <p role="status">Version {installation.installed_version} is installed. Restart to use it.</p>
-      <button className="primary" disabled={disabled || !!phase} onClick={onRestart}>
+      <button className="primary" disabled={controls_disabled} onClick={onRestart}>
         Restart applet
       </button>
     </>
@@ -301,7 +341,7 @@ export function AppletChannel({
             <select
               aria-label="Installed channel"
               value={source.channel}
-              disabled={disabled || !!phase || !!review}
+              disabled={controls_disabled || !!review}
               onChange={(event) => {
                 const next = event.currentTarget.value;
                 if (next === 'stable' || next === 'nightly') checkRelease(next);
@@ -315,7 +355,7 @@ export function AppletChannel({
       </dl>
       <button
         type="button"
-        disabled={disabled || !!phase || !!review}
+        disabled={controls_disabled || !!review}
         onClick={() => checkRelease(source.channel)}
       >
         Check for updates
@@ -369,7 +409,11 @@ export function AppletChannel({
               >
                 Cancel
               </button>
-              <button className="primary" disabled={disabled} onClick={() => install(review)}>
+              <button
+                className="primary"
+                disabled={controls_disabled}
+                onClick={() => install(review)}
+              >
                 {review.release.downloaded_bytes !== undefined
                   ? 'Continue download'
                   : reviewing_update

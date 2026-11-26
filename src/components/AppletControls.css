@@ -1,3 +1,15 @@
 .applet-about .applet-about-device-note {
   margin-bottom: 8px;
 }
+
+.applet-about .applet-access-note,
+.applet-about .applet-access-error {
+  grid-column: 1 / -1;
+  text-align: start;
+  overflow-wrap: anywhere;
+}
+
+.applet-about .applet-access-error button {
+  display: block;
+  margin-top: 8px;
+}

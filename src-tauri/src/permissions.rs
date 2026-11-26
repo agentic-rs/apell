@@ -141,6 +141,27 @@ pub enum PermissionMode {
   Blocked,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum PermissionEditBlocker {
+  SourceChanged,
+  PermissionRemoved,
+  InstallationUnavailable,
+}
+
+impl PermissionEditBlocker {
+  pub(crate) fn message(self) -> &'static str {
+    match self {
+      Self::SourceChanged | Self::PermissionRemoved => {
+        "Restart the applet before changing its device permissions."
+      }
+      Self::InstallationUnavailable => {
+        "The installed applet is unavailable. Review it in Library before changing its device permissions."
+      }
+    }
+  }
+}
+
 impl PermissionAccess {
   fn mode(self) -> PermissionMode {
     match self {

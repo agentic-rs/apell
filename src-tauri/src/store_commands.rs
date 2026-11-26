@@ -707,7 +707,7 @@ async fn install(app: AppHandle, host: &Host, request: InstallQuery) -> Result<V
   uuid::Uuid::parse_str(&request.operation_id)
     .map_err(|_| "Invalid install operation identity.")?;
   request.release.validate(&request.applet_id)?;
-  let _gate = host.store_gate.lock().await;
+  let gate = host.store_gate.lock().await;
   let store_url = if request.installed_source || request.resume_download {
     normalize_store_url(&request.store_url)?
   } else {
@@ -775,6 +775,8 @@ async fn install(app: AppHandle, host: &Host, request: InstallQuery) -> Result<V
   })
   .await
   .map_err(|_| "Store installation was interrupted.")??;
-  let restart_required = host.needs_applet_restart(&result);
-  Ok(json!({"status":"installed", "applet":result, "restart_required":restart_required}))
+  drop(gate);
+  let mut result = crate::install::published_install_result(&app, host, result);
+  result["status"] = json!("installed");
+  Ok(result)
 }

@@ -35,7 +35,14 @@ export function AppletInfoSheet({
 }) {
   const { applet_id } = applet;
   const read = useCallback(() => getAppletInfo(applet_id), [applet_id]);
-  const { value: info, busy, error, saving, edit_error, load } = useAppletPermissionState(read);
+  const {
+    value: info,
+    busy,
+    error,
+    saving,
+    edit_error,
+    load,
+  } = useAppletPermissionState(read, applet_id);
   const [installing, setInstalling] = useState(false);
   const current = info?.applet ?? applet;
   const initial_installation = useMemo(() => (info ? installation(info) : undefined), [info]);

@@ -52,6 +52,7 @@ import type {
   StoreSavedDetail,
   StoreSwitchSnapshot,
   StoreUpdatesReport,
+  ViewPermissionStatus,
 } from './types';
 
 declare global {
@@ -193,6 +194,10 @@ export const reloadApplet = (session_id: string, view_id: string) =>
 export const currentApplet = () => shellCall<AppletSession | null>('applets.current');
 export const getAppletInstallation = (session_id: string, view_id: string) =>
   shellCall<AppletInstallation>('applets.installation', { session_id, view_id });
+export const onAppletInstallationChanged = (handler: (applet_id: string) => void) =>
+  listen<{ applet_id: string }>('apell-applet-installation-changed', ({ payload }) =>
+    handler(payload.applet_id),
+  );
 export const listAppletPermissions = () => shellCall<AppletPermission[]>('permissions.list');
 export const openPermissionSystemSettings = (permission: ManagedPermission) =>
   shellCall<void>('permissions.open_system_settings', { permission });
@@ -222,7 +227,7 @@ export const getPermissionMode = (
   view_id: string,
   permission: ManagedPermission,
 ) =>
-  shellCall<PermissionStatus>('permissions.mode', {
+  shellCall<ViewPermissionStatus>('permissions.mode', {
     session_id,
     view_id,
     permission,
@@ -232,7 +237,13 @@ export const setPermissionMode = (
   view_id: string,
   permission: ManagedPermission,
   mode: PermissionMode,
-) => shellCall<PermissionStatus>('permissions.set_mode', { session_id, view_id, permission, mode });
+) =>
+  shellCall<ViewPermissionStatus>('permissions.set_mode', {
+    session_id,
+    view_id,
+    permission,
+    mode,
+  });
 export const getSettings = () => shellCall<LlmSettings>('llm.settings');
 export const getAccountStatus = () => shellCall<AccountStatus>('account.status');
 export const signInToAccount = () => shellCall<AccountStatus>('account.sign_in');

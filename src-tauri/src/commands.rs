@@ -1,5 +1,5 @@
 use crate::host::{public_config, string, Host, NETWORK_DISABLED};
-use crate::permissions::{self, ManagedPermission, PermissionMode};
+use crate::permissions::{self, ManagedPermission, PermissionEditBlocker, PermissionMode};
 use crate::provider_commands::{snapshot, ModelRoute, ModelSnapshot};
 use crate::settings::Settings;
 use apell_core::bundles::AppletListReport;
@@ -61,6 +61,7 @@ fn permission_status(
   app: &AppHandle,
   permission: ManagedPermission,
   mode: Option<PermissionMode>,
+  edit_blocker: Option<PermissionEditBlocker>,
 ) -> Value {
   let authorization = mode
     .map(|_| permission.system_authorization(app))
@@ -69,6 +70,7 @@ fn permission_status(
     "mode": mode.map_or_else(|| json!("unavailable"), |mode| json!(mode)),
     "system_authorization": authorization,
     "can_open_system_settings": authorization.can_open_system_settings(),
+    "edit_blocker": edit_blocker,
   })
 }
 
@@ -212,17 +214,17 @@ pub async fn shell_command(
     }
     "applets.install" => crate::install::install(app, &host, params).await,
     "applets.restore_package" => {
-      let result = crate::install::restore_package(&host, params).await?;
+      let result = crate::install::restore_package(&app, &host, params).await?;
       crate::store_commands::publish_download_change(&app);
       Ok(result)
     }
     "applets.update" => crate::install::update(app, &host, string(&params, "applet_id")?).await,
     "applets.remove" => {
+      let applet_id = string(&params, "applet_id")?;
       host
-        .remove_applet(string(&params, "applet_id")?, |id| {
-          crate::applets::notify_stopped(&app, id)
-        })
+        .remove_applet(applet_id, |id| crate::applets::notify_stopped(&app, id))
         .await?;
+      crate::install::publish_installation_change(&app, applet_id);
       crate::store_commands::publish_download_change(&app);
       Ok(Value::Null)
     }
@@ -307,13 +309,18 @@ pub async fn shell_command(
           if update.is_some() {
             return Err("This permission is unavailable on this platform.".into());
           }
-          return Ok(permission_status(&app, permission, None));
+          return Ok(permission_status(&app, permission, None, None));
         }
-        let mode = host.view_permission(&session_id, &view_id, permission, update)?;
+        let status = host.view_permission(&session_id, &view_id, permission, update)?;
         if update.is_some() {
           permissions::publish_device_change(&app);
         }
-        Ok(permission_status(&app, permission, Some(mode)))
+        Ok(permission_status(
+          &app,
+          permission,
+          Some(status.mode),
+          status.edit_blocker,
+        ))
       })
       .await
     }
@@ -332,7 +339,7 @@ pub async fn shell_command(
           change.mode,
         )?;
         permissions::publish_device_change(&app);
-        Ok(permission_status(&app, change.permission, Some(mode)))
+        Ok(permission_status(&app, change.permission, Some(mode), None))
       })
       .await
     }

@@ -14,6 +14,7 @@ import {
   forgetPermission,
   listAppletPermissions,
   message,
+  onAppletInstallationChanged,
   onPermissionsChanged,
   setInstalledPermissionMode,
 } from '../lib/tauri';
@@ -272,7 +273,7 @@ export function AppletPermissionDetails({
   );
 }
 
-export function useAppletPermissionState<T>(read: () => Promise<T>) {
+export function useAppletPermissionState<T>(read: () => Promise<T>, applet_id?: string) {
   const [value, setValue] = useState<T>();
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState('');
@@ -346,19 +347,23 @@ export function useAppletPermissionState<T>(read: () => Promise<T>) {
     let open = true;
     setBusy(true);
     setSaving(undefined);
-    const unsubscribe = onPermissionsChanged(() => {
+    const refresh = () => {
       if (open) void load();
-    }).catch(() => undefined);
-    void unsubscribe.then(() => {
-      if (open) void load();
-    });
+    };
+    const unsubscribe = [
+      onPermissionsChanged(refresh),
+      onAppletInstallationChanged((changed_id) => {
+        if (!applet_id || changed_id === applet_id) refresh();
+      }),
+    ].map((subscription) => subscription.catch(() => undefined));
+    void Promise.all(unsubscribe).then(refresh);
     return () => {
       open = false;
       scope.current.cancel();
       refresh_pending.current = false;
-      void unsubscribe.then((unlisten) => unlisten?.());
+      for (const stop of unsubscribe) void stop.then((unlisten) => unlisten?.());
     };
-  }, [load]);
+  }, [applet_id, load]);
 
   return { value, busy, error, saving, edit_error, load };
 }

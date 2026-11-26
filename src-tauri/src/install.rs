@@ -86,12 +86,14 @@ fn check_release_snapshot(params: &Value, release_id: u64, asset_id: u64) -> Res
 }
 
 pub async fn install(app: AppHandle, host: &Host, params: Value) -> Result<Value, String> {
-  let _gate = host.store_gate.lock().await;
-  install_inner(app, host, params, None).await
+  let gate = host.store_gate.lock().await;
+  let installed = install_inner(&app, host, params, None).await?;
+  drop(gate);
+  Ok(published_install_result(&app, host, installed))
 }
 
-pub async fn restore_package(host: &Host, params: Value) -> Result<Value, String> {
-  let _gate = host.store_gate.lock().await;
+pub async fn restore_package(app: &AppHandle, host: &Host, params: Value) -> Result<Value, String> {
+  let gate = host.store_gate.lock().await;
   let store = host.bundles.clone();
   let installed = blocking(move || {
     let request: RestorePackageRequest =
@@ -100,11 +102,12 @@ pub async fn restore_package(host: &Host, params: Value) -> Result<Value, String
     store.restore_package(&request.applet_id, &request.expected, &bytes)
   })
   .await?;
-  Ok(install_result(host, installed))
+  drop(gate);
+  Ok(published_install_result(app, host, installed))
 }
 
 pub async fn update(app: AppHandle, host: &Host, applet_id: &str) -> Result<Value, String> {
-  let _gate = host.store_gate.lock().await;
+  let gate = host.store_gate.lock().await;
   let store = host.bundles.clone();
   let id = applet_id.to_owned();
   let installed = tauri::async_runtime::spawn_blocking(move || store.installed(&id))
@@ -116,21 +119,23 @@ pub async fn update(app: AppHandle, host: &Host, applet_id: &str) -> Result<Valu
   let PackageSource::Github(source) = source else {
     return Err("Open Store to review and install this applet's updates.".into());
   };
-  install_inner(
-    app,
+  let installed = install_inner(
+    &app,
     host,
     json!({"repository":source.repository,"release_tag":source.release_tag,"asset_name":source.asset_name}),
     Some((applet_id.to_owned(), source)),
   )
-  .await
+  .await?;
+  drop(gate);
+  Ok(published_install_result(&app, host, installed))
 }
 
 async fn install_inner(
-  app: AppHandle,
+  app: &AppHandle,
   host: &Host,
   params: Value,
   update_source: Option<(String, GitHubSource)>,
-) -> Result<Value, String> {
+) -> Result<InstalledApplet, String> {
   let local = tauri::async_runtime::spawn_blocking({
     let params = params.clone();
     move || file_bytes(&params)
@@ -175,7 +180,7 @@ async fn install_inner(
     (bytes, Some(source), expected)
   };
   let store = host.bundles.clone();
-  let installed: InstalledApplet = tauri::async_runtime::spawn_blocking(move || {
+  tauri::async_runtime::spawn_blocking(move || {
     if let Some((id, _)) = update_source {
       store.update_from_source(
         &id,
@@ -188,11 +193,23 @@ async fn install_inner(
     }
   })
   .await
-  .map_err(|_| "Package installation was interrupted.")??;
-  Ok(install_result(host, installed))
+  .map_err(|_| "Package installation was interrupted.")?
 }
 
-pub(crate) fn install_result(host: &Host, installed: InstalledApplet) -> Value {
+pub(crate) fn publish_installation_change(app: &AppHandle, applet_id: &str) {
+  let _ = app.emit_to(
+    "main",
+    "apell-applet-installation-changed",
+    json!({ "applet_id": applet_id }),
+  );
+}
+
+pub(crate) fn published_install_result(
+  app: &AppHandle,
+  host: &Host,
+  installed: InstalledApplet,
+) -> Value {
+  publish_installation_change(app, &installed.manifest.applet_id);
   json!({
     "restart_required": host.needs_applet_restart(&installed),
     "applet": installed,

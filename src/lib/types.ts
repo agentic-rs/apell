@@ -70,6 +70,9 @@ export interface PermissionStatus {
   system_authorization: SystemAuthorization;
   can_open_system_settings?: boolean;
 }
+export interface ViewPermissionStatus extends PermissionStatus {
+  edit_blocker: 'source_changed' | 'permission_removed' | 'installation_unavailable' | null;
+}
 export interface PermissionGrant {
   permission: ManagedPermission;
   grant_revision: string;

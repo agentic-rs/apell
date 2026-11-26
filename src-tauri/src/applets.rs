@@ -1,6 +1,7 @@
 use crate::host::{Host, Session};
 use crate::permissions::{
-  installed_revision, GrantSource, ManagedPermission, PermissionMode, GRANT_CHANGED,
+  installed_revision, GrantSource, ManagedPermission, PermissionEditBlocker, PermissionMode,
+  GRANT_CHANGED,
 };
 use apell_core::bundles::{Bundle, InstalledApplet, Manifest, PackageSource, StoreSource};
 use apell_runtime::{HostError, HostEvents, HostServices, RuntimeHandle, ServiceFuture};
@@ -109,6 +110,12 @@ pub(crate) struct DetachedRun {
   applet_id: String,
   name: String,
   version: String,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct ViewPermission {
+  pub mode: PermissionMode,
+  pub edit_blocker: Option<PermissionEditBlocker>,
 }
 
 impl Host {
@@ -435,13 +442,13 @@ impl Host {
     })
   }
 
-  pub fn view_permission(
+  pub(crate) fn view_permission(
     &self,
     session_id: &str,
     view_id: &str,
     permission: ManagedPermission,
     update: Option<PermissionMode>,
-  ) -> Result<PermissionMode, String> {
+  ) -> Result<ViewPermission, String> {
     // Keep the verified attachment current through the grant read or write.
     let _gate = self
       .view_gate
@@ -462,10 +469,13 @@ impl Host {
       require_declared_permission(manifest, permission)?;
       (manifest.applet_id.clone(), run.grant_source.clone())
     };
-    match update {
+    let edit_blocker = self
+      .check_installed_permission_target(&applet_id, &source, permission)
+      .err();
+    let mode = match update {
       Some(mode) => {
-        if !self.is_installed_permission_target(&applet_id, &source, permission) {
-          return Err("Restart the applet before changing its device permissions.".into());
+        if let Some(blocker) = edit_blocker {
+          return Err(blocker.message().into());
         }
         let edit = || self.grants.set_mode(permission, &applet_id, &source, mode);
         match permission {
@@ -474,7 +484,8 @@ impl Host {
         }
       }
       None => self.grants.mode(permission, &applet_id, &source),
-    }
+    }?;
+    Ok(ViewPermission { mode, edit_blocker })
   }
 
   pub fn remember_installed_permission(
@@ -488,22 +499,30 @@ impl Host {
     let Ok(_install) = self.store_gate.try_lock() else {
       return Ok(());
     };
-    if self.is_installed_permission_target(applet_id, source, permission) {
+    if self
+      .check_installed_permission_target(applet_id, source, permission)
+      .is_ok()
+    {
       self.grants.remember(permission, applet_id, source)?;
     }
     Ok(())
   }
 
-  fn is_installed_permission_target(
+  fn check_installed_permission_target(
     &self,
     applet_id: &str,
     source: &GrantSource,
     permission: ManagedPermission,
-  ) -> bool {
-    self.bundles.installed(applet_id).is_ok_and(|installed| {
-      GrantSource::from(&installed) == *source
-        && require_declared_permission(&installed.manifest, permission).is_ok()
-    })
+  ) -> Result<(), PermissionEditBlocker> {
+    let installed = self
+      .bundles
+      .installed(applet_id)
+      .map_err(|_| PermissionEditBlocker::InstallationUnavailable)?;
+    if GrantSource::from(&installed) != *source {
+      return Err(PermissionEditBlocker::SourceChanged);
+    }
+    require_declared_permission(&installed.manifest, permission)
+      .map_err(|_| PermissionEditBlocker::PermissionRemoved)
   }
 
   pub fn forget_permission(
@@ -822,6 +841,11 @@ mod tests {
   }
 
   fn install_with_permissions(host: &Host, applet_id: &str, version: &str, permissions: &[&str]) {
+    let package = package_with_permissions(applet_id, version, permissions);
+    host.bundles.install(&package, &digest(&package)).unwrap();
+  }
+
+  fn package_with_permissions(applet_id: &str, version: &str, permissions: &[&str]) -> Vec<u8> {
     let source = tempfile::tempdir().unwrap();
     let manifest = json!({
       "schema_version": 1, "api_version": API_VERSION, "applet_id": applet_id,
@@ -833,8 +857,7 @@ mod tests {
       format!("<p>{version}</p>"),
     )
     .unwrap();
-    let package = pack_directory(source.path()).unwrap();
-    host.bundles.install(&package, &digest(&package)).unwrap();
+    pack_directory(source.path()).unwrap()
   }
 
   fn reviewed_grant(host: &Host, applet_id: &str, permission: ManagedPermission) -> String {
@@ -1301,7 +1324,10 @@ mod tests {
       host
         .view_permission(RUN, &first.view_id, Camera, None)
         .unwrap(),
-      PermissionMode::Ask
+      ViewPermission {
+        mode: PermissionMode::Ask,
+        edit_blocker: None,
+      }
     );
     assert!(host
       .view_permission("different", &first.view_id, Camera, None)
@@ -1323,7 +1349,10 @@ mod tests {
       host
         .view_permission(RUN, &reloaded.view_id, Camera, None)
         .unwrap(),
-      PermissionMode::Remembered
+      ViewPermission {
+        mode: PermissionMode::Remembered,
+        edit_blocker: None,
+      }
     );
 
     install_with_permissions(&host, APPLET, "2.0.0", &["camera", "fs"]);
@@ -1331,7 +1360,10 @@ mod tests {
       host
         .view_permission(RUN, &reloaded.view_id, Camera, None)
         .unwrap(),
-      PermissionMode::Remembered
+      ViewPermission {
+        mode: PermissionMode::Remembered,
+        edit_blocker: Some(PermissionEditBlocker::SourceChanged),
+      }
     );
     host.retire_run(RUN, None).unwrap();
     seed_run(&host, "reopened", APPLET);
@@ -1344,7 +1376,8 @@ mod tests {
           Camera,
           Some(PermissionMode::Ask)
         )
-        .unwrap(),
+        .unwrap()
+        .mode,
       PermissionMode::Ask
     );
     assert!(host
@@ -1374,8 +1407,87 @@ mod tests {
     assert_eq!(
       host
         .view_permission("reopened", &replaced.view_id, Camera, None)
-        .unwrap(),
+        .unwrap()
+        .mode,
       PermissionMode::Ask
+    );
+  }
+
+  #[test]
+  fn about_permission_checks_the_installed_store_capability_and_availability() {
+    let root = tempfile::tempdir().unwrap();
+    let host = Host::new(root.path().to_owned()).unwrap();
+    let source = StoreSource {
+      store_url: "https://store.example.invalid".into(),
+      applet_id: APPLET.into(),
+      channel: apell_core::bundles::StoreChannel::Stable,
+    };
+    let install = |version, permissions: &[&str], expected| {
+      let package = package_with_permissions(APPLET, version, permissions);
+      host
+        .bundles
+        .install_store_release(&package, &digest(&package), source.clone(), expected)
+        .unwrap()
+    };
+    let first = install("1.0.0", &["camera", "fs"], None);
+    seed_run(&host, RUN, APPLET);
+    let attached = host.attach_run(RUN).unwrap();
+    let view = &attached.view_id;
+
+    let second = install("2.0.0", &["camera", "fs"], Some(first.sha256.as_str()));
+    assert!(host.needs_applet_restart(&second));
+    assert_eq!(
+      host
+        .view_permission(RUN, view, Camera, Some(PermissionMode::Blocked))
+        .unwrap(),
+      ViewPermission {
+        mode: PermissionMode::Blocked,
+        edit_blocker: None,
+      }
+    );
+
+    let third = install("3.0.0", &["camera"], Some(second.sha256.as_str()));
+    assert_eq!(
+      host.view_permission(RUN, view, Camera, None).unwrap(),
+      ViewPermission {
+        mode: PermissionMode::Blocked,
+        edit_blocker: Some(PermissionEditBlocker::PermissionRemoved),
+      }
+    );
+    assert_eq!(
+      host
+        .view_permission(RUN, view, Camera, Some(PermissionMode::Remembered))
+        .unwrap_err(),
+      PermissionEditBlocker::PermissionRemoved.message()
+    );
+    fs::write(
+      root
+        .path()
+        .join("bundles")
+        .join(APPLET)
+        .join(format!("{}.apel", third.sha256)),
+      b"damaged fixture package",
+    )
+    .unwrap();
+    assert_eq!(
+      host.view_permission(RUN, view, Camera, None).unwrap(),
+      ViewPermission {
+        mode: PermissionMode::Blocked,
+        edit_blocker: Some(PermissionEditBlocker::InstallationUnavailable),
+      }
+    );
+    assert_eq!(
+      host
+        .view_permission(RUN, view, Camera, Some(PermissionMode::Remembered))
+        .unwrap_err(),
+      PermissionEditBlocker::InstallationUnavailable.message()
+    );
+    assert_eq!(
+      host
+        .grants
+        .mode(Camera, APPLET, &GrantSource::from(&third))
+        .unwrap(),
+      PermissionMode::Blocked
     );
   }
 

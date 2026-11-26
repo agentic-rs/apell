@@ -1,5 +1,5 @@
 use super::{store_client, PendingStoreDownload, DOWNLOAD_MISSING};
-use crate::{commands::blocking, host::Host, install::install_result};
+use crate::{commands::blocking, host::Host, install::published_install_result};
 use apell_core::{
   bundles::{
     AppletReportEntry, BundleStore, PackageSource, StoreChannel, StoreSource, StoreSwitchSnapshot,
@@ -194,7 +194,7 @@ pub(super) async fn restore_package(
   // The repair cache is independent from ordinary installs. Acquire its gate
   // before taking short-lived Store gates for local authorization/publication.
   let cache = repair_cache(&app)?;
-  let _repairs_gate = host.store_repairs_gate.lock().await;
+  let repairs_gate = host.store_repairs_gate.lock().await;
   let source = checked_source(host, &request).await?;
   let pending = requested_checkpoint(reconcile_repairs(&cache, host).await?, &request)?;
   let client = store_client(host, &source.store_url)?;
@@ -241,14 +241,16 @@ pub(super) async fn restore_package(
     }
   };
 
-  let _gate = host.store_gate.lock().await;
+  let gate = host.store_gate.lock().await;
   let bundles = host.bundles.clone();
   let installed = blocking(move || {
     restore_source(&bundles, &request.applet_id, &request.expected)?;
     bundles.restore_package(&request.applet_id, &request.expected, &bytes)
   })
   .await?;
-  let mut result = install_result(host, installed);
+  drop(gate);
+  drop(repairs_gate);
+  let mut result = published_install_result(&app, host, installed);
   result["status"] = json!("restored");
   Ok(result)
 }
