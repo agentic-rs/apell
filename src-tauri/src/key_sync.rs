@@ -400,8 +400,10 @@ pub(crate) async fn dispatch(app: AppHandle, method: &str, params: Value) -> Res
   let method = method.to_owned();
   finish_snapshot(async move {
     let host = app.state::<Host>();
-    if method == "key_sync.status" {
-      return managed::status(&app, &host).await;
+    match method.as_str() {
+      "key_sync.status" => return managed::status(&app, &host).await,
+      "key_sync.retry" => return managed::retry(&app, &host).await,
+      _ => {}
     }
     let _gate = host.key_sync.gate.lock().await;
     let relay = host.account.key_exchange_access(&app).await?;
@@ -432,7 +434,7 @@ pub(crate) async fn sign_out(app: AppHandle) -> Result<Value, String> {
     let result = crate::account::dispatch(app.clone(), &host.account, "account.sign_out").await;
     if result.is_ok() {
       sync.managed.clear().await;
-      sync.automatic.publish_error(&app, None).await;
+      sync.automatic.publish_health(&app, None).await;
     }
     // Resume the worker before releasing its gate, including on a failed sign-out.
     drop(pause);

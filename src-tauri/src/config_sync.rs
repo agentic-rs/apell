@@ -93,19 +93,28 @@ pub async fn dispatch(
   let method = method.to_owned();
   finish_snapshot(async move {
     let host = app.state::<Host>();
+    if method == "sync.status" {
+      let Some(key) = host.account.account_key(&app).await? else {
+        return Ok(status(None, false));
+      };
+      // Cursor files are replaced atomically. A remote sync can hold the
+      // mutation gate while this local state remains available to Settings.
+      let state = load_state(&host, &key).await?;
+      let result = local_status(&host, &state).await?;
+      if host.account.account_key(&app).await?.as_deref() != Some(key.as_str()) {
+        return Err("The signed-in Account changed. Check sync again.".into());
+      }
+      return Ok(result);
+    }
     let _gate = host.config_sync.gate.lock().await;
     let account_key = host.account.account_key(&app).await?;
     match method.as_str() {
-      "sync.status" => Ok(match account_key {
-        Some(key) => status(Some(&load_state(&host, &key).await?)),
-        None => status(None),
-      }),
       "sync.set_enabled" => {
         let input: Enable = input(params)?;
         let key = account_key.ok_or("Sign in to Apell Account to enable sync.")?;
         let mut state = load_state(&host, &key).await?;
         state.enabled = input.enabled;
-        let result = status(Some(&state));
+        let result = local_status(&host, &state).await?;
         save_state(&host, &key, state).await?;
         if input.enabled {
           crate::key_sync::kick(&app);
@@ -147,14 +156,34 @@ fn input<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, String> {
   serde_json::from_value(value).map_err(|_| "Invalid config sync request.".into())
 }
 
-fn status(state: Option<&DeviceState>) -> Value {
+fn status(state: Option<&DeviceState>, local_changes: bool) -> Value {
   let Some(state) = state else {
-    return json!({"state":"disabled","last_synced_at":null});
+    return json!({"state":"disabled","last_synced_at":null,"local_changes":false});
   };
   json!({
     "state": if state.enabled { "ready" } else { "off" },
     "last_synced_at": state.cursor.as_ref().map(|cursor| &cursor.updated_at),
+    "local_changes": local_changes,
   })
+}
+
+fn has_local_changes(state: &DeviceState, local: &Snapshot, hash: &str) -> bool {
+  state.enabled
+    && state
+      .cursor
+      .as_ref()
+      .map_or(!local.is_empty(), |cursor| cursor.snapshot_hash != hash)
+}
+
+async fn local_status(host: &Host, state: &DeviceState) -> Result<Value, String> {
+  if !state.enabled {
+    return Ok(status(Some(state), false));
+  }
+  let local = capture(&*host.settings.lock().await, state);
+  Ok(status(
+    Some(state),
+    has_local_changes(state, &local, &local.fingerprint()?),
+  ))
 }
 
 fn device_path(host: &Host, key: &str) -> Result<PathBuf, String> {
@@ -249,12 +278,19 @@ async fn compare_settings(
 }
 
 fn review_settings(account_key: &str, state: &DeviceState, compared: &ComparedSettings) -> Value {
+  let local_changes = has_local_changes(state, &compared.local, &compared.local_hash);
   match &compared.head {
     Some(remote) if compared.local != remote.snapshot => {
       let conflict = conflict_id(account_key, remote, &compared.local_hash);
-      conflict_result(state, conflict, &compared.local, &remote.snapshot)
+      conflict_result(
+        state,
+        conflict,
+        &compared.local,
+        &remote.snapshot,
+        local_changes,
+      )
     }
-    _ => json!({"state":"review_clear","status":status(Some(state))}),
+    _ => json!({"state":"review_clear","status":status(Some(state), local_changes)}),
   }
 }
 
@@ -263,10 +299,11 @@ fn conflict_result(
   conflict: String,
   local: &Snapshot,
   cloud: &Snapshot,
+  local_changes: bool,
 ) -> Value {
   json!({
     "state":"conflict",
-    "status":status(Some(state)),
+    "status":status(Some(state), local_changes),
     "conflict_id":conflict,
     "local":local.summary(),
     "cloud":cloud.summary(),
@@ -321,7 +358,15 @@ async fn synchronize(
             apply_remote(app, host, access, &state, &local_hash, &remote.snapshot).await?;
           ("downloaded", remote, active)
         }
-        Action::Conflict => return Ok(conflict_result(&state, conflict, &local, &remote.snapshot)),
+        Action::Conflict => {
+          return Ok(conflict_result(
+            &state,
+            conflict,
+            &local,
+            &remote.snapshot,
+            has_local_changes(&state, &local, &local_hash),
+          ))
+        }
       }
     }
   };
@@ -334,7 +379,7 @@ async fn synchronize(
     local_active: local_active.unwrap_or_else(|| LEGACY_DEMO_CONNECTION_ID.to_owned()),
     updated_at: revision.updated_at,
   });
-  let output = json!({"state": outcome, "status": status(Some(&state))});
+  let output = json!({"state": outcome, "status": local_status(host, &state).await?});
   save_state(host, &access.account_key, state).await?;
   crate::key_sync::kick(app);
   Ok(output)
@@ -618,6 +663,36 @@ mod tests {
       credential: credential_ref("fixture"),
     });
     Snapshot::capture(&settings, None)
+  }
+
+  #[test]
+  fn local_change_status_tracks_only_changes_since_the_saved_cloud_revision() {
+    let original = snapshot("original-model");
+    let original_hash = original.fingerprint().unwrap();
+    let empty = Snapshot::capture(&Settings::default(), None);
+    let empty_hash = empty.fingerprint().unwrap();
+    let mut device = DeviceState::default();
+    assert!(!has_local_changes(&device, &original, &original_hash));
+
+    device.enabled = true;
+    assert!(!has_local_changes(&device, &empty, &empty_hash));
+    assert!(has_local_changes(&device, &original, &original_hash));
+
+    device.cursor = Some(Cursor {
+      revision_id: "fixture-revision".into(),
+      snapshot_hash: original_hash.clone(),
+      remote_active: LEGACY_DEMO_CONNECTION_ID.into(),
+      local_active: LEGACY_DEMO_CONNECTION_ID.into(),
+      updated_at: String::new(),
+    });
+    assert!(!has_local_changes(&device, &original, &original_hash));
+    assert!(has_local_changes(&device, &empty, &empty_hash));
+    let revised = snapshot("revised-model");
+    assert!(has_local_changes(
+      &device,
+      &revised,
+      &revised.fingerprint().unwrap()
+    ));
   }
 
   #[test]

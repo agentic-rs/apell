@@ -5,6 +5,7 @@ import {
   getConfigSyncStatus,
   message,
   onAccountChanged,
+  onLlmSettingsChanged,
   openAccountSignIn,
   reviewConfigSync,
   setConfigSyncEnabled,
@@ -96,29 +97,30 @@ export function AccountSync({
 
   useEffect(() => {
     let active = true;
-    let stop: (() => void) | undefined;
+    const listeners: (() => void)[] = [];
     visible.current = true;
     const reload = () => {
       if (active) void refresh();
     };
     reload();
     window.addEventListener('focus', reload);
-    void onAccountChanged(reload).then(
-      (unlisten) => {
-        if (!active) {
-          unlisten();
-          return;
-        }
-        stop = unlisten;
-        reload();
-      },
-      () => {},
-    );
+    for (const subscription of [onAccountChanged(reload), onLlmSettingsChanged(reload)]) {
+      void subscription.then(
+        (unlisten) => {
+          if (!active) unlisten();
+          else {
+            listeners.push(unlisten);
+            reload();
+          }
+        },
+        () => {},
+      );
+    }
     return () => {
       active = false;
       visible.current = false;
       window.removeEventListener('focus', reload);
-      stop?.();
+      for (const unlisten of listeners) unlisten();
       read_version.current += 1;
       // Activity can hide this panel while a native sync is still in progress.
       // Let that operation finish and retain its outcome for the next visit.
@@ -303,6 +305,9 @@ export function AccountSync({
             {sync?.state === 'ready' && (
               <>
                 {pending_conflict && <p role="status">Model settings need review.</p>}
+                {sync.local_changes && !pending_conflict && !busy && (
+                  <p role="status">Changes on this device haven’t synced yet.</p>
+                )}
                 <div className="account-sync-actions">
                   {pending_conflict && (
                     <button
@@ -337,6 +342,9 @@ export function AccountSync({
             )}
           </section>
           <EncryptedKeySync
+            model_sync_enabled={
+              sync?.state === 'disabled' ? undefined : sync && sync.state === 'ready'
+            }
             disabled={disabled || !!busy || review_open}
             onApplied={onApplied}
             onBusyChange={onKeySyncBusyChange}

@@ -1,7 +1,7 @@
 use super::{
-  acknowledged, automatic, crypto, decode, decode_body, kick, local_vault, response_error,
-  save_vault, unlocked, verify_account, Access, AppHandle, Host, LocalVault, Method, Secret,
-  LOCKED,
+  acknowledged, automatic, automatic::SyncHealth, crypto, decode, decode_body, kick, local_vault,
+  response_error, save_vault, unlocked, verify_account, Access, AppHandle, BackgroundStop, Host,
+  LocalVault, Method, Secret, LOCKED,
 };
 use apell_vault_keys::derive_pairing_proof_key;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
@@ -48,7 +48,7 @@ struct Recovery {
   enrolling: bool,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Copy, Deserialize)]
 pub(super) struct RemoteVault {
   pub vault_id: Option<Uuid>,
   pub managed: bool,
@@ -131,7 +131,7 @@ async fn decode_remote(response: Response) -> Result<RemoteVault, String> {
   decode(response).await
 }
 
-fn is_verified(local: &LocalVault) -> bool {
+pub(super) fn is_verified(local: &LocalVault) -> bool {
   local.managed && !local.pending_managed && local.setup.is_none()
 }
 
@@ -144,27 +144,30 @@ pub(super) async fn status(app: &AppHandle, host: &Host) -> Result<Value, String
   };
   let local = local_vault(app, &account).await?;
   if local.as_ref().is_some_and(is_verified) {
-    let device_error = automatic::require_device_sync(&host.root).await.err();
-    let sync_paused = device_error.is_some();
-    let sync_error = match device_error {
-      Some(error) => Some(error),
-      None => host.key_sync.automatic.error(&account).await,
+    let health = match automatic::require_device_sync(&host.root).await {
+      Ok(()) => host.key_sync.automatic.health(&account).await,
+      Err(error) => SyncHealth::Paused(error),
     };
-    return Ok(json!({
-      "state": "verified",
-      "sync_paused": sync_paused,
-      "sync_error": sync_error,
-    }));
+    verify_account(app, host, &account).await?;
+    return Ok(health.verified_status());
   }
-  let access = host.account.key_exchange_access(app).await?;
-  if access.account_key != account {
-    return Err("The signed-in Account changed. Try again.".into());
+  let discovery = async {
+    let access = host.account.key_exchange_access(app).await?;
+    if access.account_key != account {
+      return Err("The signed-in Account changed. Try again.".into());
+    }
+    remote(host, &access).await
   }
-  let remote = remote(host, &access).await?;
-  Ok(unverified_status(local.as_ref(), &remote))
+  .await;
+  verify_account(app, host, &account).await?;
+  Ok(unverified_status(local.as_ref(), discovery))
 }
 
-fn unverified_status(local: Option<&LocalVault>, remote: &RemoteVault) -> Value {
+fn unverified_status(local: Option<&LocalVault>, remote: Result<RemoteVault, String>) -> Value {
+  let remote = match remote {
+    Ok(remote) => remote,
+    Err(error) => return json!({ "state": "unverified", "action": "check", "error": error }),
+  };
   let local_matches = local.is_some_and(|value| Some(value.vault_id) == remote.vault_id);
   if remote.vault_id.is_none() || (remote.managed && local_matches) {
     json!({ "state": "unverified", "action": "setup" })
@@ -175,6 +178,28 @@ fn unverified_status(local: Option<&LocalVault>, remote: &RemoteVault) -> Value 
   } else {
     json!({ "state": "unverified", "action": "legacy" })
   }
+}
+
+pub(super) async fn retry(app: &AppHandle, host: &Host) -> Result<Value, String> {
+  let stop = BackgroundStop(host.key_sync.signing_out.subscribe());
+  stop.check()?;
+  if !host.account.key_exchange_available() {
+    return Err(LOCKED.into());
+  }
+  let account = host.account.account_key(app).await?.ok_or(LOCKED)?;
+  let vault = local_vault(app, &account)
+    .await?
+    .filter(is_verified)
+    .ok_or(LOCKED)?;
+  vault.key()?;
+  automatic::require_device_sync(&host.root).await?;
+  verify_account(app, host, &account).await?;
+  host
+    .key_sync
+    .automatic
+    .queue_retry(app, account, &stop)
+    .await?;
+  Ok(Value::Null)
 }
 
 async fn activate(
@@ -620,11 +645,22 @@ mod tests {
       managed: false,
     };
     assert_eq!(
-      unverified_status(Some(&vault), &remote),
+      unverified_status(Some(&vault), Ok(remote)),
       json!({ "state": "unverified", "action": "upgrade" })
     );
-    assert_eq!(unverified_status(None, &remote)["action"], "legacy");
+    assert_eq!(unverified_status(None, Ok(remote))["action"], "legacy");
     assert!(!is_verified(&vault));
+  }
+
+  #[test]
+  fn unavailable_verification_discovery_never_guesses_a_setup_action() {
+    let vault = LocalVault::new(Uuid::new_v4(), &crypto::random().unwrap());
+    for local in [None, Some(&vault)] {
+      assert_eq!(
+        unverified_status(local, Err("Could not reach the relay.".into())),
+        json!({"state":"unverified", "action":"check", "error":"Could not reach the relay."}),
+      );
+    }
   }
 
   #[test]

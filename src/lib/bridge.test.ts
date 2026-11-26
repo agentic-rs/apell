@@ -87,6 +87,7 @@ describe('applet bridge boundary', () => {
       'permissions.set_installed_mode',
       'permissions.mode',
       'permissions.set_mode',
+      'key_sync.retry',
       'settings_transfer.capabilities',
       'settings_transfer.export',
       'settings_transfer.preview',

@@ -126,6 +126,7 @@ pub async fn shell_command(
       crate::config_sync::dispatch(app, &host, &method, params).await
     }
     "key_sync.status"
+    | "key_sync.retry"
     | "key_sync.create"
     | "key_sync.pair_start"
     | "key_sync.pair_list"

@@ -201,7 +201,8 @@ settings namespace.
 In **Settings → Apell Account**, choose **Sign in** to see the browser address
 and code. Enter the code on the sign-in page on this or another device. When
 Apell shows the signed-in account, turn on **Sync model settings**. The first
-sync starts automatically. Use **Sync now** to retry or sync later changes.
+sync starts automatically. Apell shows changes on this device that haven’t
+synced yet. Use **Sync now** to publish those changes or check for cloud changes.
 Model settings sync includes connection labels, built-in provider and model
 selections, and the preferred active model. API keys can be synced separately
 through **Encrypted API keys**.
@@ -238,7 +239,12 @@ through Account verification and keep its existing encrypted backups.
 
 Eligible static API keys sync automatically on verified devices. Enable **Sync
 model settings** to bring missing built-in provider connections onto a new
-device. Apell keeps local and cloud copies when both have changed
+device. If Apell is waiting for a provider connection, use **Sync now** on the
+device where you added it, then **Retry key sync** on the waiting device. The
+**Encrypted API keys** section shows checking, waiting, and sync errors
+separately from device verification. An unverified device shows **Check again**
+if Apell cannot reach the service to determine how to verify it.
+Apell keeps local and cloud copies when both have changed
 independently. Provider OAuth sessions and custom endpoint credentials stay
 on the device.
 

@@ -11,6 +11,7 @@ import {
   message,
   onKeySyncChanged,
   openKeySyncRecovery,
+  retryKeySync,
   startKeySyncPairing,
   startKeySyncRecovery,
 } from '../lib/tauri';
@@ -299,8 +300,39 @@ function Approvals({ onBusyChange }: { onBusyChange: (busy: boolean) => void }) 
 
 interface Props {
   disabled: boolean;
+  model_sync_enabled?: boolean;
   onApplied: () => void;
   onBusyChange: (busy: boolean) => void;
+}
+
+const sync_labels = {
+  pending: 'Waiting to sync',
+  syncing: 'Syncing keys…',
+  current: 'Keys are up to date',
+  waiting_for_model_settings: 'Waiting for model settings',
+  conflict: 'Local and cloud keys differ',
+  failed: 'Couldn’t sync keys',
+  paused: 'Sync paused on this device',
+} satisfies Record<Extract<KeySyncStatus, { state: 'verified' }>['sync_state'], string>;
+
+function ModelSettingsRecovery({ enabled }: { enabled?: boolean }) {
+  if (enabled === false) {
+    return (
+      <p>
+        Turn on <strong>Sync model settings</strong> above to restore the provider connections for
+        your backed-up keys.
+      </p>
+    );
+  }
+  if (enabled === true) {
+    return (
+      <p>
+        On the device that has these connections, choose <strong>Sync now</strong> under Model
+        settings. Then return here and retry key sync.
+      </p>
+    );
+  }
+  return <p>Check Model settings above to restore the connections for your backed-up keys.</p>;
 }
 
 async function cancelRequest(flow: Flow | undefined) {
@@ -311,18 +343,23 @@ async function cancelRequest(flow: Flow | undefined) {
   }
 }
 
-export function EncryptedKeySync({ disabled, onApplied, onBusyChange }: Props) {
+export function EncryptedKeySync({ disabled, model_sync_enabled, onApplied, onBusyChange }: Props) {
   const [status, setStatus] = useState<KeySyncStatus>();
   const [flow, setFlow] = useState<Flow>();
   const [busy, setBusy] = useState(false);
   const [approving, setApproving] = useState(false);
   const [error, setError] = useState('');
   const [status_error, setStatusError] = useState('');
+  const [checking, setChecking] = useState(true);
+  const [retrying, setRetrying] = useState(false);
+  const [retry_error, setRetryError] = useState('');
   const scope = useRef(new OperationScope());
+  const retry_scope = useRef(new OperationScope());
   const read_version = useRef(0);
 
   async function refresh() {
     const version = ++read_version.current;
+    setChecking(true);
     try {
       const current = await getKeySyncStatus();
       if (read_version.current !== version) return;
@@ -330,32 +367,52 @@ export function EncryptedKeySync({ disabled, onApplied, onBusyChange }: Props) {
       setStatusError('');
     } catch (error) {
       if (read_version.current === version) setStatusError(message(error));
+    } finally {
+      if (read_version.current === version) setChecking(false);
     }
   }
 
   useEffect(() => {
     let active = true;
     let stop: (() => void) | undefined;
+    setRetrying(false);
     const reload = () => {
       if (active) void refresh();
     };
-    reload();
     window.addEventListener('focus', reload);
-    void onKeySyncChanged(reload).then(
-      (unlisten) => {
-        if (active) stop = unlisten;
-        else unlisten();
-      },
-      () => {},
-    );
+    void onKeySyncChanged(reload).then((unlisten) => {
+      if (active) {
+        stop = unlisten;
+        reload();
+      } else unlisten();
+    }, reload);
     return () => {
       active = false;
       window.removeEventListener('focus', reload);
       stop?.();
       read_version.current += 1;
       scope.current.cancel();
+      retry_scope.current.cancel();
     };
   }, []);
+
+  async function retry() {
+    const operation = retry_scope.current.start();
+    if (!operation) return;
+    setRetrying(true);
+    setRetryError('');
+    try {
+      await retryKeySync();
+      if (operation.isCurrent()) void refresh();
+    } catch (cause) {
+      if (operation.isCurrent()) setRetryError(message(cause));
+    } finally {
+      if (operation.isCurrent()) {
+        operation.finish();
+        setRetrying(false);
+      }
+    }
+  }
 
   function deviceVerified() {
     setFlow(undefined);
@@ -410,6 +467,15 @@ export function EncryptedKeySync({ disabled, onApplied, onBusyChange }: Props) {
 
   if (status?.state === 'signed_out') return null;
   const button_disabled = disabled || busy;
+  const verification_action =
+    !status_error && status?.state === 'unverified' ? status.action : null;
+  const check_error =
+    status_error ||
+    (status?.state === 'unverified' && status.action === 'check' ? status.error : '');
+  const can_retry =
+    !status_error &&
+    status?.state === 'verified' &&
+    ['failed', 'waiting_for_model_settings', 'conflict'].includes(status.sync_state);
 
   return (
     <section className="account-key-sync" aria-label="Encrypted API keys">
@@ -421,24 +487,53 @@ export function EncryptedKeySync({ disabled, onApplied, onBusyChange }: Props) {
       {status?.state === 'verified' && (
         <>
           <p>
-            <strong>Verified</strong> ·{' '}
-            {status.sync_paused ? 'Sync paused on this device.' : 'API keys sync automatically.'}
+            <strong>Verified</strong>
+            {!status_error && <span role="status"> · {sync_labels[status.sync_state]}</span>}
           </p>
-          {status.sync_error && (
-            <p className="status error" role="alert">
-              {status.sync_error}
+          {!status_error && status.sync_state === 'waiting_for_model_settings' && (
+            <ModelSettingsRecovery enabled={model_sync_enabled} />
+          )}
+          {!status_error && status.sync_state === 'conflict' && (
+            <p>
+              Apell kept both copies. Review the provider connections on your devices before
+              retrying.
             </p>
           )}
-          <button
-            type="button"
-            disabled={button_disabled}
-            onClick={() => {
-              setError('');
-              setFlow({ kind: 'approve' });
-            }}
-          >
-            Approve a device
-          </button>
+          {!status_error &&
+            status.sync_state !== 'waiting_for_model_settings' &&
+            status.sync_error && (
+              <p className="status error" role="alert">
+                {status.sync_error}
+              </p>
+            )}
+          {!status_error && (
+            <div className="account-sync-actions">
+              {can_retry && (
+                <button
+                  type="button"
+                  disabled={disabled || checking || retrying}
+                  onClick={() => void retry()}
+                >
+                  {retrying ? 'Retrying…' : 'Retry key sync'}
+                </button>
+              )}
+              <button
+                type="button"
+                disabled={button_disabled}
+                onClick={() => {
+                  setError('');
+                  setFlow({ kind: 'approve' });
+                }}
+              >
+                Approve a device
+              </button>
+            </div>
+          )}
+          {can_retry && retry_error && (
+            <p className="status error" role="alert">
+              {retry_error}
+            </p>
+          )}
         </>
       )}
       {status?.state === 'unverified' && (
@@ -446,7 +541,7 @@ export function EncryptedKeySync({ disabled, onApplied, onBusyChange }: Props) {
           <p>
             <strong>Unverified</strong>
           </p>
-          {status.action === 'setup' && (
+          {verification_action === 'setup' && (
             <>
               <p>
                 Set up encrypted sync for this Account. Eligible API keys sync automatically after
@@ -455,7 +550,7 @@ export function EncryptedKeySync({ disabled, onApplied, onBusyChange }: Props) {
               <button
                 type="button"
                 className="primary"
-                disabled={button_disabled}
+                disabled={button_disabled || checking}
                 onClick={() =>
                   void perform(async (isCurrent) => {
                     await createKeySync();
@@ -467,14 +562,14 @@ export function EncryptedKeySync({ disabled, onApplied, onBusyChange }: Props) {
               </button>
             </>
           )}
-          {status.action === 'pair' && (
+          {verification_action === 'pair' && (
             <>
               <div className="key-sync-option">
                 <p>Approve this device from another device that is already verified.</p>
                 <button
                   type="button"
                   className="primary"
-                  disabled={button_disabled}
+                  disabled={button_disabled || checking}
                   onClick={() => void startRequest('join')}
                 >
                   Pair this device
@@ -486,7 +581,7 @@ export function EncryptedKeySync({ disabled, onApplied, onBusyChange }: Props) {
                 </p>
                 <button
                   type="button"
-                  disabled={button_disabled}
+                  disabled={button_disabled || checking}
                   onClick={() => void startRequest('recover')}
                 >
                   Recover access
@@ -494,20 +589,20 @@ export function EncryptedKeySync({ disabled, onApplied, onBusyChange }: Props) {
               </div>
             </>
           )}
-          {status.action === 'upgrade' && (
+          {verification_action === 'upgrade' && (
             <>
               <p>Verify your Account to keep using your existing encrypted keys.</p>
               <button
                 type="button"
                 className="primary"
-                disabled={button_disabled}
+                disabled={button_disabled || checking}
                 onClick={() => void startRequest('upgrade')}
               >
                 Verify Account
               </button>
             </>
           )}
-          {status.action === 'legacy' && (
+          {verification_action === 'legacy' && (
             <p>
               Open Apell on a device that already has your keys to finish setting up Account
               recovery.
@@ -515,13 +610,13 @@ export function EncryptedKeySync({ disabled, onApplied, onBusyChange }: Props) {
           )}
         </>
       )}
-      {status_error && (
+      {check_error && (
         <>
           <p className="status error" role="alert">
-            {status_error}
+            {check_error}
           </p>
-          <button type="button" disabled={busy} onClick={() => void refresh()}>
-            Check again
+          <button type="button" disabled={busy || checking} onClick={() => void refresh()}>
+            {checking ? 'Checking…' : 'Check again'}
           </button>
         </>
       )}

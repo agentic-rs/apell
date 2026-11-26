@@ -210,8 +210,20 @@ export interface AccountStatus {
 }
 export type KeySyncStatus =
   | { state: 'signed_out' | 'unavailable' }
-  | { state: 'verified'; sync_error: string | null; sync_paused: boolean }
-  | { state: 'unverified'; action: 'setup' | 'pair' | 'upgrade' | 'legacy' };
+  | {
+      state: 'verified';
+      sync_state:
+        | 'pending'
+        | 'syncing'
+        | 'current'
+        | 'waiting_for_model_settings'
+        | 'conflict'
+        | 'failed'
+        | 'paused';
+      sync_error: string | null;
+    }
+  | { state: 'unverified'; action: 'setup' | 'pair' | 'upgrade' | 'legacy' }
+  | { state: 'unverified'; action: 'check'; error: string };
 export interface KeySyncPairing {
   pair_id: string;
   code: string;
@@ -225,6 +237,7 @@ export interface KeySyncRecovery {
 export interface ConfigSyncStatus {
   state: 'disabled' | 'off' | 'ready';
   last_synced_at: string | null;
+  local_changes: boolean;
 }
 export interface ConfigSyncConnection {
   connection_id: string;

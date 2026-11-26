@@ -1,6 +1,7 @@
 use super::crypto::{self, Sealed, Secret, MAX_API_KEY};
 use super::{
-  cloud_context, eligible_endpoint, key_context, local_vault, save_head, BackgroundStop, Entry,
+  cloud_context, eligible_endpoint, key_context, local_vault, managed, save_head, BackgroundStop,
+  Entry,
 };
 use crate::{
   commands::blocking,
@@ -13,6 +14,7 @@ use apell_vault_keys::{derive_api_key_encryption_key, derive_sync_fingerprint_ke
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use ring::hmac;
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use std::{
   collections::{BTreeMap, HashSet},
   io::Read,
@@ -38,27 +40,80 @@ const FINGERPRINT_V2_PREFIX: &str = "v2:";
 #[derive(Default)]
 pub(super) struct Automatic {
   wake: Notify,
-  error: Mutex<Option<(String, String)>>,
+  health: Mutex<Option<(String, SyncHealth)>>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) enum SyncHealth {
+  #[default]
+  Pending,
+  Syncing,
+  Current,
+  WaitingForModelSettings,
+  Conflict,
+  Failed(String),
+  Paused(String),
+}
+
+impl SyncHealth {
+  pub(super) fn verified_status(self) -> Value {
+    let (phase, error) = match self {
+      Self::Pending => ("pending", None),
+      Self::Syncing => ("syncing", None),
+      Self::Current => ("current", None),
+      Self::WaitingForModelSettings => ("waiting_for_model_settings", None),
+      Self::Conflict => ("conflict", None),
+      Self::Failed(error) => ("failed", Some(error)),
+      Self::Paused(error) => ("paused", Some(error)),
+    };
+    json!({"state": "verified", "sync_state": phase, "sync_error": error})
+  }
 }
 
 impl Automatic {
-  pub(super) async fn error(&self, account: &str) -> Option<String> {
+  pub(super) async fn health(&self, account: &str) -> SyncHealth {
     self
-      .error
+      .health
       .lock()
       .await
       .as_ref()
       .filter(|(owner, _)| owner == account)
-      .map(|(_, error)| error.clone())
+      .map(|(_, health)| health.clone())
+      .unwrap_or_default()
   }
 
-  pub(super) async fn publish_error(&self, app: &AppHandle, error: Option<(String, String)>) {
-    let mut current = self.error.lock().await;
-    if *current != error {
-      *current = error;
+  pub(super) async fn publish_health(&self, app: &AppHandle, health: Option<(String, SyncHealth)>) {
+    let mut current = self.health.lock().await;
+    if *current != health {
+      *current = health;
       let _ = app.emit_to("main", "apell-key-sync-changed", ());
     }
   }
+
+  pub(super) async fn queue_retry(
+    &self,
+    app: &AppHandle,
+    account: String,
+    stop: &BackgroundStop,
+  ) -> Result<(), String> {
+    let mut current = self.health.lock().await;
+    stop.check()?;
+    if mark_pending(&mut current, account) {
+      let _ = app.emit_to("main", "apell-key-sync-changed", ());
+    }
+    self.wake.notify_one();
+    Ok(())
+  }
+}
+
+fn mark_pending(current: &mut Option<(String, SyncHealth)>, account: String) -> bool {
+  if current.as_ref().is_some_and(|(owner, health)| {
+    owner == &account && matches!(health, SyncHealth::Pending | SyncHealth::Syncing)
+  }) {
+    return false;
+  }
+  *current = Some((account, SyncHealth::Pending));
+  true
 }
 
 #[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -209,15 +264,17 @@ pub(crate) fn start(app: &AppHandle) {
         continue;
       }
       let Ok(Some(account)) = host.account.account_key(&app).await else {
-        host.key_sync.automatic.publish_error(&app, None).await;
+        host.key_sync.automatic.publish_health(&app, None).await;
         continue;
       };
-      let error = synchronize(&app, &host, &account, &stop).await.err();
+      let health = synchronize(&app, &host, &account, &stop)
+        .await
+        .unwrap_or_else(SyncHealth::Failed);
       if !stop.requested() {
         host
           .key_sync
           .automatic
-          .publish_error(&app, error.map(|error| (account, error)))
+          .publish_health(&app, Some((account, health)))
           .await;
       }
     }
@@ -479,21 +536,48 @@ struct Plan {
   awaiting_metadata: bool,
 }
 
+impl Plan {
+  fn health(&self, metadata_error: Option<String>) -> SyncHealth {
+    if self.conflict {
+      SyncHealth::Conflict
+    } else if self.invalid {
+      SyncHealth::Failed("Some API keys could not sync. Their saved copies were kept.".into())
+    } else if self.capacity {
+      SyncHealth::Failed("The encrypted API key limit was reached.".into())
+    } else if self.awaiting_metadata {
+      match metadata_error {
+        Some(error) => SyncHealth::Failed(error),
+        None => SyncHealth::WaitingForModelSettings,
+      }
+    } else {
+      SyncHealth::Current
+    }
+  }
+}
+
 async fn synchronize(
   app: &AppHandle,
   host: &Host,
   account: &str,
   stop: &BackgroundStop,
-) -> Result<(), String> {
+) -> Result<SyncHealth, String> {
   if !host.account.key_exchange_available()
     || !stop
       .wait(local_vault(app, account))
       .await??
-      .is_some_and(|vault| vault.managed && !vault.pending_managed)
+      .as_ref()
+      .is_some_and(managed::is_verified)
   {
-    return Ok(());
+    return Ok(SyncHealth::Pending);
   }
-  stop.wait(require_device_sync(&host.root)).await??;
+  if let Err(error) = stop.wait(require_device_sync(&host.root)).await? {
+    return Ok(SyncHealth::Paused(error));
+  }
+  host
+    .key_sync
+    .automatic
+    .publish_health(app, Some((account.to_owned(), SyncHealth::Syncing)))
+    .await;
   let relay = stop.access(app, host, true, None).await?;
   if relay.account_key != account {
     return Err(OWNERSHIP_CHANGED.into());
@@ -520,9 +604,8 @@ async fn synchronize(
     crate::config_sync::add_credential_connections(app, host, &access, stop, missing, move |ids| {
       retain_restorable(&root, &metadata_owner, ids)
     })
-    .await
-    .unwrap_or(false);
-  if added {
+    .await;
+  if matches!(added, Ok(true)) {
     let _ = app.emit_to("main", "apell-llm-settings-changed", ());
   }
   let plan_owner = owner.clone();
@@ -541,6 +624,7 @@ async fn synchronize(
       )
     })
     .await?;
+  let health = plan.health(added.err());
   if let Some(upload) = plan.upload {
     stop
       .wait(save_head(
@@ -570,24 +654,7 @@ async fn synchronize(
     })
     .await?;
   }
-  if plan.conflict {
-    return Err(
-      "Some API keys differ between this device and your account. Both copies were kept.".into(),
-    );
-  }
-  if plan.invalid {
-    return Err("Some API keys could not sync. Their saved copies were kept.".into());
-  }
-  if plan.capacity {
-    return Err("The encrypted API key limit was reached.".into());
-  }
-  if plan.awaiting_metadata {
-    return Err(
-      "Use model settings sync to bring in the provider connections for your backed-up API keys."
-        .into(),
-    );
-  }
-  Ok(())
+  Ok(health)
 }
 
 async fn missing_metadata(
@@ -762,6 +829,55 @@ fn restored_preference<'a>(
 mod tests {
   use super::*;
   use crate::settings::credential_ref;
+
+  #[tokio::test]
+  async fn automatic_health_is_scoped_to_the_account() {
+    let automatic = Automatic::default();
+    assert_eq!(automatic.health("first").await, SyncHealth::Pending);
+    *automatic.health.lock().await = Some(("first".into(), SyncHealth::Failed("Offline".into())));
+    assert_eq!(
+      automatic.health("first").await.verified_status(),
+      json!({"state":"verified", "sync_state":"failed", "sync_error":"Offline"}),
+    );
+    assert_eq!(automatic.health("second").await, SyncHealth::Pending);
+  }
+
+  #[test]
+  fn retry_marks_pending_without_replacing_the_accounts_active_sync() {
+    let mut health = Some(("first".into(), SyncHealth::Failed("Offline".into())));
+    assert!(mark_pending(&mut health, "first".into()));
+    assert_eq!(health, Some(("first".into(), SyncHealth::Pending)));
+    assert!(!mark_pending(&mut health, "first".into()));
+
+    health = Some(("first".into(), SyncHealth::Syncing));
+    assert!(!mark_pending(&mut health, "first".into()));
+    assert_eq!(health, Some(("first".into(), SyncHealth::Syncing)));
+    assert!(mark_pending(&mut health, "second".into()));
+    assert_eq!(health, Some(("second".into(), SyncHealth::Pending)));
+  }
+
+  #[test]
+  fn missing_model_metadata_conflicts_and_sync_failures_have_distinct_health() {
+    assert_eq!(Plan::default().health(None), SyncHealth::Current);
+    let mut plan = Plan {
+      awaiting_metadata: true,
+      ..Plan::default()
+    };
+    assert_eq!(
+      plan.health(None).verified_status(),
+      json!({"state":"verified", "sync_state":"waiting_for_model_settings", "sync_error":null}),
+    );
+    assert_eq!(
+      plan.health(Some("Could not reach model settings".into())),
+      SyncHealth::Failed("Could not reach model settings".into())
+    );
+    plan.conflict = true;
+    assert_eq!(plan.health(None), SyncHealth::Conflict);
+    assert_eq!(
+      SyncHealth::Paused("Ledger unavailable".into()).verified_status(),
+      json!({"state":"verified", "sync_state":"paused", "sync_error":"Ledger unavailable"}),
+    );
+  }
 
   fn fixture_connection(id: &str, provider: &str) -> Connection {
     Connection {
