@@ -78,6 +78,26 @@ The fictional account can test first verification and encrypted API key sync.
 Use fictional model settings and API keys. If the fixture restarts while a
 sign-in or recovery is pending, start a fresh request.
 
+To test pairing between two macOS instances, start them in separate terminals
+while the same local services are running:
+
+```sh
+pnpm dev:local shell device-a
+pnpm dev:local peer device-b
+```
+
+The peer shares the first shell's frontend server. Restart it after Rust changes.
+Each named device has its own app files and mock credentials under
+`deploy/local/.state/devices/`. The devices use the same fictional Account.
+WebView storage is temporary for named devices. Use different names for
+simultaneously running instances.
+
+For a fresh local vault, sign both devices in, then save a fictional API key
+and type a model ID on the first device. Select that connection, enable model
+settings sync, and verify the device. Enable model settings sync on the peer
+first, then pair it using the matching six-digit codes. After approval, the
+peer should become Verified and select the synced model when its key arrives.
+
 ## Test on iOS
 
 Use a separate test simulator with the generated CA installed and trusted.

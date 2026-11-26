@@ -13,6 +13,8 @@ mod install;
 #[cfg(target_os = "ios")]
 mod ios;
 mod key_sync;
+#[cfg(all(feature = "local-dev", target_os = "macos", debug_assertions))]
+mod local_dev;
 mod media;
 mod navigation;
 mod permissions;
@@ -31,6 +33,10 @@ use tauri::{
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+  let context = tauri::generate_context!();
+  #[cfg(all(feature = "local-dev", target_os = "macos", debug_assertions))]
+  let (context, local_device) =
+    local_dev::device_context(context).expect("Could not configure the local device");
   #[cfg(target_os = "ios")]
   let ios_back = ios::BackSignal::default();
   #[cfg(target_os = "ios")]
@@ -78,6 +84,13 @@ pub fn run() {
             _ => PermissionResponse::Default,
           })
           .on_navigation(move |url| navigation::allowed(url, &origins));
+      #[cfg(all(feature = "local-dev", target_os = "macos", debug_assertions))]
+      let window = if let Some(lease) = local_device {
+        app.manage(lease);
+        window.incognito(true)
+      } else {
+        window
+      };
       // On iOS an explicit inner size becomes the actual native view frame.
       // Mobile must inherit the device bounds for responsive CSS and safe areas.
       #[cfg(desktop)]
@@ -110,7 +123,7 @@ pub fn run() {
       commands::shell_command,
       commands::applet_call
     ])
-    .build(tauri::generate_context!())
+    .build(context)
     .expect("Could not start Apell")
     .run(|_app, _event| {
       if matches!(_event, tauri::RunEvent::Resumed) {

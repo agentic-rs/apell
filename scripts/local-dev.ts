@@ -235,16 +235,24 @@ function start() {
   console.log('Run pnpm dev:local web for the Store at https://localhost:8788.');
 }
 
-function runShell() {
+function runShell(device: string | undefined, reuse_frontend = false) {
   if (process.platform !== 'darwin') {
     throw new Error('The local native shell currently requires macOS.');
+  }
+  if (reuse_frontend && device === undefined) {
+    throw new Error('Give the peer a name. Start pnpm dev:local shell first.');
+  }
+  if (device !== undefined && !/^[a-z0-9][a-z0-9-]{0,31}$/.test(device)) {
+    throw new Error(
+      'Use 1–32 lowercase letters, digits, or hyphens, starting with a letter or digit.',
+    );
   }
   initialize();
   const shell_config = {
     identifier: 'dev.apell.shell.local',
     productName: 'Apell Local',
     build: {
-      beforeDevCommand: 'pnpm exec vite --host 127.0.0.1 --port 1422',
+      beforeDevCommand: reuse_frontend ? null : 'pnpm exec vite --host 127.0.0.1 --port 1422',
       devUrl: 'http://localhost:1422',
     },
   };
@@ -255,11 +263,20 @@ function runShell() {
     APELL_LOCAL_CA_FILE: join(tls, 'ca.crt'),
   };
   delete env.TAURI_DEV_HOST;
+  if (device === undefined) delete env.APELL_LOCAL_DEVICE;
+  else env.APELL_LOCAL_DEVICE = device;
   // Build the sample before Tauri starts its frontend-server deadline.
-  run('pnpm', ['build:chatbot'], env);
+  if (!reuse_frontend) run('pnpm', ['build:chatbot'], env);
   run(
     'pnpm',
-    ['desktop:dev', '--features', 'local-dev', '--config', JSON.stringify(shell_config)],
+    [
+      'desktop:dev',
+      '--features',
+      'local-dev',
+      '--config',
+      JSON.stringify(shell_config),
+      ...(reuse_frontend ? ['--no-watch'] : []),
+    ],
     env,
   );
 }
@@ -283,7 +300,10 @@ try {
       });
       break;
     case 'shell':
-      runShell();
+      runShell(process.argv[3]);
+      break;
+    case 'peer':
+      runShell(process.argv[3], true);
       break;
     case 'logs':
       if (!running()) throw new Error('Start the local services first.');
@@ -293,7 +313,9 @@ try {
       if (running()) run(engine, ['stop', name]);
       break;
     default:
-      throw new Error('Usage: pnpm dev:local [up | web | shell | reload | logs | stop]');
+      throw new Error(
+        'Usage: pnpm dev:local [up | web | shell [device] | peer <device> | reload | logs | stop]',
+      );
   }
 } catch (error) {
   console.error(error instanceof Error ? error.message : error);
