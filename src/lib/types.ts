@@ -232,6 +232,7 @@ export interface KeySyncPairing {
   approval_nonce: string;
 }
 export interface KeySyncRecovery {
+  request_id: string;
   expires_at: number;
 }
 export interface ConfigSyncStatus {

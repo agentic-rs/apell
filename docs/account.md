@@ -248,9 +248,11 @@ Apell keeps local and cloud copies when both have changed
 independently. Provider OAuth sessions and custom endpoint credentials stay
 on the device.
 
-Signing out ends the device’s Account session without waiting for background
-key-sync requests. Apell lets any local credential write already in progress
-finish before it ends the session.
+Closing a pairing or recovery sheet ends that verification request on this
+device. Start a new request to continue. Signing out interrupts outstanding
+relay waits, including the approval list and verification checks. Apell lets a
+local vault or credential write already in progress finish before ending the
+session.
 
 If Apell cannot reliably record key changes on a device, it pauses encrypted
 API key sync on that device so you can continue managing its local model

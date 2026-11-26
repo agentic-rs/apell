@@ -286,9 +286,8 @@ pub(super) async fn activate(
   host: &Host,
   account: &str,
   vault_id: Uuid,
+  settings: Settings,
 ) -> Result<(), String> {
-  let _gate = host.credential_gate.lock().await;
-  let settings = host.settings.lock().await.clone();
   let owner = Owner {
     account: account.to_owned(),
     vault_id,

@@ -272,10 +272,6 @@ impl Account {
       .is_some_and(|config| config.key_exchange.is_some())
   }
 
-  pub async fn key_exchange_access(&self, app: &AppHandle) -> Result<Access, String> {
-    self.access_for(app, true, None).await
-  }
-
   pub(crate) async fn start_background_access(
     &self,
     app: &AppHandle,

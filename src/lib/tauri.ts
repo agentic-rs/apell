@@ -192,10 +192,12 @@ export const cancelKeySyncPairing = (pair_id: string) =>
 export const approveKeySyncPairing = (pair_id: string, approval_nonce: string) =>
   shellCall<void>('key_sync.pair_approve', { pair_id, approval_nonce });
 export const startKeySyncRecovery = () => shellCall<KeySyncRecovery>('key_sync.recovery_start');
-export const openKeySyncRecovery = () => shellCall<void>('key_sync.recovery_open');
-export const finishKeySyncRecovery = () =>
-  shellCall<boolean | 'rejected'>('key_sync.recovery_finish');
-export const cancelKeySyncRecovery = () => shellCall<void>('key_sync.recovery_cancel');
+export const openKeySyncRecovery = (request_id: string) =>
+  shellCall<void>('key_sync.recovery_open', { request_id });
+export const finishKeySyncRecovery = (request_id: string) =>
+  shellCall<boolean | 'rejected'>('key_sync.recovery_finish', { request_id });
+export const cancelKeySyncRecovery = (request_id: string) =>
+  shellCall<void>('key_sync.recovery_cancel', { request_id });
 export const getSettingsTransferCapabilities = () =>
   shellCall<SettingsTransferCapabilities>('settings_transfer.capabilities');
 export const exportSettingsTransfer = (connection_ids: string[], passphrase: string) =>

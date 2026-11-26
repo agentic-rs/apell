@@ -36,11 +36,14 @@ pub(crate) struct KeySync {
   automatic: automatic::Automatic,
 }
 
+#[derive(Clone)]
 pub(crate) struct BackgroundStop(watch::Receiver<bool>);
 
 impl BackgroundStop {
   fn requested(&self) -> bool {
-    *self.0.borrow()
+    // An earlier operation stays cancelled even if it missed the time the
+    // flag was set. A fresh operation observes the new receiver version.
+    *self.0.borrow() || self.0.has_changed().unwrap_or(true)
   }
 
   pub(crate) fn check(&self) -> Result<(), String> {
@@ -52,10 +55,11 @@ impl BackgroundStop {
   }
 
   pub(crate) async fn wait<T>(&self, work: impl Future<Output = T>) -> Result<T, String> {
+    self.check()?;
     let mut requested = self.0.clone();
     tokio::select! {
       biased;
-      _ = requested.wait_for(|requested| *requested) => Err(SIGNING_OUT.into()),
+      _ = requested.changed() => Err(SIGNING_OUT.into()),
       result = work => Ok(result),
     }
   }
@@ -400,24 +404,60 @@ pub(crate) async fn dispatch(app: AppHandle, method: &str, params: Value) -> Res
   let method = method.to_owned();
   finish_snapshot(async move {
     let host = app.state::<Host>();
+    let stop = BackgroundStop(host.key_sync.signing_out.subscribe());
     match method.as_str() {
       "key_sync.status" => return managed::status(&app, &host).await,
       "key_sync.retry" => return managed::retry(&app, &host).await,
+      "key_sync.pair_cancel" => {
+        return managed::cancel_pair(&app, &host, parse(params)?, &stop).await
+      }
+      "key_sync.recovery_open" => {
+        return managed::open_recovery(&app, &host, parse(params)?, &stop).await
+      }
+      "key_sync.recovery_cancel" => {
+        return managed::cancel_recovery(&app, &host, parse(params)?, &stop).await
+      }
       _ => {}
     }
-    let _gate = host.key_sync.gate.lock().await;
-    let relay = host.account.key_exchange_access(&app).await?;
+    let account = stop
+      .wait(host.account.account_key(&app))
+      .await??
+      .ok_or("Sign in to Apell Account to verify this device.")?;
+    let cancellation = match method.as_str() {
+      "key_sync.pair_finish" => {
+        Some(managed::pair_cancellation(&host, &account, &parse(params.clone())?, &stop).await?)
+      }
+      "key_sync.recovery_finish" => {
+        Some(managed::recovery_cancellation(&host, &account, &parse(params.clone())?, &stop).await?)
+      }
+      _ => None,
+    };
+    let authorize = async {
+      let gate = stop.wait(host.key_sync.gate.lock()).await?;
+      let relay = stop.access(&app, &host, true, None).await?;
+      if relay.account_key != account {
+        return Err("The signed-in Account changed. Try again.".into());
+      }
+      Ok((gate, relay))
+    };
+    let (_gate, relay) = match cancellation {
+      Some(cancellation) => cancellation.wait(&stop, authorize).await?,
+      None => authorize.await?,
+    };
     match method.as_str() {
-      "key_sync.create" => managed::create(&app, &host, &relay).await,
-      "key_sync.pair_start" => managed::start_pair(&host, &relay).await,
-      "key_sync.pair_list" => managed::list_pairs(&app, &host, &relay).await,
-      "key_sync.pair_finish" => managed::finish_pair(&app, &host, &relay, parse(params)?).await,
-      "key_sync.pair_cancel" => managed::cancel_pair(&host, &relay, parse(params)?).await,
-      "key_sync.pair_approve" => managed::approve_pair(&app, &host, &relay, parse(params)?).await,
-      "key_sync.recovery_start" => managed::start_recovery(&app, &host, &relay).await,
-      "key_sync.recovery_open" => managed::open_recovery(&app, &host, &relay).await,
-      "key_sync.recovery_finish" => managed::finish_recovery(&app, &host, &relay).await,
-      "key_sync.recovery_cancel" => managed::cancel_recovery(&host).await,
+      "key_sync.create" => managed::create(&app, &host, &relay, &stop).await,
+      "key_sync.pair_start" => managed::start_pair(&host, relay, &stop).await,
+      "key_sync.pair_list" => managed::list_pairs(&app, &host, &relay, &stop).await,
+      "key_sync.pair_finish" => {
+        managed::finish_pair(&app, &host, &relay, parse(params)?, &stop).await
+      }
+      "key_sync.pair_approve" => {
+        managed::approve_pair(&app, &host, &relay, parse(params)?, &stop).await
+      }
+      "key_sync.recovery_start" => managed::start_recovery(&app, &host, &relay, &stop).await,
+      "key_sync.recovery_finish" => {
+        managed::finish_recovery(&app, &host, &relay, parse(params)?, &stop).await
+      }
       _ => Err("Unknown encrypted API key sync operation.".into()),
     }
   })
@@ -486,7 +526,29 @@ mod tests {
     reply.send(()).unwrap();
     refresh_finished.await.unwrap();
     drop(pause);
-    assert!(pending.check().is_ok());
+    assert!(pending.check().is_err());
+    assert!(BackgroundStop(sync.signing_out.subscribe()).check().is_ok());
+  }
+
+  #[tokio::test]
+  async fn completed_sign_out_stops_queued_verification_from_using_a_later_session() {
+    let sync = std::sync::Arc::new(KeySync::new(Client::new()));
+    let gate = sync.gate.lock().await;
+    let queued = sync.clone();
+    let stop = BackgroundStop(sync.signing_out.subscribe());
+    let (started, waiting) = oneshot::channel();
+    let request = tokio::spawn(async move {
+      started.send(()).unwrap();
+      stop
+        .wait(async {
+          let _gate = queued.gate.lock().await;
+        })
+        .await
+    });
+    waiting.await.unwrap();
+    drop(PauseBackground::new(&sync.signing_out));
+    drop(gate);
+    assert_eq!(request.await.unwrap().unwrap_err(), SIGNING_OUT);
   }
 
   #[tokio::test]
