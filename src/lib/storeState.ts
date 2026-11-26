@@ -149,9 +149,7 @@ export function reviewStoreRelease(
   const pending = choice.pending_download;
   if (pending) {
     const release =
-      detail.store_url === pending.origin &&
-      detail.applet.applet_id === pending.applet_id &&
-      (!installed_source || installed_channel)
+      detail.store_url === pending.origin && detail.applet.applet_id === pending.applet_id
         ? detail.releases.find(
             (item) =>
               item.version === pending.version &&

@@ -9,20 +9,27 @@ use apell_core::{
     StoreSwitchSnapshot,
   },
   store_client::{
-    normalize_store_url, DownloadCheckpoint, DownloadIdentity, DownloadOutcome, StoreApplet,
-    StoreCatalog, StoreClient, StoreRelease,
+    normalize_store_url, DownloadCheckpoint, DownloadIdentity, DownloadOutcome, PendingDownload,
+    StoreApplet, StoreCatalog, StoreClient, StoreRelease,
   },
 };
 use futures_util::{stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::{collections::BTreeMap, future::Future, path::PathBuf, time::Duration};
+use std::{
+  collections::BTreeMap,
+  future::Future,
+  path::{Path, PathBuf},
+  time::Duration,
+};
 use tauri::{AppHandle, Emitter, Manager};
 
 pub use state::StoreConfig;
 
 pub(crate) const MAX_UPDATE_REQUESTS: usize = 4;
 const UPDATE_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
+const DOWNLOAD_MISSING: &str =
+  "The saved download is no longer on this device. Review the release to start again.";
 const DEFAULT_STORE_URL: Option<&str> = if cfg!(all(
   feature = "local-dev",
   target_os = "macos",
@@ -45,6 +52,7 @@ struct DetailQuery {
   applet_id: String,
   #[serde(default)]
   installed_source: bool,
+  pending_download: Option<DownloadIdentity>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -170,6 +178,25 @@ fn download_cache(app: &AppHandle) -> Result<PathBuf, String> {
     .app_cache_dir()
     .map(|cache| cache.join("store-downloads"))
     .map_err(|_| "Store download cache is unavailable.".into())
+}
+
+async fn require_pending_download(
+  cache: &Path,
+  identity: &DownloadIdentity,
+) -> Result<PendingDownload, String> {
+  DownloadCheckpoint::pending_download(cache, identity)
+    .await?
+    .ok_or_else(|| DOWNLOAD_MISSING.into())
+}
+
+async fn review_pending_download(
+  app: &AppHandle,
+  host: &Host,
+  identity: &DownloadIdentity,
+) -> Result<PendingDownload, String> {
+  let cache = download_cache(app)?;
+  let _gate = host.store_gate.lock().await;
+  require_pending_download(&cache, identity).await
 }
 
 fn input<T: serde::de::DeserializeOwned>(params: Value) -> Result<T, String> {
@@ -387,7 +414,14 @@ pub async fn dispatch(
     }
     "store.detail" => {
       let request: DetailQuery = input(params)?;
-      let store_url = if request.installed_source {
+      let store_url = if let Some(identity) = &request.pending_download {
+        let store_url = normalize_store_url(&request.store_url)?;
+        if request.installed_source || !identity.matches_applet(&store_url, &request.applet_id) {
+          return Err("The saved download belongs to a different Store or applet.".into());
+        }
+        review_pending_download(&app, host, identity).await?;
+        store_url
+      } else if request.installed_source {
         let store_url = normalize_store_url(&request.store_url)?;
         let saved = installed_applet(host, &request.applet_id).await?;
         authorize_installed_source(Some(&saved), &store_url, &request.applet_id)?;
@@ -403,11 +437,20 @@ pub async fn dispatch(
       if request.installed_source {
         authorize_installed_source(review.installed, &store_url, &request.applet_id)?;
       }
+      let pending = match &request.pending_download {
+        Some(identity) => Some(review_pending_download(&app, host, identity).await?),
+        None => None,
+      };
       let mut releases = Vec::with_capacity(detail.releases.len());
       for release in detail.releases {
         let (action, action_reason) = release_action(&release, &review);
         let mut downloaded_bytes = None;
-        if matches!(
+        if let Some(pending) = &pending {
+          let Some(bytes) = pending.downloaded_bytes_for(&release) else {
+            continue;
+          };
+          downloaded_bytes = Some(bytes);
+        } else if matches!(
           action,
           ReleaseAction::Install
             | ReleaseAction::Update
@@ -671,7 +714,7 @@ async fn install(app: AppHandle, host: &Host, request: InstallQuery) -> Result<V
     .map_err(|_| "Invalid install operation identity.")?;
   request.release.validate(&request.applet_id)?;
   let _gate = host.store_gate.lock().await;
-  let store_url = if request.installed_source {
+  let store_url = if request.installed_source || request.resume_download {
     normalize_store_url(&request.store_url)?
   } else {
     configured(host, &request.store_url).await?
@@ -684,16 +727,14 @@ async fn install(app: AppHandle, host: &Host, request: InstallQuery) -> Result<V
     channel: StoreChannel::from_prerelease(request.release.prerelease),
   };
   let operation_id = &request.operation_id;
-  let checkpoint = download_checkpoint(&app, &store_url, &request.release)?;
-  if request.resume_download
-    && checkpoint
-      .reviewed_received(request.release.size_bytes)
-      .await
-      == 0
-  {
-    return Err(
-      "The saved download is no longer on this device. Review the release to start again.".into(),
-    );
+  let cache = download_cache(&app)?;
+  let checkpoint = DownloadCheckpoint::new(&cache, &store_url, &request.release);
+  if request.resume_download {
+    let identity = DownloadIdentity::for_release(&store_url, &request.applet_id, &request.release);
+    let pending = require_pending_download(&cache, &identity).await?;
+    if pending.downloaded_bytes_for(&request.release).is_none() {
+      return Err("The saved download differs from this release. Review the release again.".into());
+    }
   }
   #[cfg(target_os = "ios")]
   let lease = crate::ios::WakeLease::begin(&app).await;

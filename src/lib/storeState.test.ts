@@ -223,7 +223,7 @@ describe('paused Store download review', () => {
 
   it('keeps the exact paused update selected when an update check recommends a newer version', () => {
     expect(reviewStoreRelease(current, {}, true).release).toBe(latest);
-    expect(reviewStoreRelease(current, { pending_download }, true).release).toBe(paused);
+    expect(reviewStoreRelease(current, { pending_download }).release).toBe(paused);
   });
 
   it('does not substitute a release when the saved identity or progress no longer matches', () => {
@@ -248,18 +248,37 @@ describe('paused Store download review', () => {
     ).toBeUndefined();
   });
 
-  it('keeps a paused channel switch on the installed Store and requires that source', () => {
+  it('keeps a paused channel switch on the exact reviewed release', () => {
     const switch_release = { ...paused, prerelease: true, action: 'switch_channel' as const };
     const choice = { pending_download: { ...pending_download, channel: 'nightly' as const } };
     const switch_detail = { ...current, releases: [switch_release, ...current.releases] };
-    expect(reviewStoreRelease(switch_detail, choice, true).release).toBe(switch_release);
+    expect(reviewStoreRelease(switch_detail, choice).release).toBe(switch_release);
+  });
+
+  it('reviews a paused first install or source replacement independently of installed sources', () => {
+    const new_install = { ...paused, action: 'install' as const };
     expect(
       reviewStoreRelease(
-        { ...switch_detail, installed: { ...installed, source: null } },
-        choice,
-        true,
+        { ...current, installed: null, releases: [new_install] },
+        { pending_download },
       ).release,
-    ).toBeUndefined();
+    ).toBe(new_install);
+    const replacement = { ...paused, action: 'switch_source' as const };
+    const other_store: InstalledApplet = {
+      ...installed,
+      source: {
+        kind: 'store',
+        applet_id: installed.applet_id,
+        store_url: 'https://other.example.invalid',
+        channel: 'stable',
+      },
+    };
+    expect(
+      reviewStoreRelease(
+        { ...current, installed: other_store, releases: [replacement] },
+        { pending_download },
+      ).release,
+    ).toBe(replacement);
   });
 });
 

@@ -43,6 +43,7 @@ import type {
   StoreConfig,
   StoreCatalog,
   StoreDetail,
+  StoreDownloadIdentity,
   StoreInstallRequest,
   StoreInstallResult,
   StorePendingDownload,
@@ -91,19 +92,32 @@ export const getStorePendingDownloads = () =>
   shellCall<StorePendingDownload[]>('store.pending_downloads');
 export const onStoreDownloadsChanged = (handler: () => void) =>
   listen('apell-store-download-changed', handler);
-export const discardStoreDownload = ({
+const storeDownloadIdentity = ({
   origin,
   applet_id,
   version,
   channel,
   sha256,
-}: StorePendingDownload) =>
-  shellCall<boolean>('store.discard_download', { origin, applet_id, version, channel, sha256 });
+}: StoreDownloadIdentity): StoreDownloadIdentity => ({
+  origin,
+  applet_id,
+  version,
+  channel,
+  sha256,
+});
+export const discardStoreDownload = (download: StoreDownloadIdentity) =>
+  shellCall<boolean>('store.discard_download', storeDownloadIdentity(download));
 export const getStoreDetail = (store_url: string, applet_id: string, installed_source = false) =>
   shellCall<StoreDetail>('store.detail', {
     store_url,
     applet_id,
     ...(installed_source ? { installed_source } : {}),
+  });
+export const getStoreDownloadDetail = (download: StoreDownloadIdentity) =>
+  shellCall<StoreDetail>('store.detail', {
+    store_url: download.origin,
+    applet_id: download.applet_id,
+    pending_download: storeDownloadIdentity(download),
   });
 export const getStoreIcon = (store_url: string, icon_url: string) =>
   shellCall<string>('store.icon', { store_url, icon_url });

@@ -102,13 +102,15 @@ export interface StoreConfig {
   store_url: string | null;
 }
 export type StoreChannel = 'stable' | 'nightly';
-export interface StorePendingDownload {
+export interface StoreDownloadIdentity {
   origin: string;
   applet_id: string;
-  name: string;
   version: string;
   channel: StoreChannel;
   sha256: string;
+}
+export interface StorePendingDownload extends StoreDownloadIdentity {
+  name: string;
   downloaded_bytes: number;
   size_bytes: number;
 }

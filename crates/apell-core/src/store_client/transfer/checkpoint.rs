@@ -28,6 +28,20 @@ pub struct DownloadIdentity {
 }
 
 impl DownloadIdentity {
+  pub fn for_release(origin: &str, applet_id: &str, release: &StoreRelease) -> Self {
+    Self {
+      origin: origin.into(),
+      applet_id: applet_id.into(),
+      version: release.version.clone(),
+      channel: StoreChannel::from_prerelease(release.prerelease),
+      sha256: release.sha256.clone(),
+    }
+  }
+
+  pub fn matches_applet(&self, origin: &str, applet_id: &str) -> bool {
+    self.origin == origin && self.applet_id == applet_id
+  }
+
   fn checkpoint(&self, cache: &Path) -> DownloadCheckpoint {
     DownloadCheckpoint::for_release(
       cache,
@@ -66,6 +80,16 @@ pub struct PendingDownload {
   name: String,
   size_bytes: u64,
   downloaded_bytes: u64,
+}
+
+impl PendingDownload {
+  pub fn downloaded_bytes_for(&self, release: &StoreRelease) -> Option<u64> {
+    (self.size_bytes == release.size_bytes
+      && self.identity.version == release.version
+      && self.identity.sha256 == release.sha256
+      && self.identity.channel == StoreChannel::from_prerelease(release.prerelease))
+    .then_some(self.downloaded_bytes)
+  }
 }
 
 async fn read_metadata(path: &Path) -> Result<Option<DownloadMetadata>, String> {
@@ -138,21 +162,31 @@ impl DownloadCheckpoint {
     saved_downloads(cache).await
   }
 
-  /// Delete only the requested release's retained bytes and metadata.
-  pub async fn discard(cache: &Path, identity: &DownloadIdentity) -> Result<bool, String> {
+  /// Look up the exact retained release under the download gate.
+  pub async fn pending_download(
+    cache: &Path,
+    identity: &DownloadIdentity,
+  ) -> Result<Option<PendingDownload>, String> {
     if !identity.valid() || !cache_present(cache).await? {
-      return Ok(false);
+      return Ok(None);
     }
     migrate_legacy(cache).await?;
-    let checkpoint = identity.checkpoint(cache);
-    if !checkpoint
-      .pending_entry(cache)
-      .await?
-      .is_some_and(|(pending, _)| &pending.identity == identity)
-    {
+    Ok(
+      identity
+        .checkpoint(cache)
+        .pending_entry(cache)
+        .await?
+        .map(|(pending, _)| pending)
+        .filter(|pending| &pending.identity == identity),
+    )
+  }
+
+  /// Delete only the requested release's retained bytes and metadata.
+  pub async fn discard(cache: &Path, identity: &DownloadIdentity) -> Result<bool, String> {
+    if Self::pending_download(cache, identity).await?.is_none() {
       return Ok(false);
     }
-    checkpoint.finish().await?;
+    identity.checkpoint(cache).finish().await?;
     Ok(true)
   }
 
@@ -242,13 +276,7 @@ impl DownloadCheckpoint {
   ) -> Result<(), String> {
     let directory = self.0.parent().ok_or(STORAGE_ERROR)?;
     let metadata = DownloadMetadata {
-      identity: DownloadIdentity {
-        origin: origin.to_owned(),
-        applet_id: applet_id.to_owned(),
-        version: release.version.clone(),
-        channel: StoreChannel::from_prerelease(release.prerelease),
-        sha256: release.sha256.clone(),
-      },
+      identity: DownloadIdentity::for_release(origin, applet_id, release),
       name,
       size_bytes: release.size_bytes,
     };
@@ -374,6 +402,74 @@ mod tests {
       download_url: release_download_path(APPLET_ID, version),
       prerelease: false,
     }
+  }
+
+  #[tokio::test]
+  async fn exact_pending_download_requires_matching_retained_identity_and_size() {
+    let cache = tempfile::tempdir().unwrap();
+    let cache = cache.path();
+    let release = release("1.0.0");
+    let checkpoint = DownloadCheckpoint::new(cache, ORIGIN, &release);
+    let identity = || DownloadIdentity::for_release(ORIGIN, APPLET_ID, &release);
+    checkpoint
+      .prepare(ORIGIN, APPLET_ID, "Sample".into(), &release)
+      .await
+      .unwrap();
+    assert!(DownloadCheckpoint::pending_download(cache, &identity())
+      .await
+      .unwrap()
+      .is_none());
+    checkpoint.prepare_for_test(b"part").await;
+
+    let pending = DownloadCheckpoint::pending_download(cache, &identity())
+      .await
+      .unwrap()
+      .unwrap();
+    assert!(identity().matches_applet(ORIGIN, APPLET_ID));
+    assert!(!identity().matches_applet("https://other.example.invalid", APPLET_ID));
+    assert!(!identity().matches_applet(ORIGIN, "neighbor"));
+    assert_eq!(pending.downloaded_bytes_for(&release), Some(4));
+    assert!(pending
+      .downloaded_bytes_for(&StoreRelease {
+        size_bytes: release.size_bytes + 1,
+        ..release.clone()
+      })
+      .is_none());
+
+    for mismatched in [
+      DownloadIdentity {
+        origin: "https://other.example.invalid".into(),
+        ..identity()
+      },
+      DownloadIdentity {
+        applet_id: "neighbor".into(),
+        ..identity()
+      },
+      DownloadIdentity {
+        version: "1.0.1".into(),
+        ..identity()
+      },
+      DownloadIdentity {
+        channel: StoreChannel::Nightly,
+        ..identity()
+      },
+      DownloadIdentity {
+        sha256: "a".repeat(64),
+        ..identity()
+      },
+    ] {
+      assert!(DownloadCheckpoint::pending_download(cache, &mismatched)
+        .await
+        .unwrap()
+        .is_none());
+    }
+    assert!(DownloadCheckpoint::discard(cache, &identity())
+      .await
+      .unwrap());
+    assert!(DownloadCheckpoint::pending_download(cache, &identity())
+      .await
+      .unwrap()
+      .is_none());
   }
 
   #[tokio::test]

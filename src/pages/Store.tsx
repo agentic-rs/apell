@@ -240,14 +240,12 @@ export function Store({
                   {reviewing_download && (
                     <p>
                       {reviewing_download.name} · {reviewing_download.version} ·{' '}
-                      {storeChannelName(reviewing_download.channel)}
+                      {storeChannelName(reviewing_download.channel)} ·{' '}
+                      <bdi>{reviewing_download.origin}</bdi>
                     </p>
                   )}
                   <p>{state.detail_error}</p>
-                  <button
-                    disabled={state.config_checking || !!state.operation}
-                    onClick={state.retryDetail}
-                  >
+                  <button disabled={!!state.operation} onClick={state.retryDetail}>
                     Try again
                   </button>
                 </div>
@@ -261,7 +259,7 @@ export function Store({
           heading_ref={downloads_heading}
           return_id={download_return_id}
           return_ref={download_return}
-          reviews_disabled={state.config_checking || downloads.loading || !!state.operation}
+          reviews_disabled={downloads.loading || !!state.operation}
           onReview={(pending) => {
             rememberListScroll();
             setDownloadReturnId(storeDownloadId(pending));

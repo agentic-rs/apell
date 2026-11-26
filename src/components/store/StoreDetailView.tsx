@@ -139,7 +139,7 @@ export function StoreDetailView({
         ) : (
           <StoreIcon
             store_url={detail.store_url}
-            icon_url={installed_source ? null : detail.applet.icon_url}
+            icon_url={installed_source || reviewing_download ? null : detail.applet.icon_url}
             name={detail.applet.name}
             large
           />
@@ -151,9 +151,15 @@ export function StoreDetailView({
               ? `Installed · ${installed.version}${installed_channel ? ` · ${storeChannelName(installed_channel)}` : ''}${installed_origin ? ` · From ${installed_origin}` : ''}`
               : previous_source
                 ? `Saved data from ${previous_source}`
-                : 'An applet for Apell'}
+                : reviewing_download
+                  ? 'Paused download'
+                  : 'An applet for Apell'}
           </p>
-          {installed_source && <p>{detail.store_url}</p>}
+          {(installed_source || reviewing_download) && (
+            <p>
+              <bdi>{detail.store_url}</bdi>
+            </p>
+          )}
         </div>
       </div>
       <p className="store-description">{detail.applet.description}</p>
@@ -171,7 +177,7 @@ export function StoreDetailView({
         <div className="store-download-panel">
           {reviewing_download ? (
             <>
-              <strong>Paused download · {reviewing_download.version}</strong>
+              <strong>Release {reviewing_download.version}</strong>
               {!release && fresh && (
                 <p className="store-action-reason">
                   This release is no longer available to resume.

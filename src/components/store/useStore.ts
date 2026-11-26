@@ -4,6 +4,7 @@ import {
   getStoreCatalog,
   getStoreConfig,
   getStoreDetail,
+  getStoreDownloadDetail,
   getStoreUpdates,
   installStoreRelease,
   launchApplet,
@@ -73,7 +74,6 @@ export function useStore(
   const [detail_selection, setDetailSelection] = useState<DetailSelection>();
   const [address_open, setAddressOpen] = useState(false);
   const [initial_loading, setInitialLoading] = useState(true);
-  const [config_checking, setConfigChecking] = useState(true);
   const [catalog_loading, setCatalogLoading] = useState(false);
   const [updates_loading, setUpdatesLoading] = useState(false);
   const [detail_loading, setDetailLoading] = useState(false);
@@ -211,7 +211,7 @@ export function useStore(
   };
 
   const loadDetail = async (
-    { store_url, applet_id, installed_source }: DetailSelection,
+    { store_url, applet_id, installed_source, pending_download }: DetailSelection,
     just_installed?: AppletInstallResult,
   ) => {
     const request = ++scope.current.detail;
@@ -237,16 +237,14 @@ export function useStore(
       () => {},
     );
     try {
-      const result = await getStoreDetail(store_url, applet_id, installed_source);
+      const result = await (pending_download
+        ? getStoreDownloadDetail(pending_download)
+        : getStoreDetail(store_url, applet_id, installed_source));
       const requested = selection.current;
       if (isCurrent() && requested) {
         setDetail(result);
         markFresh(true);
-        if (
-          !installed_source &&
-          !requested.pending_download &&
-          cache.current?.store_url === store_url
-        ) {
+        if (!installed_source && !pending_download && cache.current?.store_url === store_url) {
           const remembered = requested.version ?? requested.remembered_version;
           const version = requested.channel
             ? reviewStoreRelease(result, requested).release?.version
@@ -265,7 +263,6 @@ export function useStore(
   const loadConfig = async () => {
     const request = ++scope.current.config;
     if (!config) setInitialLoading(true);
-    setConfigChecking(true);
     setConfigError('');
     try {
       const result = await getStoreConfig();
@@ -274,26 +271,12 @@ export function useStore(
       setConfig(result);
       if (result.store_url) void loadCatalog(result.store_url);
       const selected = selection.current;
-      if (selected?.pending_download) {
-        const refreshed = {
-          ...selected,
-          installed_source: selected.store_url !== result.store_url,
-        };
-        if (selected.installed_source !== refreshed.installed_source) setDetail(undefined);
-        selectDetail(refreshed);
-        void loadDetail(refreshed);
-      } else if (selected) {
-        void loadDetail(selected);
-      }
+      if (selected && !selected.pending_download) void loadDetail(selected);
     } catch (error) {
       if (scope.current.alive && scope.current.config === request) {
         if (!config) setConfigError(message(error));
-        if (selection.current?.pending_download && !config) {
-          setDetailError(message(error));
-          setDetailLoading(false);
-        } else if (selection.current) {
-          void loadDetail(selection.current);
-        }
+        const selected = selection.current;
+        if (selected && !selected.pending_download) void loadDetail(selected);
         if (config?.store_url) {
           setCatalogError(message(error));
           setCatalogLoading(false);
@@ -303,14 +286,12 @@ export function useStore(
     } finally {
       if (scope.current.alive && scope.current.config === request) {
         setInitialLoading(false);
-        setConfigChecking(false);
       }
     }
   };
 
   useLayoutEffect(() => {
     scope.current.alive = true;
-    setConfigChecking(true);
     markFresh(false);
     clearCatalogReview();
     setUpdates(savePreviousUpdates);
@@ -329,6 +310,8 @@ export function useStore(
     };
   }, []);
   useEffect(() => {
+    const selected = selection.current;
+    if (selected?.pending_download) void loadDetail(selected);
     void loadConfig();
   }, []);
   useEffect(() => {
@@ -369,23 +352,16 @@ export function useStore(
   };
 
   const reviewDownload = (pending_download: StorePendingDownload) => {
-    if (scope.current.operation || config_checking) return;
+    if (scope.current.operation) return;
     setActionError('');
     setStatus('');
     const requested = {
       store_url: pending_download.origin,
       applet_id: pending_download.applet_id,
-      installed_source: pending_download.origin !== current_url.current,
       pending_download,
     };
     selectDetail(requested);
     setDetail(undefined);
-    if (!config) {
-      markFresh(false);
-      setDetailLoading(false);
-      setDetailError(config_error || 'Couldn’t check the Store address.');
-      return;
-    }
     void loadDetail(requested);
   };
 
@@ -422,18 +398,14 @@ export function useStore(
     if (!fresh.current || !detail?.releases.includes(release) || !requested) return;
     const resume = !!requested.pending_download;
     const has_checkpoint = resume || (release.downloaded_bytes ?? 0) > 0;
-    if (
-      resume &&
-      reviewStoreRelease(detail, requested, requested.installed_source).release !== release
-    )
-      return;
+    if (resume && reviewStoreRelease(detail, requested).release !== release) return;
     const switching = release.action === 'switch_source';
     const switching_channel = release.action === 'switch_channel';
     if (requested.installed_source) {
       const same_channel_update =
         release.action === 'update' && storeReleaseChannel(release) === detail.installed_channel;
-      if (!same_channel_update && !(resume && switching_channel)) return;
-    } else if (requested.store_url !== current_url.current) return;
+      if (!same_channel_update) return;
+    } else if (!resume && requested.store_url !== current_url.current) return;
     if (switching && !detail.switch_snapshot) return;
     if (switching_channel && (!confirmed_channel_switch || !detail.channel_snapshot)) return;
     if (!switching && !switching_channel && !['install', 'update'].includes(release.action)) return;
@@ -474,15 +446,11 @@ export function useStore(
             (current) =>
               current && {
                 ...current,
-                releases: current.releases.map((option) => ({
-                  ...option,
-                  downloaded_bytes:
-                    option.version === release.version &&
-                    option.sha256 === release.sha256 &&
-                    installed.received_bytes > 0
-                      ? installed.received_bytes
-                      : undefined,
-                })),
+                releases: current.releases.map((option) =>
+                  option.version === release.version && option.sha256 === release.sha256
+                    ? { ...option, downloaded_bytes: installed.received_bytes || undefined }
+                    : option,
+                ),
               },
           );
           setStatus(
@@ -499,16 +467,19 @@ export function useStore(
               ? `Switched to ${storeChannelName(storeReleaseChannel(release))}.`
               : 'Installed.',
         );
+        const installed_source =
+          requested.installed_source || (resume && snapshot.store_url !== current_url.current);
         const next_selection = {
           ...requested,
+          installed_source,
           pending_download: undefined,
           version: requested.pending_download?.version ?? selection.current?.version,
-          channel: requested.installed_source ? undefined : storeReleaseChannel(release),
+          channel: installed_source ? undefined : storeReleaseChannel(release),
         };
         selectDetail(next_selection);
         void loadDetail(next_selection, installed);
         if (snapshot.store_url === current_url.current) void loadCatalog(snapshot.store_url);
-        if (requested.installed_source || updates) void loadUpdates();
+        if (installed_source || updates) void loadUpdates();
       } catch (error) {
         if (has_checkpoint && scope.current.alive) void loadDetail(requested);
         throw error;
@@ -576,7 +547,6 @@ export function useStore(
     address_open,
     setAddressOpen,
     initial_loading,
-    config_checking,
     catalog_loading,
     updates_loading,
     detail_loading,
@@ -633,8 +603,7 @@ export function useStore(
     },
     retryDetail: () => {
       if (!selection.current || scope.current.operation) return;
-      if (selection.current.pending_download && !config) void loadConfig();
-      else void loadDetail(selection.current);
+      void loadDetail(selection.current);
     },
     openApplet: () => {
       if (installed && selection.current?.applet_id === installed.applet_id) {
