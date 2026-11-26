@@ -35,11 +35,14 @@ const progress_text = {
 
 type TransferAction = keyof typeof progress_text;
 type TransferMode = 'export' | 'import';
+type ConnectionsStatus = 'loading' | 'failed' | 'ready';
 
 interface TransferProps {
   connections: LlmConnection[];
+  connections_status: ConnectionsStatus;
   providers: LlmProvider[];
   disabled: boolean;
+  onRetry: () => void;
   onImported: () => void;
 }
 
@@ -81,20 +84,51 @@ function PassphraseField({
   );
 }
 
+function ExportStatus({
+  connections_status,
+  disabled,
+  onRetry,
+}: Pick<TransferProps, 'connections_status' | 'disabled' | 'onRetry'>) {
+  if (connections_status === 'ready') return null;
+  if (connections_status === 'loading') {
+    return (
+      <p className="status" role="status">
+        Loading connections for export…
+      </p>
+    );
+  }
+  return (
+    <div>
+      <p className="status error" role="alert">
+        Couldn’t load connections for export.
+      </p>
+      <button type="button" disabled={disabled} onClick={onRetry}>
+        Try again
+      </button>
+    </div>
+  );
+}
+
 function ExportForm({
   connections,
+  connections_status,
   capabilities,
   busy,
   run,
   announce,
-}: TransferFormProps & { connections: LlmConnection[] }) {
+  onRetry,
+}: TransferFormProps & Pick<TransferProps, 'connections' | 'connections_status' | 'onRetry'>) {
   const [selected, setSelected] = useState(() =>
     connections.map((connection) => connection.connection_id),
   );
   const [passphrase, setPassphrase] = useState('');
   const [backup, setBackup] = useState<SettingsTransferExport>();
   const heading = useRef<HTMLHeadingElement>(null);
-  const can_export = selected.length > 0 && validPassphrase(passphrase);
+  const selected_ids = connections
+    .map((connection) => connection.connection_id)
+    .filter((id) => selected.includes(id));
+  const can_export =
+    connections_status === 'ready' && selected_ids.length > 0 && validPassphrase(passphrase);
   useEffect(() => {
     if (backup) heading.current?.focus();
   }, [backup]);
@@ -102,7 +136,7 @@ function ExportForm({
   const encrypt = () => {
     if (!can_export) return;
     void run('encrypt', async (operation) => {
-      const encrypted = await exportSettingsTransfer(selected, passphrase);
+      const encrypted = await exportSettingsTransfer(selected_ids, passphrase);
       if (!operation.isCurrent()) return;
       setPassphrase('');
       setBackup(encrypted);
@@ -210,6 +244,7 @@ function ExportForm({
             Use a shorter passphrase.
           </p>
         )}
+        <ExportStatus connections_status={connections_status} disabled={busy} onRetry={onRetry} />
         <button type="submit" className="primary" disabled={!can_export}>
           Encrypt backup
         </button>
@@ -401,10 +436,15 @@ function ImportForm({
 function TransferSheet({
   mode,
   connections,
+  connections_status,
   providers,
+  onRetry,
   onClose,
   onImported,
-}: Omit<TransferProps, 'disabled'> & { mode: TransferMode; onClose: () => void }) {
+}: Omit<TransferProps, 'disabled'> & {
+  mode: TransferMode;
+  onClose: () => void;
+}) {
   const [capabilities, setCapabilities] = useState<SettingsTransferCapabilities>();
   const [pending, setPending] = useState<TransferAction>();
   const [feedback, setFeedback] = useState<{ text: string; failed: boolean }>();
@@ -456,7 +496,12 @@ function TransferSheet({
       dismissible={pending !== 'apply'}
     >
       {mode === 'export' ? (
-        <ExportForm {...form_props} connections={connections} />
+        <ExportForm
+          {...form_props}
+          connections={connections}
+          connections_status={connections_status}
+          onRetry={onRetry}
+        />
       ) : (
         <ImportForm
           {...form_props}
@@ -482,7 +527,14 @@ function TransferSheet({
   );
 }
 
-export function SettingsTransfer({ connections, providers, disabled, onImported }: TransferProps) {
+export function SettingsTransfer({
+  connections,
+  connections_status,
+  providers,
+  disabled,
+  onRetry,
+  onImported,
+}: TransferProps) {
   const [mode, setMode] = useState<TransferMode>();
   return (
     <section className="panel settings-transfer" aria-labelledby="settings-backup">
@@ -496,18 +548,21 @@ export function SettingsTransfer({ connections, providers, disabled, onImported 
         </button>
         <button
           type="button"
-          disabled={disabled || !connections.length}
+          disabled={disabled || connections_status !== 'ready' || !connections.length}
           onClick={() => setMode('export')}
         >
           Export
         </button>
       </div>
+      <ExportStatus connections_status={connections_status} disabled={disabled} onRetry={onRetry} />
       {mode && (
         <TransferSheet
           key={mode}
           mode={mode}
           connections={connections}
+          connections_status={connections_status}
           providers={providers}
+          onRetry={onRetry}
           onClose={() => setMode(undefined)}
           onImported={onImported}
         />

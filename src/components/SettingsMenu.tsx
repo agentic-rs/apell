@@ -62,8 +62,8 @@ function SettingsRow({
 type AccountSummary = {
   detail: string;
   account_session_id?: string;
-  verification?: 'Verified device' | 'Unverified device';
-  attention?: string;
+  model?: ConfigSyncStatus | null;
+  keys?: LocalKeySyncStatus | null;
 };
 
 const checking_account: AccountSummary = { detail: 'Checking sign-in…' };
@@ -120,29 +120,20 @@ export function SettingsMenu({
           ? { ...current, detail }
           : { detail, account_session_id },
       );
-      const [model, keys] = await Promise.allSettled([
-        getConfigSyncStatus(account_session_id),
-        getLocalKeySyncStatus(account_session_id),
-      ]);
-      if (alive && request === sequence) {
-        const key_status = keys.status === 'fulfilled' ? keys.value : undefined;
-        const attention = accountSyncAttention(
-          model.status === 'fulfilled' ? model.value : undefined,
-          key_status,
-          model.status === 'rejected' || keys.status === 'rejected',
+      const apply = (partial: Pick<AccountSummary, 'model' | 'keys'>) => {
+        if (!alive || request !== sequence) return;
+        setAccountSummary((current) =>
+          current.account_session_id === account_session_id ? { ...current, ...partial } : current,
         );
-        setAccountSummary({
-          detail,
-          account_session_id,
-          verification:
-            key_status?.state === 'verified'
-              ? 'Verified device'
-              : key_status?.state === 'unverified'
-                ? 'Unverified device'
-                : undefined,
-          attention,
-        });
-      }
+      };
+      void getConfigSyncStatus(account_session_id).then(
+        (model) => apply({ model }),
+        () => apply({ model: null }),
+      );
+      void getLocalKeySyncStatus(account_session_id).then(
+        (keys) => apply({ keys }),
+        () => apply({ keys: null }),
+      );
     };
     const reload = () => {
       if (alive) void update();
@@ -197,6 +188,18 @@ export function SettingsMenu({
     : loading
       ? 'Loading connections…'
       : 'Connections unavailable';
+  const { model, keys } = account_summary;
+  const verification =
+    keys?.state === 'verified'
+      ? 'Verified device'
+      : keys?.state === 'unverified'
+        ? 'Unverified device'
+        : undefined;
+  const attention = accountSyncAttention(
+    model ?? undefined,
+    keys ?? undefined,
+    model === null || keys === null,
+  );
 
   return (
     <nav className="panel settings-menu" aria-label="Settings sections">
@@ -206,8 +209,8 @@ export function SettingsMenu({
           icon="account"
           title="Apell Account"
           detail={account_summary.detail}
-          detail_note={account_summary.verification}
-          attention={account_summary.attention}
+          detail_note={verification}
+          attention={attention}
           onOpen={onOpen}
         />
       </div>

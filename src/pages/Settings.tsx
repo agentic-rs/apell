@@ -28,6 +28,7 @@ export function Settings() {
   const [busy, setBusy] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [reload_requested, setReloadRequested] = useState(false);
+  const [load_error, setLoadError] = useState('');
   const [status, setStatus] = useState('');
   const scope = useRef(new OperationScope());
   const previous_section = useRef<SettingsSection | null>(null);
@@ -70,12 +71,13 @@ export function Settings() {
     const operation = scope.current.start();
     if (!operation) return;
     setLoading(true);
+    setLoadError('');
     setStatus('');
     try {
       const result = await getSettings();
       if (operation.isCurrent()) setSettings(result);
     } catch (error) {
-      if (operation.isCurrent()) setStatus(message(error));
+      if (operation.isCurrent()) setLoadError(message(error));
     } finally {
       if (operation.isCurrent()) {
         operation.finish();
@@ -108,7 +110,9 @@ export function Settings() {
     }
   }, [reload_requested, editor, loading, busy]);
 
-  const editing_disabled = busy || loading || syncing;
+  const settings_mutation_pending = busy || syncing;
+  const editing_disabled = loading || settings_mutation_pending;
+  const connection_error = status || load_error;
 
   const editConnection = (connection: LlmConnection | undefined, trigger_id: string) => {
     editor_return.current = { id: trigger_id, scroll: window.scrollY };
@@ -246,9 +250,9 @@ export function Settings() {
           })}
         </div>
       )}
-      {status && (
+      {connection_error && (
         <p className="status connection-status error" role="alert">
-          {status}
+          {connection_error}
         </p>
       )}
       {!loading && !settings && (
@@ -289,7 +293,7 @@ export function Settings() {
             settings={settings}
             loading={loading}
             disabled={editing_disabled}
-            error={status}
+            error={connection_error}
             onActivate={(id) => void activate(id)}
             onEdit={editConnection}
             onRetry={() => void load()}
@@ -299,7 +303,7 @@ export function Settings() {
       <Activity mode={section === 'account' ? 'visible' : 'hidden'}>
         <AccountSync
           providers={settings?.providers ?? []}
-          disabled={editing_disabled || !settings}
+          disabled={settings_mutation_pending}
           onApplied={() => setReloadRequested(true)}
           onSyncBusyChange={setSyncing}
           onOpenConnections={() => {
@@ -311,9 +315,11 @@ export function Settings() {
       {section === 'backup' && (
         <SettingsTransfer
           connections={settings?.connections ?? []}
+          connections_status={loading ? 'loading' : load_error || !settings ? 'failed' : 'ready'}
           providers={settings?.providers ?? []}
-          disabled={editing_disabled || !settings}
-          onImported={() => void load()}
+          disabled={settings_mutation_pending}
+          onRetry={() => void load()}
+          onImported={() => setReloadRequested(true)}
         />
       )}
       {visited_permissions && (
