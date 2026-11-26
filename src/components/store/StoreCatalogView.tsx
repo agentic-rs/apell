@@ -38,7 +38,11 @@ export function StoreCatalogView({
   return (
     <section className="store-catalog" aria-label="Applet store" aria-busy={loading}>
       <div className="store-toolbar">
-        <p>Find a new applet. Keep your favorites up to date.</p>
+        <p>
+          {updates_only
+            ? 'See updates for applets installed from this Store.'
+            : 'Find a new applet. Keep your favorites up to date.'}
+        </p>
         <div className="store-toolbar-actions">
           <button
             className="icon-button"
@@ -78,34 +82,53 @@ export function StoreCatalogView({
           Updates{update_count ? ` (${update_count})` : ''}
         </button>
       </div>
+      {updates_only && (
+        <p className="store-update-scope">
+          For an applet from another Store, open its menu and choose{' '}
+          <strong>About this applet</strong>, then <strong>Check for updates</strong>.
+        </p>
+      )}
       {loading && (
-        <p className={catalog ? 'visually-hidden' : 'status'} role="status">
-          Checking the store…
+        <p className={catalog && !updates_only ? 'visually-hidden' : 'status'} role="status">
+          {updates_only ? 'Checking this Store for updates…' : 'Checking the store…'}
         </p>
       )}
       {error && (
         <div className="store-feedback" role="alert">
-          <strong>{catalog ? 'Couldn’t refresh the store' : 'Couldn’t load the store'}</strong>
+          <strong>
+            {updates_only
+              ? 'Couldn’t check for updates'
+              : catalog
+                ? 'Couldn’t refresh the store'
+                : 'Couldn’t load the store'}
+          </strong>
+          {updates_only && (
+            <p>
+              {applets.length
+                ? 'Shown updates are from the last successful check.'
+                : 'Update status is unknown.'}
+            </p>
+          )}
           <p>{error}</p>
           <button disabled={loading} onClick={onRefresh}>
             Try again
           </button>
         </div>
       )}
-      {!loading && !error && !applets.length && (
+      {!loading && !error && !applets.length && (!updates_only || catalog) && (
         <div className="store-empty">
           <h2>
             {query.trim()
               ? 'No matching applets'
               : updates_only
-                ? 'You’re up to date'
+                ? 'No updates from this Store'
                 : 'No applets yet'}
           </h2>
           <p>
             {query.trim()
               ? 'Try another name or a shorter search.'
               : updates_only
-                ? 'Updates for each applet’s installed channel will appear here.'
+                ? 'No newer releases were found on the installed channels.'
                 : 'Published applets will appear here.'}
           </p>
         </div>
