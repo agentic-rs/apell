@@ -45,6 +45,9 @@ to use its saved files and settings again.
 
 ## Build and test
 
+Use the [local Docker workflow](docs/local-development.md) to iterate on the
+Store, Account, and encrypted sync without a production deployment.
+
 ```sh
 pnpm build
 pnpm test

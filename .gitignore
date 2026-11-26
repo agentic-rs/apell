@@ -19,3 +19,4 @@ src/generated/
 .pnpm-store/
 store-data/
 store/.local/
+/deploy/local/.state/

@@ -289,6 +289,10 @@ gh secret set APELL_SHELL_BUILD_PROFILE < deploy/account/.env.shell-pilot
 
 ## Verify locally
 
+For day-to-day changes, the [local Docker workflow](local-development.md) runs
+the Store and key relay with a synthetic Account issuer. It uses local data and
+credentials. The following smoke test checks the separate Logto deployment.
+
 Run `bun deploy/account/smoke.ts` from the repository root with Bun and Docker
 Compose installed. Use the isolated smoke test before changing production
 configuration, then verify the three real sign-in methods in a browser before
