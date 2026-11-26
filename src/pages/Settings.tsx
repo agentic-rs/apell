@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState, type MouseEvent } from 'react';
+import { Activity, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useBackAction } from '../lib/backNavigation';
 import { activateConnection, getSettings, message, onLlmSettingsChanged } from '../lib/tauri';
 import type { LlmConnection, LlmSettings } from '../lib/types';
 import { ConnectionEditor } from '../components/providers/ConnectionEditor';
@@ -7,27 +8,10 @@ import { Icon } from '../components/Icon';
 import { AccountSync } from '../components/AccountSync';
 import { AppletPermissions } from '../components/AppletPermissions';
 import { SettingsTransfer } from '../components/SettingsTransfer';
-
-const settings_sections = [
-  { id: 'settings-connections', label: 'Connections' },
-  { id: 'settings-account', label: 'Account' },
-  { id: 'settings-backup', label: 'Backup' },
-  { id: 'settings-permissions', label: 'Permissions' },
-];
-
-function jumpToSection(event: MouseEvent<HTMLAnchorElement>) {
-  const heading = document.getElementById(event.currentTarget.hash.slice(1));
-  const nav = event.currentTarget.closest('nav');
-  if (!heading || !nav) return;
-  event.preventDefault();
-  const pinned_top = Number.parseFloat(window.getComputedStyle(nav).top);
-  heading.focus({ preventScroll: true });
-  window.scrollTo({
-    top: window.scrollY + heading.getBoundingClientRect().top - nav.offsetHeight - pinned_top - 12,
-  });
-}
+import { SettingsMenu, type SettingsSection } from '../components/SettingsMenu';
 
 export function Settings() {
+  const [section, setSection] = useState<SettingsSection | null>(null);
   const [settings, setSettings] = useState<LlmSettings>();
   const [editor, setEditor] = useState<{ connection?: LlmConnection }>();
   const [loading, setLoading] = useState(true);
@@ -36,6 +20,20 @@ export function Settings() {
   const [reload_requested, setReloadRequested] = useState(false);
   const [status, setStatus] = useState('');
   const scope = useRef(new OperationScope());
+  const previous_section = useRef<SettingsSection | null>(null);
+  const menu_scroll = useRef(0);
+
+  useBackAction(10, section !== null, () => {
+    if (!busy && !syncing) setSection(null);
+  });
+  useLayoutEffect(() => {
+    const previous = previous_section.current;
+    if (previous === section) return;
+    previous_section.current = section;
+    const target = section ? `settings-${section}` : `settings-open-${previous}`;
+    window.scrollTo(0, section ? 0 : menu_scroll.current);
+    document.getElementById(target)?.focus({ preventScroll: true });
+  }, [section]);
 
   const load = async () => {
     const operation = scope.current.start();
@@ -85,62 +83,61 @@ export function Settings() {
 
   const editing_disabled = busy || loading || syncing;
 
-  if (editor && settings)
-    return (
-      <ConnectionEditor
-        connection={editor.connection}
-        providers={settings.providers}
-        active_connection_id={settings.active_connection_id}
-        onBack={() => {
-          setEditor(undefined);
-          setStatus('');
-        }}
-        onSaved={(connection, previous_id) =>
-          setSettings((current) => {
-            if (!current) return current;
-            return {
+  const connections_editor = editor && settings && (
+    <ConnectionEditor
+      connection={editor.connection}
+      providers={settings.providers}
+      active_connection_id={settings.active_connection_id}
+      onBack={() => {
+        setEditor(undefined);
+        setStatus('');
+      }}
+      onSaved={(connection, previous_id) =>
+        setSettings((current) => {
+          if (!current) return current;
+          return {
+            ...current,
+            active_connection_id:
+              current.active_connection_id === previous_id
+                ? connection.connection_id
+                : current.active_connection_id,
+            connections: previous_id
+              ? current.connections.map((item) =>
+                  item.connection_id === previous_id ? connection : item,
+                )
+              : [...current.connections, connection],
+          };
+        })
+      }
+      onActivated={(connection_id) =>
+        setSettings(
+          (current) =>
+            current && {
               ...current,
+              active_connection_id: connection_id,
+            },
+        )
+      }
+      onDeleted={(connection_id) => {
+        setSettings(
+          (current) =>
+            current && {
+              ...current,
+              connections: current.connections.filter(
+                (item) => item.connection_id !== connection_id,
+              ),
               active_connection_id:
-                current.active_connection_id === previous_id
-                  ? connection.connection_id
+                current.active_connection_id === connection_id
+                  ? null
                   : current.active_connection_id,
-              connections: previous_id
-                ? current.connections.map((item) =>
-                    item.connection_id === previous_id ? connection : item,
-                  )
-                : [...current.connections, connection],
-            };
-          })
-        }
-        onActivated={(connection_id) =>
-          setSettings(
-            (current) =>
-              current && {
-                ...current,
-                active_connection_id: connection_id,
-              },
-          )
-        }
-        onDeleted={(connection_id) => {
-          setSettings(
-            (current) =>
-              current && {
-                ...current,
-                connections: current.connections.filter(
-                  (item) => item.connection_id !== connection_id,
-                ),
-                active_connection_id:
-                  current.active_connection_id === connection_id
-                    ? null
-                    : current.active_connection_id,
-              },
-          );
-          setEditor(undefined);
-          setStatus('');
-          void load();
-        }}
-      />
-    );
+            },
+        );
+        setEditor(undefined);
+        setStatus('');
+        void load();
+      }}
+    />
+  );
 
   const connections = (
     <section
@@ -148,20 +145,9 @@ export function Settings() {
       aria-labelledby="settings-connections"
       aria-busy={editing_disabled}
     >
-      <div className="settings-heading">
-        <h2 id="settings-connections" className="settings-section-title" tabIndex={-1}>
-          Connections
-        </h2>
-        <button
-          type="button"
-          className="icon-button"
-          aria-label="Add connection"
-          disabled={editing_disabled || !settings?.providers.length}
-          onClick={() => setEditor({})}
-        >
-          <Icon name="add" />
-        </button>
-      </div>
+      <h2 id="settings-connections" className="settings-section-title" tabIndex={-1}>
+        Model connections
+      </h2>
       {settings && (
         <p>
           {!settings.connections.length
@@ -280,7 +266,7 @@ export function Settings() {
         <button
           type="button"
           className="add-connection"
-          disabled={editing_disabled}
+          disabled={editing_disabled || !settings.providers.length}
           onClick={() => setEditor({})}
         >
           <Icon name="add" /> Add connection
@@ -291,27 +277,34 @@ export function Settings() {
 
   return (
     <>
-      <nav className="settings-shortcuts" aria-label="Settings sections">
-        {settings_sections.map(({ id, label }) => (
-          <a key={id} href={`#${id}`} onClick={jumpToSection}>
-            {label}
-          </a>
-        ))}
-      </nav>
-      {connections}
-      <AccountSync
-        providers={settings?.providers ?? []}
-        disabled={editing_disabled || !settings}
-        onApplied={() => setReloadRequested(true)}
-        onSyncBusyChange={setSyncing}
-      />
-      <SettingsTransfer
-        connections={settings?.connections ?? []}
-        providers={settings?.providers ?? []}
-        disabled={editing_disabled || !settings}
-        onImported={() => void load()}
-      />
-      <AppletPermissions />
+      {section === null && (
+        <SettingsMenu
+          settings={settings}
+          loading={loading}
+          onOpen={(next) => {
+            menu_scroll.current = window.scrollY;
+            setSection(next);
+          }}
+        />
+      )}
+      {section === 'connections' && (connections_editor || connections)}
+      <Activity mode={section === 'account' ? 'visible' : 'hidden'}>
+        <AccountSync
+          providers={settings?.providers ?? []}
+          disabled={editing_disabled || !settings}
+          onApplied={() => setReloadRequested(true)}
+          onSyncBusyChange={setSyncing}
+        />
+      </Activity>
+      {section === 'backup' && (
+        <SettingsTransfer
+          connections={settings?.connections ?? []}
+          providers={settings?.providers ?? []}
+          disabled={editing_disabled || !settings}
+          onImported={() => void load()}
+        />
+      )}
+      {section === 'permissions' && <AppletPermissions />}
     </>
   );
 }

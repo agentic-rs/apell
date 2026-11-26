@@ -26,7 +26,7 @@ const permission_labels: Record<string, string> = {
 const offline_status: Record<string, string> = {
   http: 'Off',
   websocket: 'Off',
-  llm: 'Local only',
+  llm: 'Off',
   resources: 'Local only',
   speech: 'On-device only',
 };

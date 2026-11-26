@@ -189,13 +189,7 @@ pub async fn shell_command(
       };
       blocking(move || {
         let host = app.state::<Host>();
-        let available = match permission {
-          ManagedPermission::Microphone => crate::media::recording_available(),
-          ManagedPermission::Camera | ManagedPermission::Location => {
-            tauri_plugin_apell_sensors::available()
-          }
-        };
-        if !available {
+        if !permission.available() {
           host.view_permission(&session_id, &view_id, permission, None)?;
           if update.is_some() {
             return Err("This permission is unavailable on this platform.".into());

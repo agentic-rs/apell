@@ -89,11 +89,14 @@ export function AccountSync({
   const [busy, setBusy] = useState<Action>();
   const [keys_busy, setKeysBusy] = useState(false);
   const [conflict, setConflict] = useState<SyncConflict>();
+  const [reviewing, setReviewing] = useState(false);
   const [outcome, setOutcome] = useState('');
   const [read_error, setReadError] = useState('');
   const [action_error, setActionError] = useState('');
   const scope = useRef(new OperationScope());
   const read_version = useRef(0);
+  const visible = useRef(false);
+  const sync_account = useRef<{ email: string | null } | undefined>(undefined);
   const onKeySyncBusyChange = useCallback(
     (busy: boolean) => {
       setKeysBusy(busy);
@@ -107,16 +110,20 @@ export function AccountSync({
     try {
       const current = await getAccountStatus();
       if (read_version.current !== version) return;
+      const email = current.state === 'signed_in' ? current.email : undefined;
+      if (sync_account.current?.email !== email) {
+        sync_account.current = email === undefined ? undefined : { email };
+        setSync(undefined);
+        clearConflict();
+        setOutcome('');
+        setActionError('');
+      }
       setAccount(current);
       if (current.state === 'signed_in') {
         const synced = await getConfigSyncStatus();
         if (read_version.current !== version) return;
         setSync(synced);
-        if (synced.state !== 'ready') setConflict(undefined);
-      } else {
-        setSync(undefined);
-        setConflict(undefined);
-        setOutcome('');
+        if (synced.state !== 'ready') clearConflict();
       }
       setReadError('');
     } catch (error) {
@@ -127,8 +134,7 @@ export function AccountSync({
   useEffect(() => {
     let active = true;
     let stop: (() => void) | undefined;
-    setBusy(undefined);
-    setConflict(undefined);
+    visible.current = true;
     const reload = () => {
       if (active) void refresh();
     };
@@ -147,12 +153,19 @@ export function AccountSync({
     );
     return () => {
       active = false;
+      visible.current = false;
       window.removeEventListener('focus', reload);
       stop?.();
       read_version.current += 1;
-      scope.current.cancel();
+      // Activity can hide this panel while a native sync is still in progress.
+      // Let that operation finish and retain its outcome for the next visit.
     };
   }, [onSyncBusyChange]);
+
+  function clearConflict() {
+    setConflict(undefined);
+    setReviewing(false);
+  }
 
   async function perform(action: Action, run: (isCurrent: () => boolean) => Promise<void>) {
     if (keys_busy) return;
@@ -163,11 +176,14 @@ export function AccountSync({
     setActionError('');
     setOutcome('');
     const changes_settings = action === 'sync' || action === 'toggle';
+    const started_account = sync_account.current;
+    const isCurrent = () =>
+      operation.isCurrent() && (!changes_settings || started_account === sync_account.current);
     if (changes_settings) onSyncBusyChange(true);
     try {
-      await run(operation.isCurrent);
+      await run(isCurrent);
     } catch (error) {
-      if (operation.isCurrent()) setActionError(message(error));
+      if (isCurrent()) setActionError(message(error));
     } finally {
       if (changes_settings) onSyncBusyChange(false);
       if (operation.isCurrent()) {
@@ -192,7 +208,7 @@ export function AccountSync({
       const next = await setConfigSyncEnabled(enabled);
       if (!isCurrent()) return;
       setSync(next);
-      if (!enabled) setConflict(undefined);
+      if (next.state !== 'ready') clearConflict();
       if (enabled && next.state === 'ready' && !next.last_synced_at) {
         setBusy('sync');
         await syncSettings(isCurrent);
@@ -213,9 +229,10 @@ export function AccountSync({
     setSync(result.status);
     if (result.state === 'conflict') {
       setConflict(result);
+      setReviewing(visible.current);
       return;
     }
-    setConflict(undefined);
+    clearConflict();
     setOutcome(sync_messages[result.state]);
   }
 
@@ -223,6 +240,8 @@ export function AccountSync({
   const last_sync_label =
     last_sync && Number.isFinite(last_sync.getTime()) ? last_sync.toLocaleString() : undefined;
   const error = action_error || read_error || account?.error;
+  const pending_conflict = account?.state === 'signed_in' && sync?.state === 'ready' && conflict;
+  const review_open = !!pending_conflict && reviewing;
 
   return (
     <section
@@ -259,44 +278,53 @@ export function AccountSync({
       )}
       {account?.state === 'signed_in' && (
         <>
-          <div className="account-sync-identity">
-            <span>{account.email ?? 'Signed in'}</span>
-            <button
-              type="button"
-              disabled={!!busy || keys_busy}
-              onClick={() => void changeAccount('sign_out', signOutOfAccount)}
-            >
-              {busy === 'sign_out' ? 'Signing out…' : 'Sign out'}
-            </button>
-          </div>
-          {sync && sync.state !== 'disabled' && (
-            <section className="account-model-sync" aria-label="Model settings sync">
-              <div className="account-model-sync-row">
-                <label className="check">
-                  <input
-                    type="checkbox"
-                    checked={sync.state === 'ready'}
-                    disabled={disabled || !!busy || keys_busy}
-                    onChange={(event) => void toggleSync(event.target.checked)}
-                  />
-                  Sync model settings
-                </label>
-                <span className="account-model-sync-state" role="status">
-                  {busy === 'sync'
-                    ? 'Syncing…'
-                    : busy === 'toggle'
-                      ? 'Updating…'
-                      : sync.state === 'ready'
-                        ? 'On'
-                        : 'Off'}
-                </span>
-              </div>
-              <p>
-                Sync built-in provider connections and model choices. Verified devices use these
-                connections to restore their API keys.
-              </p>
-              {sync.state === 'ready' && (
+          <p className="account-sync-identity">{account.email ?? 'Signed in'}</p>
+          <section className="account-model-sync" aria-labelledby="account-model-settings-title">
+            <h3 id="account-model-settings-title">Model settings</h3>
+            {!sync && !read_error && <p role="status">Checking sync…</p>}
+            {sync?.state === 'disabled' && <p>Settings sync is unavailable in this build.</p>}
+            {sync && sync.state !== 'disabled' && (
+              <>
                 <div className="account-model-sync-row">
+                  <label className="check">
+                    <input
+                      type="checkbox"
+                      checked={sync.state === 'ready'}
+                      disabled={disabled || !!busy || keys_busy}
+                      onChange={(event) => void toggleSync(event.target.checked)}
+                    />
+                    Sync model settings
+                  </label>
+                  <span className="account-model-sync-state" role="status">
+                    {busy === 'sync'
+                      ? 'Syncing…'
+                      : busy === 'toggle'
+                        ? 'Updating…'
+                        : sync.state === 'ready'
+                          ? 'On'
+                          : 'Off'}
+                  </span>
+                </div>
+                <p>
+                  Sync built-in provider connections and model choices. Verified devices use these
+                  connections to restore their API keys.
+                </p>
+              </>
+            )}
+            {sync?.state === 'ready' && (
+              <>
+                {pending_conflict && <p role="status">Model settings need review.</p>}
+                <div className="account-sync-actions">
+                  {pending_conflict && (
+                    <button
+                      type="button"
+                      className="primary"
+                      disabled={disabled || !!busy || keys_busy}
+                      onClick={() => setReviewing(true)}
+                    >
+                      Review changes
+                    </button>
+                  )}
                   <button
                     type="button"
                     disabled={disabled || !!busy || keys_busy}
@@ -304,31 +332,37 @@ export function AccountSync({
                   >
                     Sync now
                   </button>
-                  {last_sync_label && (
-                    <p>
-                      Cloud updated{' '}
-                      <time dateTime={sync.last_synced_at ?? undefined}>{last_sync_label}</time>
-                    </p>
-                  )}
                 </div>
-              )}
-              {outcome && (
-                <p className="status" role="status">
-                  {outcome}
-                </p>
-              )}
-            </section>
-          )}
-          {!sync && !read_error && <p role="status">Checking sync…</p>}
-          {sync?.state === 'disabled' && <p>Settings sync is unavailable in this build.</p>}
+                {last_sync_label && (
+                  <p>
+                    Cloud updated{' '}
+                    <time dateTime={sync.last_synced_at ?? undefined}>{last_sync_label}</time>
+                  </p>
+                )}
+              </>
+            )}
+            {outcome && (
+              <p className="status" role="status">
+                {outcome}
+              </p>
+            )}
+          </section>
           <EncryptedKeySync
-            disabled={disabled || !!busy || !!conflict}
+            disabled={disabled || !!busy || review_open}
             onApplied={onApplied}
             onBusyChange={onKeySyncBusyChange}
           />
+          <button
+            className="account-sign-out"
+            type="button"
+            disabled={!!busy || keys_busy}
+            onClick={() => void changeAccount('sign_out', signOutOfAccount)}
+          >
+            {busy === 'sign_out' ? 'Signing out…' : 'Sign out'}
+          </button>
         </>
       )}
-      {error && !conflict && account?.state !== 'signing_in' && (
+      {error && !review_open && account?.state !== 'signing_in' && (
         <p className="status error" role="alert">
           {error}
         </p>
@@ -338,12 +372,12 @@ export function AccountSync({
           Check again
         </button>
       )}
-      {conflict && (
+      {pending_conflict && review_open && (
         <Sheet
           open
           title="Choose settings to keep"
           onClose={() => {
-            setConflict(undefined);
+            setReviewing(false);
             setActionError('');
           }}
           dismissible={!busy}
@@ -351,10 +385,14 @@ export function AccountSync({
           <div className="transfer-form">
             <p>This device and your account have different saved model settings.</p>
             <div className="sync-versions">
-              <ConfigVersion title="This device" summary={conflict.local} providers={providers} />
+              <ConfigVersion
+                title="This device"
+                summary={pending_conflict.local}
+                providers={providers}
+              />
               <ConfigVersion
                 title="Synced settings"
-                summary={conflict.cloud}
+                summary={pending_conflict.cloud}
                 providers={providers}
               />
             </div>
@@ -372,7 +410,10 @@ export function AccountSync({
                 type="button"
                 disabled={disabled || !!busy}
                 onClick={() =>
-                  void runSync({ resolution: 'keep_local', conflict_id: conflict.conflict_id })
+                  void runSync({
+                    resolution: 'keep_local',
+                    conflict_id: pending_conflict.conflict_id,
+                  })
                 }
               >
                 Keep this device
@@ -381,7 +422,10 @@ export function AccountSync({
                 type="button"
                 disabled={disabled || !!busy}
                 onClick={() =>
-                  void runSync({ resolution: 'use_cloud', conflict_id: conflict.conflict_id })
+                  void runSync({
+                    resolution: 'use_cloud',
+                    conflict_id: pending_conflict.conflict_id,
+                  })
                 }
               >
                 Use synced settings

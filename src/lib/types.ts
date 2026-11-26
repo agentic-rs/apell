@@ -48,7 +48,8 @@ export type ManagedPermission = 'microphone' | 'camera' | 'location';
 export type PermissionMode = 'ask' | 'remembered';
 export interface PermissionGrant {
   permission: ManagedPermission;
-  access: PermissionMode | 'previous_package';
+  access: PermissionMode | 'previous_package' | 'undeclared' | 'unverified_package';
+  available: boolean;
 }
 export interface AppletSession {
   session_id: string;

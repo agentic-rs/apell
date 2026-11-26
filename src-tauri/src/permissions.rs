@@ -32,6 +32,13 @@ impl ManagedPermission {
       Self::Location => "location",
     }
   }
+
+  pub fn available(self) -> bool {
+    match self {
+      Self::Microphone => crate::media::recording_available(),
+      Self::Camera | Self::Location => tauri_plugin_apell_sensors::available(),
+    }
+  }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Serialize)]
@@ -40,6 +47,8 @@ enum PermissionAccess {
   Ask,
   Remembered,
   PreviousPackage,
+  Undeclared,
+  UnverifiedPackage,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -186,13 +195,20 @@ impl PermissionGrants {
     let mut grants = Vec::new();
     for permission in ManagedPermission::ALL {
       let access = self.access(permission, applet_id, source)?;
-      if access != PermissionAccess::Ask
-        || declared
-          .iter()
-          .any(|group| group == permission.manifest_group())
-      {
-        grants.push(GrantSummary { permission, access });
-      }
+      let declared = declared
+        .iter()
+        .any(|group| group == permission.manifest_group());
+      let access = match access {
+        PermissionAccess::Ask if !declared => continue,
+        _ if source.is_none() => PermissionAccess::UnverifiedPackage,
+        PermissionAccess::Remembered if !declared => PermissionAccess::Undeclared,
+        access => access,
+      };
+      grants.push(GrantSummary {
+        permission,
+        access,
+        available: permission.available(),
+      });
     }
     Ok(grants)
   }
@@ -202,6 +218,7 @@ impl PermissionGrants {
 struct GrantSummary {
   permission: ManagedPermission,
   access: PermissionAccess,
+  available: bool,
 }
 
 pub async fn list(host: &Host) -> Result<Value, String> {
@@ -399,17 +416,37 @@ mod tests {
     grants.remember(Camera, applet_id, &source).unwrap();
     assert!(!grants.remembered(Location, applet_id, &source).unwrap());
     assert!(!grants.remembered(Microphone, applet_id, &source).unwrap());
+    let sensors_available = cfg!(any(target_os = "ios", target_os = "android"));
     assert_eq!(
       json!(grants
         .summary(applet_id, Some(&updated), &["location".into()])
         .unwrap()),
       json!([
-        {"permission":"camera","access":"previous_package"},
-        {"permission":"location","access":"ask"},
+        {"permission":"camera","access":"previous_package","available":sensors_available},
+        {"permission":"location","access":"ask","available":sensors_available},
       ]),
+    );
+    assert_eq!(
+      json!(grants
+        .summary(applet_id, Some(&source), &["camera".into()])
+        .unwrap()),
+      json!([{"permission":"camera","access":"remembered","available":sensors_available}]),
+    );
+    assert_eq!(
+      json!(grants.summary(applet_id, Some(&source), &[]).unwrap()),
+      json!([{"permission":"camera","access":"undeclared","available":sensors_available}]),
+    );
+    assert_eq!(
+      json!(grants.summary(applet_id, None, &[]).unwrap()),
+      json!([{"permission":"camera","access":"unverified_package","available":sensors_available}]),
     );
     grants.remember(Location, applet_id, &updated).unwrap();
     grants.forget(Camera, applet_id).unwrap();
+    assert!(grants
+      .summary(applet_id, Some(&source), &[])
+      .unwrap()
+      .iter()
+      .all(|grant| grant.permission != Camera));
     assert!(!grants.remembered(Camera, applet_id, &source).unwrap());
     assert!(grants.remembered(Location, applet_id, &updated).unwrap());
   }

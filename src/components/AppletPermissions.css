@@ -1,0 +1,60 @@
+.applet-permission-groups {
+  display: grid;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.applet-permission-group {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.applet-permission-group h3 {
+  margin: 0;
+  padding: 10px 14px;
+  background: var(--subtle);
+  font-size: 0.875rem;
+  overflow-wrap: anywhere;
+}
+
+.applet-permission-group dl {
+  margin: 0;
+}
+
+.applet-permission-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+  align-items: center;
+  gap: 8px 12px;
+  min-height: 48px;
+  padding: 2px 14px;
+  border-top: 1px solid var(--line);
+  font-size: 0.875rem;
+}
+
+.applet-permission-row dd {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px 12px;
+  margin: 0;
+  text-align: end;
+}
+
+.applet-permission-row dt {
+  overflow-wrap: anywhere;
+}
+
+.applet-permission-state {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.applet-permission-reset {
+  min-height: 44px;
+}
