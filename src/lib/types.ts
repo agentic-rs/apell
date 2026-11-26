@@ -205,23 +205,31 @@ export interface ConfigSyncStatus {
   state: 'disabled' | 'off' | 'ready';
   last_synced_at: string | null;
 }
+export interface ConfigSyncConnection {
+  connection_id: string;
+  name: string;
+  provider_id: string;
+  model_id: string;
+}
 export interface ConfigSyncSummary {
-  connections: { name: string; provider_id: string; model_id: string }[];
-  active_model: string | null;
+  connections: ConfigSyncConnection[];
+  preferred_connection_id: string | null;
 }
 export interface ConfigSyncResolution {
   resolution: 'keep_local' | 'use_cloud';
   conflict_id: string;
 }
+export interface ConfigSyncConflict {
+  state: 'conflict';
+  status: ConfigSyncStatus;
+  conflict_id: string;
+  local: ConfigSyncSummary;
+  cloud: ConfigSyncSummary;
+}
 export type ConfigSyncResult =
-  | { state: 'current' | 'uploaded' | 'downloaded'; status: ConfigSyncStatus }
-  | {
-      state: 'conflict';
-      status: ConfigSyncStatus;
-      conflict_id: string;
-      local: ConfigSyncSummary;
-      cloud: ConfigSyncSummary;
-    };
+  { state: 'current' | 'uploaded' | 'downloaded'; status: ConfigSyncStatus } | ConfigSyncConflict;
+export type ConfigSyncReviewResult =
+  { state: 'review_clear'; status: ConfigSyncStatus } | ConfigSyncConflict;
 export interface SettingsTransferCapabilities {
   qr: boolean;
   capture_protection: 'block' | 'hide' | 'unavailable';

@@ -6,6 +6,7 @@ import {
   message,
   onAccountChanged,
   openAccountSignIn,
+  reviewConfigSync,
   setConfigSyncEnabled,
   signInToAccount,
   signOutOfAccount,
@@ -13,63 +14,24 @@ import {
 } from '../lib/tauri';
 import type {
   AccountStatus,
+  ConfigSyncConflict,
   ConfigSyncResolution,
-  ConfigSyncResult,
   ConfigSyncStatus,
-  ConfigSyncSummary,
   LlmProvider,
 } from '../lib/types';
 import { AccountSignIn } from './AccountSignIn';
+import { ConfigSyncReview } from './ConfigSyncReview';
 import { EncryptedKeySync } from './EncryptedKeySync';
 import { OperationScope } from './providers/state';
 import { Sheet } from './Sheet';
 
-type SyncConflict = Extract<ConfigSyncResult, { state: 'conflict' }>;
-type Action = 'sign_in' | 'open_sign_in' | 'cancel' | 'sign_out' | 'toggle' | 'sync';
+type Action = 'sign_in' | 'open_sign_in' | 'cancel' | 'sign_out' | 'toggle' | 'sync' | 'review';
 
 const sync_messages = {
   current: 'Settings are up to date.',
   uploaded: 'Settings saved to your account.',
   downloaded: 'Synced settings applied to this device.',
 };
-
-function ConfigVersion({
-  title,
-  summary,
-  providers,
-}: {
-  title: string;
-  summary: ConfigSyncSummary;
-  providers: LlmProvider[];
-}) {
-  return (
-    <section className="sync-version">
-      <h3>{title}</h3>
-      <p>
-        {summary.active_model ? `Preferred model · ${summary.active_model}` : 'No preferred model'}
-      </p>
-      {summary.connections.length ? (
-        <ul>
-          {summary.connections.map((connection, index) => {
-            const provider_name = providers.find(
-              (provider) => provider.provider_id === connection.provider_id,
-            )?.name;
-            return (
-              <li key={index}>
-                <strong>{connection.name}</strong>
-                <span>
-                  {provider_name ?? connection.provider_id} · {connection.model_id}
-                </span>
-              </li>
-            );
-          })}
-        </ul>
-      ) : (
-        <p>No connections to sync.</p>
-      )}
-    </section>
-  );
-}
 
 interface AccountSyncProps {
   providers: LlmProvider[];
@@ -88,8 +50,9 @@ export function AccountSync({
   const [sync, setSync] = useState<ConfigSyncStatus>();
   const [busy, setBusy] = useState<Action>();
   const [keys_busy, setKeysBusy] = useState(false);
-  const [conflict, setConflict] = useState<SyncConflict>();
+  const [conflict, setConflict] = useState<ConfigSyncConflict>();
   const [reviewing, setReviewing] = useState(false);
+  const [review_stale, setReviewStale] = useState(false);
   const [outcome, setOutcome] = useState('');
   const [read_error, setReadError] = useState('');
   const [action_error, setActionError] = useState('');
@@ -165,6 +128,7 @@ export function AccountSync({
   function clearConflict() {
     setConflict(undefined);
     setReviewing(false);
+    setReviewStale(false);
   }
 
   async function perform(action: Action, run: (isCurrent: () => boolean) => Promise<void>) {
@@ -175,17 +139,17 @@ export function AccountSync({
     setBusy(action);
     setActionError('');
     setOutcome('');
-    const changes_settings = action === 'sync' || action === 'toggle';
+    const sync_operation = action === 'sync' || action === 'toggle' || action === 'review';
     const started_account = sync_account.current;
     const isCurrent = () =>
-      operation.isCurrent() && (!changes_settings || started_account === sync_account.current);
-    if (changes_settings) onSyncBusyChange(true);
+      operation.isCurrent() && (!sync_operation || started_account === sync_account.current);
+    if (sync_operation) onSyncBusyChange(true);
     try {
       await run(isCurrent);
     } catch (error) {
       if (isCurrent()) setActionError(message(error));
     } finally {
-      if (changes_settings) onSyncBusyChange(false);
+      if (sync_operation) onSyncBusyChange(false);
       if (operation.isCurrent()) {
         operation.finish();
         setBusy(undefined);
@@ -217,7 +181,33 @@ export function AccountSync({
   }
 
   function runSync(resolution?: ConfigSyncResolution) {
-    return perform('sync', (isCurrent) => syncSettings(isCurrent, resolution));
+    return perform('sync', async (isCurrent) => {
+      try {
+        await syncSettings(isCurrent, resolution);
+      } catch (error) {
+        if (resolution && isCurrent()) setReviewStale(true);
+        throw error;
+      }
+    });
+  }
+
+  function refreshReview() {
+    return perform('review', async (isCurrent) => {
+      const result = await reviewConfigSync();
+      if (!isCurrent()) return;
+      setSync(result.status);
+      if (result.state === 'conflict') showConflict(result);
+      else {
+        clearConflict();
+        setOutcome('No differences to review. Use Sync now to check for changes.');
+      }
+    });
+  }
+
+  function showConflict(result: ConfigSyncConflict) {
+    setConflict(result);
+    setReviewStale(false);
+    setReviewing(visible.current);
   }
 
   async function syncSettings(isCurrent: () => boolean, resolution?: ConfigSyncResolution) {
@@ -228,8 +218,7 @@ export function AccountSync({
     if (!isCurrent()) return;
     setSync(result.status);
     if (result.state === 'conflict') {
-      setConflict(result);
-      setReviewing(visible.current);
+      showConflict(result);
       return;
     }
     clearConflict();
@@ -375,64 +364,28 @@ export function AccountSync({
       {pending_conflict && review_open && (
         <Sheet
           open
-          title="Choose settings to keep"
+          title="Choose which model settings to use"
           onClose={() => {
             setReviewing(false);
             setActionError('');
           }}
           dismissible={!busy}
         >
-          <div className="transfer-form">
-            <p>This device and your account have different saved model settings.</p>
-            <div className="sync-versions">
-              <ConfigVersion
-                title="This device"
-                summary={pending_conflict.local}
-                providers={providers}
-              />
-              <ConfigVersion
-                title="Synced settings"
-                summary={pending_conflict.cloud}
-                providers={providers}
-              />
-            </div>
-            <p>
-              Using synced settings replaces the listed connections on this device. Removed
-              connections lose their saved credentials here.
-            </p>
-            {error && (
-              <p className="status error" role="alert">
-                {error}
-              </p>
-            )}
-            <div className="button-row">
-              <button
-                type="button"
-                disabled={disabled || !!busy}
-                onClick={() =>
-                  void runSync({
-                    resolution: 'keep_local',
-                    conflict_id: pending_conflict.conflict_id,
-                  })
-                }
-              >
-                Keep this device
-              </button>
-              <button
-                type="button"
-                disabled={disabled || !!busy}
-                onClick={() =>
-                  void runSync({
-                    resolution: 'use_cloud',
-                    conflict_id: pending_conflict.conflict_id,
-                  })
-                }
-              >
-                Use synced settings
-              </button>
-            </div>
-            {busy === 'sync' && <p role="status">Syncing…</p>}
-          </div>
+          <ConfigSyncReview
+            conflict={pending_conflict}
+            providers={providers}
+            busy={!!busy}
+            disabled={disabled || keys_busy}
+            stale={review_stale}
+            error={error ?? ''}
+            onRefresh={() => void refreshReview()}
+            onKeepLocal={() =>
+              void runSync({ resolution: 'keep_local', conflict_id: pending_conflict.conflict_id })
+            }
+            onUseCloud={() =>
+              void runSync({ resolution: 'use_cloud', conflict_id: pending_conflict.conflict_id })
+            }
+          />
         </Sheet>
       )}
     </section>

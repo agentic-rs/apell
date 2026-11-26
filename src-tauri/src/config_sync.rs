@@ -56,6 +56,13 @@ struct Revision {
   updated_at: String,
 }
 
+struct ComparedSettings {
+  head: Option<Revision>,
+  local: Snapshot,
+  local_active: Option<String>,
+  local_hash: String,
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Enable {
@@ -104,7 +111,7 @@ pub async fn dispatch(
         }
         Ok(result)
       }
-      "sync.run" => {
+      "sync.run" | "sync.review" => {
         let key = account_key.ok_or("Sign in to Apell Account to sync settings.")?;
         let state = load_state(&host, &key).await?;
         if !state.enabled {
@@ -114,11 +121,20 @@ pub async fn dispatch(
         if request.resolution.is_some() != request.conflict_id.is_some() {
           return Err("Refresh the conflict before choosing which settings to use.".into());
         }
+        let review_only = method == "sync.review";
+        if review_only && request.resolution.is_some() {
+          return Err("A read-only sync review cannot choose settings.".into());
+        }
         let access = host.account.access(&app).await?;
         if access.account_key != key {
           return Err("The signed-in Account changed. Try syncing again.".into());
         }
-        synchronize(&app, &host, &access, state, request).await
+        let compared = compare_settings(&app, &host, &access, &state).await?;
+        if review_only {
+          require_account(&app, &host, &access).await?;
+          return Ok(review_settings(&access.account_key, &state, &compared));
+        }
+        synchronize(&app, &host, &access, state, request, compared).await
       }
       _ => Err("Unknown config sync operation.".into()),
     }
@@ -206,30 +222,76 @@ fn pending_preference<'a>(state: &'a DeviceState, settings: &Settings) -> Option
   Some(preferred)
 }
 
+async fn compare_settings(
+  app: &AppHandle,
+  host: &Host,
+  access: &Access,
+  state: &DeviceState,
+) -> Result<ComparedSettings, String> {
+  let head = request_head(host, access, Method::GET, None).await?;
+  require_account(app, host, access).await?;
+  let (mut local, local_active) = {
+    let settings = host.settings.lock().await;
+    (
+      capture(&settings, state),
+      settings.active_connection_id.clone(),
+    )
+  };
+  local.validate()?;
+  let local_hash = local.fingerprint()?;
+  Ok(ComparedSettings {
+    head,
+    local,
+    local_active,
+    local_hash,
+  })
+}
+
+fn review_settings(account_key: &str, state: &DeviceState, compared: &ComparedSettings) -> Value {
+  match &compared.head {
+    Some(remote) if compared.local != remote.snapshot => {
+      let conflict = conflict_id(account_key, remote, &compared.local_hash);
+      conflict_result(state, conflict, &compared.local, &remote.snapshot)
+    }
+    _ => json!({"state":"review_clear","status":status(Some(state))}),
+  }
+}
+
+fn conflict_result(
+  state: &DeviceState,
+  conflict: String,
+  local: &Snapshot,
+  cloud: &Snapshot,
+) -> Value {
+  json!({
+    "state":"conflict",
+    "status":status(Some(state)),
+    "conflict_id":conflict,
+    "local":local.summary(),
+    "cloud":cloud.summary(),
+  })
+}
+
 async fn synchronize(
   app: &AppHandle,
   host: &Host,
   access: &Access,
   mut state: DeviceState,
   input: Run,
+  compared: ComparedSettings,
 ) -> Result<Value, String> {
-  let head = request_head(host, access, Method::GET, None).await?;
-  require_account(app, host, access).await?;
-  let (mut local, local_active) = {
-    let settings = host.settings.lock().await;
-    (
-      capture(&settings, &state),
-      settings.active_connection_id.clone(),
-    )
-  };
-  local.validate()?;
-  let local_hash = local.fingerprint()?;
+  let ComparedSettings {
+    head,
+    local,
+    local_active,
+    local_hash,
+  } = compared;
   let result = match head {
+    None if input.resolution.is_some() => {
+      return Err("The model settings changed. Refresh the review.".into())
+    }
     None if state.cursor.is_some() => {
       return Err("The saved cloud revision is missing. Local settings were kept.".into())
-    }
-    None if input.resolution.is_some() => {
-      return Err("The sync conflict changed. Run sync again.".into())
     }
     None => (
       "uploaded",
@@ -237,9 +299,9 @@ async fn synchronize(
       local_active,
     ),
     Some(remote) => {
-      let conflict = conflict_id(access, &remote, &local_hash);
+      let conflict = conflict_id(&access.account_key, &remote, &local_hash);
       if input.conflict_id.as_ref().is_some_and(|id| *id != conflict) {
-        return Err("The sync conflict changed. Run sync again.".into());
+        return Err("The model settings changed. Refresh the review.".into());
       }
       match decide(
         &local,
@@ -258,15 +320,7 @@ async fn synchronize(
             apply_remote(app, host, access, &state, &local_hash, &remote.snapshot).await?;
           ("downloaded", remote, active)
         }
-        Action::Conflict => {
-          return Ok(json!({
-            "state":"conflict",
-            "status":status(Some(&state)),
-            "conflict_id":conflict,
-            "local":local.summary(),
-            "cloud":remote.snapshot.summary(),
-          }))
-        }
+        Action::Conflict => return Ok(conflict_result(&state, conflict, &local, &remote.snapshot)),
       }
     }
   };
@@ -317,8 +371,8 @@ fn decide(
   }
 }
 
-fn conflict_id(access: &Access, remote: &Revision, local_hash: &str) -> String {
-  digest(format!("{}:{}:{local_hash}", access.account_key, remote.revision_id).as_bytes())
+fn conflict_id(account_key: &str, remote: &Revision, local_hash: &str) -> String {
+  digest(format!("{account_key}:{}:{local_hash}", remote.revision_id).as_bytes())
 }
 
 async fn require_account(app: &AppHandle, host: &Host, access: &Access) -> Result<(), String> {
@@ -598,6 +652,63 @@ mod tests {
     let cursor = state.cursor.as_mut().unwrap();
     cursor.local_active = "previous-choice".into();
     assert_eq!(pending_preference(&state, &local), None);
+  }
+
+  #[test]
+  fn review_reports_differences_even_when_regular_sync_would_upload() {
+    let local = snapshot("local-edit");
+    let cloud = snapshot("cloud-edit");
+    let state = DeviceState {
+      enabled: true,
+      cursor: Some(Cursor {
+        revision_id: "cloud-head".into(),
+        snapshot_hash: cloud.fingerprint().unwrap(),
+        remote_active: LEGACY_DEMO_CONNECTION_ID.into(),
+        local_active: LEGACY_DEMO_CONNECTION_ID.into(),
+        updated_at: "2026-01-01T00:00:00Z".into(),
+      }),
+    };
+    let remote = Revision {
+      revision_id: "cloud-head".into(),
+      parent_revision_ids: vec!["ancestor".into()],
+      snapshot: cloud,
+      updated_at: "2026-01-01T00:00:00Z".into(),
+    };
+    let local_hash = local.fingerprint().unwrap();
+    assert!(matches!(
+      decide(&local, &local_hash, &remote, state.cursor.as_ref(), None),
+      Action::Upload
+    ));
+    let conflict = conflict_id("fixture-account", &remote, &local_hash);
+    let mut compared = ComparedSettings {
+      head: Some(remote),
+      local,
+      local_active: None,
+      local_hash,
+    };
+    let status_before = serde_json::to_value(&state).unwrap();
+    let reviewed = review_settings("fixture-account", &state, &compared);
+    assert_eq!(reviewed["state"], "conflict");
+    assert_eq!(reviewed["conflict_id"], conflict);
+    assert_eq!(
+      reviewed["local"]["connections"][0]["model_id"],
+      "local-edit"
+    );
+    assert_eq!(
+      reviewed["cloud"]["connections"][0]["model_id"],
+      "cloud-edit"
+    );
+    compared.head.as_mut().unwrap().snapshot = compared.local.clone();
+    assert_eq!(
+      review_settings("fixture-account", &state, &compared)["state"],
+      "review_clear"
+    );
+    compared.head = None;
+    assert_eq!(
+      review_settings("fixture-account", &state, &compared)["state"],
+      "review_clear"
+    );
+    assert_eq!(serde_json::to_value(&state).unwrap(), status_before);
   }
 
   #[test]

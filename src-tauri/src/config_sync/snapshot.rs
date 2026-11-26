@@ -27,11 +27,12 @@ struct Selection {
 #[derive(Serialize)]
 pub(super) struct Summary<'a> {
   connections: Vec<SummaryConnection<'a>>,
-  active_model: Option<&'a str>,
+  preferred_connection_id: Option<&'a str>,
 }
 
 #[derive(Serialize)]
 struct SummaryConnection<'a> {
+  connection_id: &'a str,
   name: &'a str,
   provider_id: &'a str,
   model_id: &'a str,
@@ -125,16 +126,13 @@ impl Snapshot {
         .connections
         .iter()
         .map(|entry| SummaryConnection {
+          connection_id: &entry.connection_id,
           name: &entry.name,
           provider_id: &entry.provider_id,
           model_id: &entry.model_id,
         })
         .collect(),
-      active_model: self
-        .connections
-        .iter()
-        .find(|entry| entry.connection_id == self.active_connection_id)
-        .map(|entry| entry.model_id.as_str()),
+      preferred_connection_id: saved_selection(&self.active_connection_id),
     }
   }
 
@@ -260,6 +258,58 @@ mod tests {
         "active_connection_id":"public",
         "connections":[{"connection_id":"public","name":"Fixture connection","provider_id":"openai","model_id":"model-fixture"}],
       })
+    );
+  }
+
+  #[test]
+  fn conflict_summary_distinguishes_connections_with_identical_labels_and_models() {
+    let mut local = Settings::default();
+    local.connections.extend([
+      saved("local-copy", "openai", built_in_endpoint("openai").unwrap()),
+      saved("cloud-copy", "openai", built_in_endpoint("openai").unwrap()),
+    ]);
+    let local_view = Snapshot::capture(&local, Some("local-copy"));
+    let renamed_preference = Snapshot::capture(&local, Some("cloud-copy"));
+    let mut cloud = local.clone();
+    cloud
+      .connections
+      .retain(|entry| entry.connection_id == "cloud-copy");
+    let cloud_view = Snapshot::capture(&cloud, Some("cloud-copy"));
+
+    assert_eq!(
+      serde_json::to_value(local_view.summary()).unwrap(),
+      json!({
+        "preferred_connection_id": "local-copy",
+        "connections": [
+          {"connection_id":"cloud-copy","name":"Fixture connection","provider_id":"openai","model_id":"model-fixture"},
+          {"connection_id":"local-copy","name":"Fixture connection","provider_id":"openai","model_id":"model-fixture"},
+        ],
+      })
+    );
+    assert_eq!(
+      serde_json::to_value(renamed_preference.summary()).unwrap()["preferred_connection_id"],
+      "cloud-copy"
+    );
+    assert_eq!(
+      serde_json::to_value(cloud_view.summary()).unwrap()["connections"]
+        .as_array()
+        .unwrap()
+        .len(),
+      1
+    );
+    assert_eq!(
+      cloud_view.settings(&local).unwrap().1,
+      [local
+        .connection("local-copy")
+        .unwrap()
+        .credential
+        .account
+        .clone()]
+    );
+    assert!(
+      serde_json::to_value(Snapshot::capture(&local, None).summary()).unwrap()
+        ["preferred_connection_id"]
+        .is_null()
     );
   }
 

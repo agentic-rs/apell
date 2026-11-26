@@ -205,9 +205,13 @@ sync starts automatically. Use **Sync now** to retry or sync later changes.
 Model settings sync includes connection labels, built-in provider and model
 selections, and the preferred active model. API keys can be synced separately
 through **Encrypted API keys**.
-When two devices saved different settings, review both versions and choose which
-to use. The Store records each version with its parent revision, and applies
-updates only when the expected cloud revision still matches.
+When two devices saved different settings, Apell shows the changed connections
+and the preferred synced connection on each side. Choose which copy to use.
+Applying the cloud copy removes any local-only connections listed in the review
+and their saved credentials. **Refresh review** fetches a new comparison so you
+can review it again before choosing. The Store records each version with its
+parent revision and applies updates only when the expected cloud revision still
+matches.
 
 ## Sync encrypted API keys
 

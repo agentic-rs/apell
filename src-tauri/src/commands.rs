@@ -96,7 +96,7 @@ pub async fn shell_command(
       host.key_sync.clear_requests().await;
       crate::account::dispatch(app, &host.account, &method).await
     }
-    "sync.status" | "sync.set_enabled" | "sync.run" => {
+    "sync.status" | "sync.set_enabled" | "sync.run" | "sync.review" => {
       crate::config_sync::dispatch(app, &host, &method, params).await
     }
     "key_sync.status"

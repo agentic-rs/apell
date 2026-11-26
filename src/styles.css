@@ -634,37 +634,47 @@ svg {
   align-items: center;
   gap: 12px;
 }
-.sync-versions {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
-  gap: 10px;
-}
-.sync-version {
-  min-width: 0;
-  padding: 14px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: var(--subtle);
-  overflow-wrap: anywhere;
-}
-.sync-version p,
-.sync-version li span {
-  color: var(--muted);
-  font-size: 14px;
-}
-.sync-version p {
-  margin-top: 6px;
-}
-.sync-version ul {
+.sync-review-section,
+.sync-review-changes,
+.sync-review-options {
   display: grid;
   gap: 10px;
-  margin: 12px 0 0;
+}
+.sync-review-changes {
+  margin: 0;
   padding: 0;
   list-style: none;
 }
-.sync-version li {
+.sync-review-pair {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(140px, 100%), 1fr));
+  gap: 10px;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--subtle);
+}
+.sync-review-pair > div {
+  min-width: 0;
+}
+.sync-review-pair dd,
+.sync-review-options > div {
   display: grid;
   gap: 4px;
+}
+.sync-review-pair dd {
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+}
+.sync-review-pair dt,
+.sync-review-pair small,
+.sync-review-options p {
+  color: var(--muted);
+  font-size: 13px;
+}
+.sync-review-options button {
+  justify-self: start;
 }
 .transfer-form,
 .transfer-form fieldset {

@@ -13,6 +13,7 @@ import type {
   BackendEvent,
   ConfigSyncResolution,
   ConfigSyncResult,
+  ConfigSyncReviewResult,
   ConfigSyncStatus,
   GitHubRelease,
   CreateConnectionDraft,
@@ -149,6 +150,7 @@ export const setConfigSyncEnabled = (enabled: boolean) =>
   shellCall<ConfigSyncStatus>('sync.set_enabled', { enabled });
 export const syncConfig = (resolution?: ConfigSyncResolution) =>
   shellCall<ConfigSyncResult>('sync.run', resolution ?? {});
+export const reviewConfigSync = () => shellCall<ConfigSyncReviewResult>('sync.review');
 export const getKeySyncStatus = () => shellCall<KeySyncStatus>('key_sync.status');
 export const onKeySyncChanged = (handler: () => void) => listen('apell-key-sync-changed', handler);
 export const onLlmSettingsChanged = (handler: () => void) =>
