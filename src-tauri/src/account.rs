@@ -201,6 +201,7 @@ pub(crate) struct Access {
   pub account_key: String,
   pub sync_url: Url,
   pub token: Zeroizing<String>,
+  refresh_gate: Arc<Mutex<()>>,
 }
 
 pub(crate) struct Account {
@@ -261,7 +262,7 @@ impl Account {
   }
 
   pub async fn access(&self, app: &AppHandle) -> Result<Access, String> {
-    self.access_for(app, false).await
+    self.access_for(app, false, None).await
   }
 
   pub fn key_exchange_available(&self) -> bool {
@@ -272,10 +273,43 @@ impl Account {
   }
 
   pub async fn key_exchange_access(&self, app: &AppHandle) -> Result<Access, String> {
-    self.access_for(app, true).await
+    self.access_for(app, true, None).await
   }
 
-  async fn access_for(&self, app: &AppHandle, key_exchange: bool) -> Result<Access, String> {
+  pub(crate) async fn start_background_access(
+    &self,
+    app: &AppHandle,
+    key_exchange: bool,
+    same_session_as: Option<&Access>,
+  ) -> Result<tauri::async_runtime::JoinHandle<Result<Access, String>>, String> {
+    let refresh_gate = {
+      let state = self.state.lock().await;
+      let session = state.session.as_ref().ok_or(SIGN_IN_REQUIRED)?;
+      if same_session_as
+        .is_some_and(|access| !Arc::ptr_eq(&access.refresh_gate, &session.refresh_gate))
+      {
+        return Err(SESSION_CHANGED.into());
+      }
+      session.refresh_gate.clone()
+    };
+    let app = app.clone();
+    // Sign-out can stop waiting, but an already-issued refresh must finish. It
+    // can rotate a token even if saving sign-out later fails on this device.
+    Ok(tauri::async_runtime::spawn(async move {
+      app
+        .state::<Host>()
+        .account
+        .access_for(&app, key_exchange, Some(&refresh_gate))
+        .await
+    }))
+  }
+
+  async fn access_for(
+    &self,
+    app: &AppHandle,
+    key_exchange: bool,
+    required_gate: Option<&Arc<Mutex<()>>>,
+  ) -> Result<Access, String> {
     let config = self.config.as_ref().ok_or(CLIENT_UNAVAILABLE)?;
     let (resource, origin) = if key_exchange {
       let resource = config
@@ -291,6 +325,15 @@ impl Account {
     };
     let mut state = self.state.lock().await;
     state.load(app, config).await?;
+    if let Some(gate) = required_gate {
+      if state
+        .session
+        .as_ref()
+        .is_none_or(|session| !Arc::ptr_eq(&session.refresh_gate, gate))
+      {
+        return Err(SESSION_CHANGED.into());
+      }
+    }
     self
       .refresh_access(
         state,
@@ -577,6 +620,7 @@ fn access(sync_url: Url, session: &Session, token: &AccessToken) -> Access {
     account_key: session.stored.account_key(),
     sync_url,
     token: token.value.clone(),
+    refresh_gate: session.refresh_gate.clone(),
   }
 }
 

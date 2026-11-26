@@ -1,5 +1,7 @@
 use super::crypto::{self, Sealed, Secret, MAX_API_KEY};
-use super::{cloud_context, eligible_endpoint, key_context, local_vault, save_head, Entry};
+use super::{
+  cloud_context, eligible_endpoint, key_context, local_vault, save_head, BackgroundStop, Entry,
+};
 use crate::{
   commands::blocking,
   host::Host,
@@ -50,7 +52,7 @@ impl Automatic {
       .map(|(_, error)| error.clone())
   }
 
-  async fn publish_error(&self, app: &AppHandle, error: Option<(String, String)>) {
+  pub(super) async fn publish_error(&self, app: &AppHandle, error: Option<(String, String)>) {
     let mut current = self.error.lock().await;
     if *current != error {
       *current = error;
@@ -202,16 +204,22 @@ pub(crate) fn start(app: &AppHandle) {
         _ = host.key_sync.automatic.wake.notified() => (),
       }
       let _gate = host.key_sync.gate.lock().await;
+      let stop = BackgroundStop(host.key_sync.signing_out.subscribe());
+      if stop.requested() {
+        continue;
+      }
       let Ok(Some(account)) = host.account.account_key(&app).await else {
         host.key_sync.automatic.publish_error(&app, None).await;
         continue;
       };
-      let error = synchronize(&app, &host, &account).await.err();
-      host
-        .key_sync
-        .automatic
-        .publish_error(&app, error.map(|error| (account, error)))
-        .await;
+      let error = synchronize(&app, &host, &account, &stop).await.err();
+      if !stop.requested() {
+        host
+          .key_sync
+          .automatic
+          .publish_error(&app, error.map(|error| (account, error)))
+          .await;
+      }
     }
   });
 }
@@ -471,20 +479,26 @@ struct Plan {
   awaiting_metadata: bool,
 }
 
-async fn synchronize(app: &AppHandle, host: &Host, account: &str) -> Result<(), String> {
+async fn synchronize(
+  app: &AppHandle,
+  host: &Host,
+  account: &str,
+  stop: &BackgroundStop,
+) -> Result<(), String> {
   if !host.account.key_exchange_available()
-    || !local_vault(app, account)
-      .await?
+    || !stop
+      .wait(local_vault(app, account))
+      .await??
       .is_some_and(|vault| vault.managed && !vault.pending_managed)
   {
     return Ok(());
   }
-  require_device_sync(&host.root).await?;
-  let relay = host.account.key_exchange_access(app).await?;
+  stop.wait(require_device_sync(&host.root)).await??;
+  let relay = stop.access(app, host, true, None).await?;
   if relay.account_key != account {
     return Err(OWNERSHIP_CHANGED.into());
   }
-  let (vault, access, head) = cloud_context(app, host, &relay).await?;
+  let (vault, access, head) = cloud_context(app, host, &relay, stop).await?;
   let owner = Owner {
     account: account.to_owned(),
     vault_id: vault.vault_id,
@@ -496,12 +510,14 @@ async fn synchronize(app: &AppHandle, host: &Host, account: &str) -> Result<(), 
     .flat_map(|head| head.entries)
     .map(|entry| (entry.connection_id.clone(), entry))
     .collect();
-  let missing = missing_metadata(host, &owner, &entries).await?;
+  let missing = stop
+    .wait(missing_metadata(host, &owner, &entries))
+    .await??;
   let metadata_owner = owner.clone();
   let root = host.root.clone();
   // A metadata retry cannot prevent synchronization of other complete entries.
   let added =
-    crate::config_sync::add_credential_connections(app, host, &access, missing, move |ids| {
+    crate::config_sync::add_credential_connections(app, host, &access, stop, missing, move |ids| {
       retain_restorable(&root, &metadata_owner, ids)
     })
     .await
@@ -513,7 +529,7 @@ async fn synchronize(app: &AppHandle, host: &Host, account: &str) -> Result<(), 
   let plan_app = app.clone();
   let root = host.root.clone();
   let plan =
-    crate::config_sync::apply_key_restores(app, host, &access, move |settings, preferred| {
+    crate::config_sync::apply_key_restores(app, host, &access, stop, move |settings, preferred| {
       apply_plan(
         &plan_app,
         &root,
@@ -526,8 +542,18 @@ async fn synchronize(app: &AppHandle, host: &Host, account: &str) -> Result<(), 
     })
     .await?;
   if let Some(upload) = plan.upload {
-    save_head(app, host, &access, owner.vault_id, expected, upload.entries).await?;
-    let _gate = host.credential_gate.lock().await;
+    stop
+      .wait(save_head(
+        app,
+        host,
+        &access,
+        owner.vault_id,
+        expected,
+        upload.entries,
+      ))
+      .await??;
+    let _gate = stop.wait(host.credential_gate.lock()).await?;
+    stop.check()?;
     let root = host.root.clone();
     blocking(move || {
       let mut device = Device::load(&root)?;

@@ -16,21 +16,84 @@ use crypto::{Sealed, Secret};
 use reqwest::{Client, Method, Response, StatusCode};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::time::Duration;
+use std::{future::Future, time::Duration};
 use tauri::{AppHandle, Manager};
-use tokio::sync::Mutex;
+use tokio::sync::{watch, Mutex};
 use uuid::Uuid;
 use zeroize::{Zeroize, Zeroizing};
 
 const CLOUD_KEYS: &str = "/api/v1/credential-sync/head";
 const MAX_REPLY: usize = 192 * 1024;
 const LOCKED: &str = "Verify this device to sync encrypted API keys.";
+const SIGNING_OUT: &str = "Encrypted API key sync stopped for sign-out.";
 
 pub(crate) struct KeySync {
   client: Client,
   pub gate: Mutex<()>,
+  sign_out: Mutex<()>,
+  signing_out: watch::Sender<bool>,
   managed: managed::Managed,
   automatic: automatic::Automatic,
+}
+
+pub(crate) struct BackgroundStop(watch::Receiver<bool>);
+
+impl BackgroundStop {
+  fn requested(&self) -> bool {
+    *self.0.borrow()
+  }
+
+  pub(crate) fn check(&self) -> Result<(), String> {
+    if self.requested() {
+      Err(SIGNING_OUT.into())
+    } else {
+      Ok(())
+    }
+  }
+
+  pub(crate) async fn wait<T>(&self, work: impl Future<Output = T>) -> Result<T, String> {
+    let mut requested = self.0.clone();
+    tokio::select! {
+      biased;
+      _ = requested.wait_for(|requested| *requested) => Err(SIGNING_OUT.into()),
+      result = work => Ok(result),
+    }
+  }
+
+  async fn access(
+    &self,
+    app: &AppHandle,
+    host: &Host,
+    key_exchange: bool,
+    same_session_as: Option<&Access>,
+  ) -> Result<Access, String> {
+    let task = self
+      .wait(
+        host
+          .account
+          .start_background_access(app, key_exchange, same_session_as),
+      )
+      .await??;
+    self
+      .wait(task)
+      .await?
+      .map_err(|_| "Could not refresh Apell Account access.")?
+  }
+}
+
+struct PauseBackground<'a>(&'a watch::Sender<bool>);
+
+impl<'a> PauseBackground<'a> {
+  fn new(signal: &'a watch::Sender<bool>) -> Self {
+    signal.send_replace(true);
+    Self(signal)
+  }
+}
+
+impl Drop for PauseBackground<'_> {
+  fn drop(&mut self) {
+    self.0.send_replace(false);
+  }
 }
 
 #[derive(Deserialize, Serialize)]
@@ -115,13 +178,11 @@ impl KeySync {
     Self {
       client,
       gate: Mutex::new(()),
+      sign_out: Mutex::new(()),
+      signing_out: watch::channel(false).0,
       managed: managed::Managed::default(),
       automatic: automatic::Automatic::default(),
     }
-  }
-
-  pub async fn clear_requests(&self) {
-    self.managed.clear().await;
   }
 
   async fn request(
@@ -286,13 +347,13 @@ async fn cloud_context(
   app: &AppHandle,
   host: &Host,
   relay: &Access,
+  stop: &BackgroundStop,
 ) -> Result<(LocalVault, Access, Option<CloudHead>), String> {
-  let vault = unlocked(app, host, relay).await?;
-  let access = host.account.access(app).await?;
-  if access.account_key != relay.account_key {
-    return Err("The signed-in Account changed. Try again.".into());
-  }
-  let head = host.key_sync.head(&access, vault.vault_id).await?;
+  let vault = stop.wait(unlocked(app, host, relay)).await??;
+  let access = stop.access(app, host, false, Some(relay)).await?;
+  let head = stop
+    .wait(host.key_sync.head(&access, vault.vault_id))
+    .await??;
   Ok((vault, access, head))
 }
 
@@ -361,11 +422,93 @@ pub(crate) async fn dispatch(app: AppHandle, method: &str, params: Value) -> Res
   .await
 }
 
+pub(crate) async fn sign_out(app: AppHandle) -> Result<Value, String> {
+  finish_snapshot(async move {
+    let host = app.state::<Host>();
+    let sync = &host.key_sync;
+    let _sign_out = sync.sign_out.lock().await;
+    let pause = PauseBackground::new(&sync.signing_out);
+    let _gate = sync.gate.lock().await;
+    let result = crate::account::dispatch(app.clone(), &host.account, "account.sign_out").await;
+    if result.is_ok() {
+      sync.managed.clear().await;
+      sync.automatic.publish_error(&app, None).await;
+    }
+    // Resume the worker before releasing its gate, including on a failed sign-out.
+    drop(pause);
+    if result.is_err() {
+      kick(&app);
+    }
+    result
+  })
+  .await
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
   use crate::settings::credential_ref;
   use crypto::{PairCode, MAX_API_KEY};
+  use tokio::sync::oneshot;
+
+  #[tokio::test]
+  async fn pending_sign_out_releases_background_wait_and_keeps_refresh_running() {
+    let sync = std::sync::Arc::new(KeySync::new(Client::new()));
+    let (entered, entered_wait) = oneshot::channel();
+    let (reply, network_reply) = oneshot::channel();
+    let (finished, refresh_finished) = oneshot::channel();
+    let background = sync.clone();
+    let worker = tokio::spawn(async move {
+      let _gate = background.gate.lock().await;
+      let stop = BackgroundStop(background.signing_out.subscribe());
+      let refresh = tokio::spawn(async move {
+        network_reply.await.unwrap();
+        finished.send(()).unwrap();
+      });
+      entered.send(()).unwrap();
+      stop.wait(refresh).await
+    });
+    entered_wait.await.unwrap();
+
+    let pause = PauseBackground::new(&sync.signing_out);
+    let _gate = tokio::time::timeout(Duration::from_secs(1), sync.gate.lock())
+      .await
+      .expect("Sign-out must not wait for the background network request");
+    assert_eq!(worker.await.unwrap().unwrap_err(), SIGNING_OUT);
+    let pending = BackgroundStop(sync.signing_out.subscribe());
+    assert!(pending.check().is_err());
+    assert!(pending
+      .wait(async { panic!("No new work should start during sign-out") })
+      .await
+      .is_err());
+    reply.send(()).unwrap();
+    refresh_finished.await.unwrap();
+    drop(pause);
+    assert!(pending.check().is_ok());
+  }
+
+  #[tokio::test]
+  async fn sign_out_serializes_with_an_already_started_local_commit() {
+    let sync = std::sync::Arc::new(KeySync::new(Client::new()));
+    let (started, commit_started) = oneshot::channel();
+    let (release, finish_commit) = oneshot::channel();
+    let background = sync.clone();
+    let worker = tokio::spawn(async move {
+      let _gate = background.gate.lock().await;
+      let stop = BackgroundStop(background.signing_out.subscribe());
+      stop.check().unwrap();
+      started.send(()).unwrap();
+      finish_commit.await.unwrap();
+      stop.check()
+    });
+    commit_started.await.unwrap();
+
+    let _pause = PauseBackground::new(&sync.signing_out);
+    assert!(sync.gate.try_lock().is_err());
+    release.send(()).unwrap();
+    assert_eq!(worker.await.unwrap().unwrap_err(), SIGNING_OUT);
+    assert!(sync.gate.try_lock().is_ok());
+  }
 
   #[test]
   fn paired_and_recovered_devices_can_read_the_same_store_entry() {

@@ -91,11 +91,7 @@ pub async fn shell_command(
     "account.status" | "account.sign_in" | "account.open_sign_in" | "account.cancel" => {
       crate::account::dispatch(app, &host.account, &method).await
     }
-    "account.sign_out" => {
-      let _gate = host.key_sync.gate.lock().await;
-      host.key_sync.clear_requests().await;
-      crate::account::dispatch(app, &host.account, &method).await
-    }
+    "account.sign_out" => crate::key_sync::sign_out(app).await,
     "sync.status" | "sync.set_enabled" | "sync.run" | "sync.review" => {
       crate::config_sync::dispatch(app, &host, &method, params).await
     }

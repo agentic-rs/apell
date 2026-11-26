@@ -4,6 +4,7 @@ use crate::{
   account::Access,
   commands::blocking,
   host::Host,
+  key_sync::BackgroundStop,
   provider_commands::{commit_settings, finish_snapshot, read_account},
   settings::{Connection, Settings, LEGACY_DEMO_CONNECTION_ID},
 };
@@ -431,22 +432,27 @@ pub(crate) async fn add_credential_connections(
   app: &AppHandle,
   host: &Host,
   access: &Access,
+  stop: &BackgroundStop,
   mut ids: HashSet<String>,
   retain_restorable: impl FnOnce(&mut HashSet<String>) -> Result<(), String> + Send + 'static,
 ) -> Result<bool, String> {
   if ids.is_empty() {
     return Ok(false);
   }
-  let _sync_gate = host.config_sync.gate.lock().await;
+  let _sync_gate = stop.wait(host.config_sync.gate.lock()).await?;
   if !load_state(host, &access.account_key).await?.enabled {
     return Ok(false);
   }
-  let Some(head) = request_head(host, access, Method::GET, None).await? else {
+  let Some(head) = stop
+    .wait(request_head(host, access, Method::GET, None))
+    .await??
+  else {
     return Ok(false);
   };
-  let _credential_gate = host.credential_gate.lock().await;
-  let mut current = host.settings.lock().await;
+  let _credential_gate = stop.wait(host.credential_gate.lock()).await?;
+  let mut current = stop.wait(host.settings.lock()).await?;
   require_account(app, host, access).await?;
+  stop.check()?;
   let root = host.root.clone();
   let mut next = current.clone();
   let updated = blocking(move || {
@@ -472,15 +478,17 @@ pub(crate) async fn apply_key_restores<T: Send + 'static>(
   app: &AppHandle,
   host: &Host,
   access: &Access,
+  stop: &BackgroundStop,
   apply: impl FnOnce(&mut Settings, Option<&str>) -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
   // Serialize the preference lookup with model sync, and the commit with local
   // connection edits. Other credential restores still work if config state is unreadable.
-  let _sync_gate = host.config_sync.gate.lock().await;
+  let _sync_gate = stop.wait(host.config_sync.gate.lock()).await?;
   let state = load_state(host, &access.account_key).await.ok();
-  let _credential_gate = host.credential_gate.lock().await;
-  let mut current = host.settings.lock().await;
+  let _credential_gate = stop.wait(host.credential_gate.lock()).await?;
+  let mut current = stop.wait(host.settings.lock()).await?;
   require_account(app, host, access).await?;
+  stop.check()?;
   let mut next = current.clone();
   let (next, result) = blocking(move || {
     let preferred = state
