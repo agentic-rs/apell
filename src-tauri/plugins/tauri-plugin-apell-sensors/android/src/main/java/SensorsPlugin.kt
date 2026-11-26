@@ -3,6 +3,7 @@ package dev.apell.sensors
 import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.ActivityNotFoundException
 import android.content.ClipData
 import android.content.ContentResolver
 import android.content.Intent
@@ -11,6 +12,7 @@ import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.provider.MediaStore
+import android.provider.Settings
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContract
@@ -98,6 +100,20 @@ class SensorsPlugin(private val activity: Activity) : Plugin(activity) {
     activity.runOnUiThread {
       if (activity.moveTaskToBack(false)) invoke.resolve()
       else invoke.reject("Could not leave the Apell task.")
+    }
+  }
+
+  @Command fun openSystemSettings(invoke: Invoke) {
+    activity.runOnUiThread {
+      val target = Uri.fromParts("package", activity.packageName, null)
+      try {
+        activity.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, target))
+        invoke.resolve()
+      } catch (_: ActivityNotFoundException) {
+        invoke.reject("Could not open Apell’s system settings.")
+      } catch (_: SecurityException) {
+        invoke.reject("Could not open Apell’s system settings.")
+      }
     }
   }
 

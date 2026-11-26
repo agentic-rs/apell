@@ -67,6 +67,19 @@ impl ManagedPermission {
       }
     }
   }
+
+  pub fn open_system_settings(self, app: &AppHandle) -> Result<(), String> {
+    if !self.system_authorization(app).can_open_system_settings() {
+      publish_device_change(app);
+      return Err("System settings are unavailable for the current permission state.".into());
+    }
+    #[cfg(target_os = "macos")]
+    return crate::desktop::open_microphone_settings();
+    #[cfg(any(target_os = "ios", target_os = "android"))]
+    return tauri_plugin_apell_sensors::open_system_settings(app);
+    #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "android")))]
+    Err("System settings are unavailable on this platform.".into())
+  }
 }
 
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq, Serialize)]
@@ -74,6 +87,7 @@ impl ManagedPermission {
 pub enum SystemAuthorization {
   Allowed,
   Blocked,
+  Restricted,
   NotDetermined,
   NotGranted,
   #[default]
@@ -85,9 +99,22 @@ impl SystemAuthorization {
     match status {
       "allowed" => Self::Allowed,
       "blocked" => Self::Blocked,
+      "restricted" => Self::Restricted,
       "not_determined" => Self::NotDetermined,
       "not_granted" => Self::NotGranted,
       _ => Self::Unknown,
+    }
+  }
+
+  pub fn can_open_system_settings(self) -> bool {
+    match self {
+      Self::Blocked => cfg!(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "android"
+      )),
+      Self::NotGranted => cfg!(target_os = "android"),
+      _ => false,
     }
   }
 }
@@ -316,6 +343,7 @@ impl PermissionGrants {
         mode: (declared && source.is_some()).then_some(access.mode()),
         available: permission.available(),
         system_authorization: SystemAuthorization::Unknown,
+        can_open_system_settings: None,
       });
     }
     Ok(grants)
@@ -379,6 +407,8 @@ struct GrantSummary {
   mode: Option<PermissionMode>,
   available: bool,
   system_authorization: SystemAuthorization,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  can_open_system_settings: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -421,6 +451,7 @@ fn attach_system_authorizations(
       let authorization = read(permission);
       for grant in grants {
         grant.system_authorization = authorization;
+        grant.can_open_system_settings = authorization.can_open_system_settings().then_some(true);
       }
     }
   }
@@ -532,6 +563,7 @@ mod tests {
         mode: declared.then_some(access.mode()),
         available: true,
         system_authorization: SystemAuthorization::Unknown,
+        can_open_system_settings: None,
       }],
       restart_required: false,
     };
@@ -559,6 +591,35 @@ mod tests {
     assert_eq!(
       summaries[2].grants[0].system_authorization,
       SystemAuthorization::Unknown
+    );
+    assert_eq!(
+      summaries[0].grants[0].can_open_system_settings,
+      SystemAuthorization::Blocked
+        .can_open_system_settings()
+        .then_some(true)
+    );
+    assert_eq!(summaries[2].grants[0].can_open_system_settings, None);
+    attach_system_authorizations(&mut summaries, |_| SystemAuthorization::Allowed);
+    assert_eq!(summaries[0].grants[0].can_open_system_settings, None);
+  }
+
+  #[test]
+  fn permission_recovery_requires_an_actionable_system_status() {
+    assert_eq!(
+      SystemAuthorization::from_native("restricted"),
+      SystemAuthorization::Restricted
+    );
+    for status in [
+      SystemAuthorization::Restricted,
+      SystemAuthorization::Allowed,
+      SystemAuthorization::NotDetermined,
+      SystemAuthorization::Unknown,
+    ] {
+      assert!(!status.can_open_system_settings());
+    }
+    assert_eq!(
+      SystemAuthorization::NotGranted.can_open_system_settings(),
+      cfg!(target_os = "android")
     );
   }
 

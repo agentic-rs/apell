@@ -30,6 +30,7 @@ describe('applet permission summary', () => {
 
   it('shows a separate system label only for authorization still needed or blocked', () => {
     expect(systemPermissionLabel('blocked')).toBe('Blocked by system');
+    expect(systemPermissionLabel('restricted')).toBe('Restricted by system');
     expect(systemPermissionLabel('not_granted')).toBe('System access needed');
     expect(systemPermissionLabel('not_determined')).toBe('System permission not requested');
     expect(systemPermissionLabel('allowed')).toBeUndefined();

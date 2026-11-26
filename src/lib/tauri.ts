@@ -129,6 +129,8 @@ export const currentApplet = () => shellCall<AppletSession | null>('applets.curr
 export const getAppletInstallation = (session_id: string, view_id: string) =>
   shellCall<AppletInstallation>('applets.installation', { session_id, view_id });
 export const listAppletPermissions = () => shellCall<AppletPermission[]>('permissions.list');
+export const openPermissionSystemSettings = (permission: ManagedPermission) =>
+  shellCall<void>('permissions.open_system_settings', { permission });
 export const onPermissionsChanged = (handler: () => void) =>
   listen('apell-permissions-changed', handler);
 export const forgetPermission = (applet_id: string, permission: ManagedPermission) =>

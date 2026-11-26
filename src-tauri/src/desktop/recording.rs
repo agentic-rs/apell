@@ -109,7 +109,8 @@ fn microphone_status() -> isize {
 pub(crate) fn microphone_authorization() -> &'static str {
   match microphone_status() {
     0 => "not_determined",
-    1 | 2 => "blocked",
+    1 => "restricted",
+    2 => "blocked",
     3 => "allowed",
     _ => "unknown",
   }

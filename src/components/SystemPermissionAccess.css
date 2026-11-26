@@ -1,0 +1,25 @@
+.system-permission-access {
+  display: grid;
+  justify-items: end;
+  gap: 4px;
+  min-width: 0;
+  margin-top: 4px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.system-permission-button {
+  min-height: 44px;
+  max-width: 100%;
+  padding: 6px 10px;
+  border-color: var(--control-line);
+  color: var(--text);
+  font-size: 0.8125rem;
+  line-height: 1.3;
+}
+
+.system-permission-access .system-permission-error {
+  margin: 0;
+  color: var(--danger);
+  font-size: 0.8125rem;
+}

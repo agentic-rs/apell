@@ -78,6 +78,19 @@ final class SensorsPlugin: Plugin {
     if let background = background { NotificationCenter.default.removeObserver(background) }
   }
 
+  @objc func openSystemSettings(_ invoke: Invoke) {
+    DispatchQueue.main.async {
+      guard let url = URL(string: UIApplication.openSettingsURLString) else {
+        invoke.reject("Could not open Apell’s system settings.")
+        return
+      }
+      UIApplication.shared.open(url, options: [:]) { opened in
+        if opened { invoke.resolve() }
+        else { invoke.reject("Could not open Apell’s system settings.") }
+      }
+    }
+  }
+
   @objc func systemAuthorization(_ invoke: Invoke) {
     guard let args = try? invoke.parseArgs(SensorAuthorizationArgs.self) else {
       invoke.reject("Invalid sensor permission.")
@@ -89,14 +102,16 @@ final class SensorsPlugin: Plugin {
       case .camera:
         switch AVCaptureDevice.authorizationStatus(for: .video) {
         case .authorized: status = "allowed"
-        case .denied, .restricted: status = "blocked"
+        case .denied: status = "blocked"
+        case .restricted: status = "restricted"
         case .notDetermined: status = "not_determined"
         @unknown default: status = "unknown"
         }
       case .location:
         switch CLLocationManager().authorizationStatus {
         case .authorizedWhenInUse, .authorizedAlways: status = "allowed"
-        case .denied, .restricted: status = "blocked"
+        case .denied: status = "blocked"
+        case .restricted: status = "restricted"
         case .notDetermined: status = "not_determined"
         @unknown default: status = "unknown"
         }

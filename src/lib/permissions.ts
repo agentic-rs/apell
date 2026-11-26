@@ -26,6 +26,7 @@ export const permission_unavailable = 'Unavailable on this platform';
 
 const system_access_labels: Partial<Record<SystemAuthorization, string>> = {
   blocked: 'Blocked by system',
+  restricted: 'Restricted by system',
   not_granted: 'System access needed',
   not_determined: 'System permission not requested',
 };

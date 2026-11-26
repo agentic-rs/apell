@@ -21,6 +21,7 @@ import type {
   PermissionGrant,
   PermissionMode,
 } from '../lib/types';
+import { SystemPermissionAccess } from './SystemPermissionAccess';
 import { OperationScope } from './providers/state';
 import './AppletPermissions.css';
 
@@ -103,7 +104,17 @@ function PermissionRow({
           {((change && access === 'previous_package') || (unavailable && can_reset)) && (
             <small id={`${id}-previous`}>{access_labels[access]}</small>
           )}
-          {system_label && <small id={`${id}-system`}>{system_label}</small>}
+          {system_label && mode && (
+            <SystemPermissionAccess
+              id={`${id}-system`}
+              applet_name={applet_name}
+              permission={permission}
+              authorization={system_authorization}
+              mode={mode}
+              can_open_system_settings={!!change && grant.can_open_system_settings}
+              disabled={busy}
+            />
+          )}
           {saving && <small role="status">Updating…</small>}
         </div>
         {can_reset && (

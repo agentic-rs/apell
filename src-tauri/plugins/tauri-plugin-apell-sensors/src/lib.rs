@@ -53,6 +53,21 @@ pub fn system_authorization<R: Runtime>(
     .ok_or_else(|| "Could not check the system sensor permission.".into())
 }
 
+/// Open Apell's own system settings from a blocking shell worker.
+pub fn open_system_settings<R: Runtime>(_app: &AppHandle<R>) -> Result<(), String> {
+  #[cfg(any(target_os = "ios", target_os = "android"))]
+  {
+    _app
+      .state::<Sensors<R>>()
+      .0
+      .run_mobile_plugin::<Value>("openSystemSettings", serde_json::json!({}))
+      .map(|_| ())
+      .map_err(|_| "Could not open Apell’s system settings.".into())
+  }
+  #[cfg(not(any(target_os = "ios", target_os = "android")))]
+  Err("This system settings shortcut requires iOS or Android.".into())
+}
+
 /// Leave the root shell task without finishing its activity or traversing the
 /// WebView's history. Only the trusted shell can request this native action.
 #[cfg(target_os = "android")]

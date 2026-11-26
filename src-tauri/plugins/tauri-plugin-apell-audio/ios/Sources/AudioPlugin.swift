@@ -76,7 +76,8 @@ final class AudioPlugin: Plugin, AVAudioRecorderDelegate, AVAudioPlayerDelegate 
       let authorization: String
       switch AVCaptureDevice.authorizationStatus(for: .audio) {
       case .authorized: authorization = "allowed"
-      case .denied, .restricted: authorization = "blocked"
+      case .denied: authorization = "blocked"
+      case .restricted: authorization = "restricted"
       case .notDetermined: authorization = "not_determined"
       @unknown default: authorization = "unknown"
       }

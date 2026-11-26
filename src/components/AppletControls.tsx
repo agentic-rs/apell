@@ -18,6 +18,7 @@ import type {
 import { Icon } from './Icon';
 import { Sheet } from './Sheet';
 import { AppletChannel } from './AppletChannel';
+import { SystemPermissionAccess } from './SystemPermissionAccess';
 import { OperationScope } from './providers/state';
 import './AppletControls.css';
 
@@ -132,10 +133,16 @@ function PermissionAccess({
             Try again
           </button>
         )}
-        {system_label && (
-          <small className="applet-access-system" id={`${label_id}-system`}>
-            {system_label}
-          </small>
+        {system_label && status && mode && mode !== 'unavailable' && (
+          <SystemPermissionAccess
+            id={`${label_id}-system`}
+            applet_name={session.manifest.name}
+            permission={permission}
+            authorization={status.system_authorization}
+            mode={mode}
+            can_open_system_settings={!read_only && status.can_open_system_settings}
+            disabled={busy}
+          />
         )}
       </dd>
       {!read_only && error && (

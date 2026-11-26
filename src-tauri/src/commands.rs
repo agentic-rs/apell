@@ -35,6 +35,27 @@ struct InstalledPermissionChange {
   mode: PermissionMode,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OpenPermissionSettings {
+  permission: ManagedPermission,
+}
+
+fn permission_status(
+  app: &AppHandle,
+  permission: ManagedPermission,
+  mode: Option<PermissionMode>,
+) -> Value {
+  let authorization = mode
+    .map(|_| permission.system_authorization(app))
+    .unwrap_or_default();
+  json!({
+    "mode": mode.map_or_else(|| json!("unavailable"), |mode| json!(mode)),
+    "system_authorization": authorization,
+    "can_open_system_settings": authorization.can_open_system_settings(),
+  })
+}
+
 fn failed_generation(
   request_id: String,
   provenance: LlmProvenance,
@@ -196,6 +217,15 @@ pub async fn shell_command(
       Ok(Value::Null)
     }
     "permissions.list" => crate::permissions::list(app, &host).await,
+    "permissions.open_system_settings" => {
+      let request: OpenPermissionSettings =
+        serde_json::from_value(params).map_err(|_| "Choose an applet permission.")?;
+      blocking(move || {
+        request.permission.open_system_settings(&app)?;
+        Ok(Value::Null)
+      })
+      .await
+    }
     "settings_transfer.export" | "settings_transfer.preview" | "settings_transfer.apply" => {
       crate::settings_transfer::dispatch(app, &host, &method, params).await
     }
@@ -230,19 +260,13 @@ pub async fn shell_command(
           if update.is_some() {
             return Err("This permission is unavailable on this platform.".into());
           }
-          return Ok(json!({
-            "mode": "unavailable",
-            "system_authorization": crate::permissions::SystemAuthorization::Unknown,
-          }));
+          return Ok(permission_status(&app, permission, None));
         }
         let mode = host.view_permission(&session_id, &view_id, permission, update)?;
         if update.is_some() {
           permissions::publish_device_change(&app);
         }
-        Ok(json!({
-          "mode": mode,
-          "system_authorization": permission.system_authorization(&app),
-        }))
+        Ok(permission_status(&app, permission, Some(mode)))
       })
       .await
     }
@@ -266,10 +290,7 @@ pub async fn shell_command(
           change.mode,
         )?;
         permissions::publish_device_change(&app);
-        Ok(json!({
-          "mode": mode,
-          "system_authorization": change.permission.system_authorization(&app),
-        }))
+        Ok(permission_status(&app, change.permission, Some(mode)))
       })
       .await
     }

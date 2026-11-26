@@ -4,8 +4,27 @@ pub mod photos;
 pub mod picker;
 mod recording;
 
+use objc2_app_kit::NSWorkspace;
+use objc2_foundation::{NSProcessInfo, NSString, NSURL};
 pub(crate) use recording::microphone_authorization;
 use tauri::{AppHandle, Manager, RunEvent, Runtime, WebviewWindow, WindowEvent};
+
+pub(crate) fn open_microphone_settings() -> Result<(), String> {
+  let major = NSProcessInfo::processInfo()
+    .operatingSystemVersion()
+    .majorVersion;
+  let pane = if major >= 13 {
+    "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Microphone"
+  } else {
+    "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
+  };
+  let error = || "Open your Mac’s microphone privacy settings to update Apell’s access.".to_owned();
+  let url = NSURL::URLWithString(&NSString::from_str(pane)).ok_or_else(error)?;
+  NSWorkspace::sharedWorkspace()
+    .openURL(&url)
+    .then_some(())
+    .ok_or_else(error)
+}
 
 pub fn configure_window<R: Runtime>(window: &WebviewWindow<R>) {
   let handle = window.clone();

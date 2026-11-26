@@ -460,6 +460,8 @@ Camera and Location default to **Ask every time**. The Apell prompt names the ap
 
 **About this applet** and **Settings → Applet permissions** display system authorization separately from Apell’s saved choice when the platform reports it. The display refreshes when Apell regains focus. Restart an applet after switching sources before editing its device permissions in About. Android’s camera opens a system capture app, so its authorization is handled when the camera opens.
 
+When the system reports a device permission you can change, **Open system settings** opens Apell’s app settings on iOS and Android, or the microphone privacy pane on macOS. System restrictions such as parental controls are shown as **Restricted by system** when the platform reports them.
+
 Cancelling the Apell prompt, camera, or photo picker returns `null`. Device denial, an unavailable service, or a failed location fix rejects the request. Calls wait for native UI to finish and the location fix has a deadline after permission is granted. Only one sensor request can run at a time.
 
 ## Audio and offline speech
