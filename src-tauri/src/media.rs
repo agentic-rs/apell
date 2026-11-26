@@ -1,9 +1,9 @@
 //! Host-owned audio operations. Applets only see paths in their private file store.
 use crate::host::{string, Host, Session};
-use crate::permissions::ManagedPermission::Microphone;
+use crate::permissions::{ManagedPermission::Microphone, PermissionEditBlocker};
 use serde_json::{json, Value};
-use std::sync::{atomic::Ordering, Arc};
-use tauri::{AppHandle, Manager};
+use std::sync::{atomic::Ordering, Arc, Mutex as StateLock, MutexGuard};
+use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
@@ -17,28 +17,79 @@ pub(crate) fn recording_available() -> bool {
 
 #[derive(Default)]
 pub struct AudioService {
-  state: Mutex<AudioSession>,
+  operation: Mutex<()>,
+  state: StateLock<AudioSession>,
 }
 
 impl AudioService {
+  fn session(&self) -> Result<MutexGuard<'_, AudioSession>, String> {
+    self
+      .state
+      .lock()
+      .map_err(|_| "Audio state is unavailable.".into())
+  }
+
+  pub(crate) fn microphone_recording_open(&self, view_id: &str) -> Result<bool, String> {
+    let state = self.session()?;
+    Ok(state.owner.as_deref() == Some(view_id) && state.recording_path.is_some())
+  }
+
+  #[cfg(test)]
+  pub(crate) fn seed_open_recording(&self, view_id: &str) {
+    let _operation = self.operation.try_lock().unwrap();
+    self
+      .update_recording(
+        |state| {
+          state.owner = Some(view_id.into());
+          state.recording_path = Some("recordings/fixture.m4a".into());
+        },
+        || {},
+      )
+      .unwrap();
+  }
+
+  // Writers hold the operation lock. Readers can inspect the capture even
+  // while a native audio request is in flight.
+  fn update_recording<T>(
+    &self,
+    update: impl FnOnce(&mut AudioSession) -> T,
+    notify: impl FnOnce(),
+  ) -> Result<T, String> {
+    let mut state = self.session()?;
+    let was_open = state.recording_path.is_some();
+    let result = update(&mut state);
+    let changed = was_open != state.recording_path.is_some();
+    drop(state);
+    if changed {
+      notify();
+    }
+    Ok(result)
+  }
+
   pub fn edit_microphone_grant<T>(
     &self,
     view_id: &str,
     edit: impl FnOnce() -> Result<T, String>,
   ) -> Result<T, String> {
     // Return busy immediately if a native command is waiting on a picker or prompt.
-    let state = self
-      .state
+    let _operation = self
+      .operation
       .try_lock()
       .map_err(|_| "Wait for the audio operation to finish before changing microphone access.")?;
+    let state = self.session()?;
     if state.recording_path.is_some() {
-      return Err("Stop recording before changing microphone access.".into());
+      return Err(
+        PermissionEditBlocker::MicrophoneRecordingOpen
+          .message()
+          .into(),
+      );
     }
     if state.owner.as_deref().is_some_and(|owner| owner != view_id) {
       return Err(
         "Wait for audio from the previous view to finish before changing microphone access.".into(),
       );
     }
+    drop(state);
     edit()
   }
 }
@@ -104,6 +155,10 @@ fn idle_status() -> Value {
     "position_ms":0, "duration_ms":0})
 }
 
+fn publish_recording_change(app: &AppHandle) {
+  let _ = app.emit_to("main", "apell-microphone-recording-changed", ());
+}
+
 fn watch_session(app: AppHandle, service: Arc<AudioService>, owner: String, session: Session) {
   let mut cancellation = session.cancellation.subscribe();
   tauri::async_runtime::spawn(async move {
@@ -114,10 +169,16 @@ fn watch_session(app: AppHandle, service: Arc<AudioService>, owner: String, sess
     // waiting for the operation lock so a pending picker/permission can settle.
     // No new owner is admitted until that pending call and reset have finished.
     let _ = native(app.clone(), &owner, "reset", json!({"retire":true})).await;
-    let mut state = service.state.lock().await;
-    if state.owner.as_deref() == Some(&owner) {
-      let _ = native(app, &owner, "reset", json!({"retire":true})).await;
-      *state = AudioSession::default();
+    let _operation = service.operation.lock().await;
+    if service
+      .session()
+      .is_ok_and(|state| state.owner.as_deref() == Some(&owner))
+    {
+      let _ = native(app.clone(), &owner, "reset", json!({"retire":true})).await;
+      let _ = service.update_recording(
+        |state| *state = AudioSession::default(),
+        || publish_recording_change(&app),
+      );
     }
   });
 }
@@ -153,18 +214,25 @@ pub async fn dispatch(
   } else {
     None
   };
-  let mut state = host.audio.state.lock().await;
+  let _operation = host.audio.operation.lock().await;
   if !session.alive.load(Ordering::SeqCst) {
     return Err("Applet session is closed.".into());
   }
-  if state.owner.as_deref().is_some_and(|value| value != owner) {
-    return Err("Audio is being released by another view. Try again.".into());
-  }
-  if method == "audio.status" && state.owner.is_none() {
-    return Ok(idle_status());
-  }
-  if state.owner.is_none() {
-    state.owner = Some(owner.into());
+  let (new_owner, recording_path) = {
+    let mut state = host.audio.session()?;
+    if state.owner.as_deref().is_some_and(|value| value != owner) {
+      return Err("Audio is being released by another view. Try again.".into());
+    }
+    let new_owner = state.owner.is_none();
+    if method == "audio.status" && new_owner {
+      return Ok(idle_status());
+    }
+    if new_owner {
+      state.owner = Some(owner.into());
+    }
+    (new_owner, state.recording_path.clone())
+  };
+  if new_owner {
     watch_session(
       app.clone(),
       host.audio.clone(),
@@ -176,7 +244,7 @@ pub async fn dispatch(
   let files = host.files.clone();
   match method {
     "audio.start" | "audio.import" => {
-      if state.recording_path.is_some() {
+      if recording_path.is_some() {
         return Err("Stop the current recording first.".into());
       }
       let importing = method == "audio.import";
@@ -251,7 +319,10 @@ pub async fn dispatch(
           json!({"path":path,"applet_name":session.manifest.name,"remembered":remembered}),
         )
         .await?;
-        state.recording_path = Some(relative.clone());
+        host.audio.update_recording(
+          |state| state.recording_path = Some(relative.clone()),
+          || publish_recording_change(&app),
+        )?;
         if started.get("remember").and_then(Value::as_bool) == Some(true) {
           let grant_app = app.clone();
           let grant_session = session.clone();
@@ -263,15 +334,21 @@ pub async fn dispatch(
             })
           })
           .await;
-          if saved.is_err() {
+          let did_save = if let Ok(did_save) = saved {
+            did_save
+          } else {
             // Rolling back this start does not retire its still-attached view.
             // A terminal watcher reset may race this one; native adapters must
             // keep any already-recorded owner tombstone in either case.
-            if native(app, owner, "reset", json!({"retire":false}))
+            if native(app.clone(), owner, "reset", json!({"retire":false}))
               .await
               .is_ok()
             {
-              if let Some(path) = state.recording_path.take() {
+              let path = host.audio.update_recording(
+                |state| state.recording_path.take(),
+                || publish_recording_change(&app),
+              )?;
+              if let Some(path) = path {
                 let files = host.files.clone();
                 let _ = crate::commands::blocking(move || {
                   discard_unpublished_recording(&session, &files, &path)
@@ -284,25 +361,31 @@ pub async fn dispatch(
               "Could not save microphone permission. Stop the recording before trying again."
                 .into(),
             );
+          };
+          if did_save {
+            crate::permissions::publish_device_change(&app);
           }
         }
         Ok(json!({"path":relative,"mime_type":"audio/mp4"}))
       }
     }
     "audio.stop" => {
-      let path = state
-        .recording_path
-        .clone()
-        .ok_or("No recording is active.")?;
+      let path = recording_path.ok_or("No recording is active.")?;
       let stopped = match checked_native(app.clone(), owner, &session, "stop", json!({})).await {
         Ok(stopped) => stopped,
         Err(error) => {
-          let status = checked_native(app, owner, &session, "status", json!({})).await;
-          state.reconcile_failed_stop(status.as_ref().ok());
+          let status = checked_native(app.clone(), owner, &session, "status", json!({})).await;
+          host.audio.update_recording(
+            |state| state.reconcile_failed_stop(status.as_ref().ok()),
+            || publish_recording_change(&app),
+          )?;
           return Err(error);
         }
       };
-      state.recording_path = None;
+      host.audio.update_recording(
+        |state| state.recording_path = None,
+        || publish_recording_change(&app),
+      )?;
       let checked_path = path.clone();
       let stat = tauri::async_runtime::spawn_blocking(move || {
         files.dispatch(&applet_id, "fs.stat", json!({"path":checked_path}))
@@ -315,7 +398,7 @@ pub async fn dispatch(
       )
     }
     "audio.pause" | "audio.resume" => {
-      if state.recording_path.is_none() {
+      if recording_path.is_none() {
         return Err("No recording is active.".into());
       }
       checked_native(
@@ -328,7 +411,7 @@ pub async fn dispatch(
       .await
     }
     "audio.play" | "audio.share" => {
-      if state.recording_path.is_some() {
+      if recording_path.is_some() {
         return Err("Stop the current recording first.".into());
       }
       let relative = string(&params, "path")?.to_owned();
@@ -490,8 +573,8 @@ mod tests {
   #[test]
   fn microphone_grant_edits_require_idle_audio_and_hold_the_capture_lock() {
     let service = AudioService::default();
-    let mut state = service.state.try_lock().unwrap();
-    state.owner = Some("view".into());
+    let operation = service.operation.try_lock().unwrap();
+    service.session().unwrap().owner = Some("view".into());
     assert!(service
       .edit_microphone_grant("view", || -> Result<(), String> {
         panic!("the native operation is still in progress");
@@ -499,8 +582,8 @@ mod tests {
       .unwrap_err()
       .contains("audio operation"));
 
-    state.recording_path = Some("recordings/active.m4a".into());
-    drop(state);
+    drop(operation);
+    service.seed_open_recording("view");
     assert!(service
       .edit_microphone_grant("view", || -> Result<(), String> {
         panic!("the recording is still active");
@@ -508,7 +591,7 @@ mod tests {
       .unwrap_err()
       .contains("Stop recording"));
 
-    service.state.try_lock().unwrap().recording_path = None;
+    service.session().unwrap().recording_path = None;
     assert!(service
       .edit_microphone_grant("other-view", || -> Result<(), String> {
         panic!("the previous owner has not yet been released");
@@ -517,10 +600,50 @@ mod tests {
       .contains("previous view"));
     service
       .edit_microphone_grant("view", || {
-        assert!(service.state.try_lock().is_err());
+        assert!(service.operation.try_lock().is_err());
         Ok(())
       })
       .unwrap();
+  }
+
+  #[test]
+  fn microphone_capture_can_be_read_during_audio_operations_and_notifies_transitions() {
+    let service = AudioService::default();
+    service.session().unwrap().owner = Some("view".into());
+    let _operation = service.operation.try_lock().unwrap();
+    let mut changes = 0;
+    let mut notify = || changes += 1;
+
+    // Holding the operation lock alone can be a picker or consent prompt.
+    assert!(!service.microphone_recording_open("view").unwrap());
+    service
+      .update_recording(
+        |state| state.recording_path = Some("recordings/fixture.m4a".into()),
+        &mut notify,
+      )
+      .unwrap();
+    assert!(service.microphone_recording_open("view").unwrap());
+    assert!(!service.microphone_recording_open("earlier-view").unwrap());
+
+    service
+      .update_recording(
+        |state| state.reconcile_failed_stop(Some(&json!({"recording_state":"paused"}))),
+        &mut notify,
+      )
+      .unwrap();
+    assert!(service.microphone_recording_open("view").unwrap());
+    service
+      .update_recording(
+        |state| state.reconcile_failed_stop(Some(&json!({"recording_state":"idle"}))),
+        &mut notify,
+      )
+      .unwrap();
+    assert!(!service.microphone_recording_open("view").unwrap());
+
+    service
+      .update_recording(|state| *state = AudioSession::default(), notify)
+      .unwrap();
+    assert_eq!(changes, 2);
   }
 
   #[test]

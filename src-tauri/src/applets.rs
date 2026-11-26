@@ -489,9 +489,15 @@ impl Host {
       require_declared_permission(manifest, permission)?;
       (manifest.applet_id.clone(), run.grant_source.clone())
     };
-    let edit_blocker = self
+    let mut edit_blocker = self
       .check_installed_permission_target(&applet_id, &source, permission)
       .err();
+    if edit_blocker.is_none()
+      && permission == ManagedPermission::Microphone
+      && self.audio.microphone_recording_open(view_id)?
+    {
+      edit_blocker = Some(PermissionEditBlocker::MicrophoneRecordingOpen);
+    }
     let mode = match update {
       Some(mode) => {
         if let Some(blocker) = edit_blocker {
@@ -513,19 +519,20 @@ impl Host {
     permission: ManagedPermission,
     applet_id: &str,
     source: &GrantSource,
-  ) -> Result<(), String> {
+  ) -> Result<bool, String> {
     // An approval still authorizes the current request. Only persist it if
     // the installed source can be checked without waiting for an install.
     let Ok(_install) = self.store_gate.try_lock() else {
-      return Ok(());
+      return Ok(false);
     };
     if self
       .check_installed_permission_target(applet_id, source, permission)
-      .is_ok()
+      .is_err()
     {
-      self.grants.remember(permission, applet_id, source)?;
+      return Ok(false);
     }
-    Ok(())
+    self.grants.remember(permission, applet_id, source)?;
+    Ok(true)
   }
 
   fn check_installed_permission_target(
@@ -1256,9 +1263,9 @@ mod tests {
         Some(PermissionMode::Remembered)
       )
       .is_err());
-    host
+    assert!(!host
       .remember_installed_permission(Microphone, id, &source)
-      .unwrap();
+      .unwrap());
     assert_eq!(
       host.grants.mode(Microphone, id, &new_source).unwrap(),
       PermissionMode::Blocked
@@ -1482,6 +1489,47 @@ mod tests {
         .unwrap()
         .mode,
       PermissionMode::Ask
+    );
+  }
+
+  #[test]
+  fn about_reports_open_microphone_capture_after_checking_the_package() {
+    let root = tempfile::tempdir().unwrap();
+    let host = Host::new(root.path().to_owned()).unwrap();
+    install_with_permissions(&host, APPLET, "1.0.0", &["audio"]);
+    seed_run(&host, RUN, APPLET);
+    let view = host.attach_run(RUN).unwrap();
+    let read = || {
+      host
+        .view_permission(RUN, &view.view_id, Microphone, None)
+        .unwrap()
+    };
+    assert_eq!(read().edit_blocker, None);
+
+    host.audio.seed_open_recording(&view.view_id);
+    let blocked = read();
+    assert_eq!(blocked.mode, PermissionMode::Ask);
+    assert_eq!(
+      serde_json::to_value(blocked.edit_blocker).unwrap(),
+      "microphone_recording_open"
+    );
+    assert_eq!(
+      host
+        .view_permission(
+          RUN,
+          &view.view_id,
+          Microphone,
+          Some(PermissionMode::Blocked)
+        )
+        .unwrap_err(),
+      PermissionEditBlocker::MicrophoneRecordingOpen.message()
+    );
+    assert_eq!(read().mode, PermissionMode::Ask);
+
+    install_with_permissions(&host, APPLET, "2.0.0", &["audio"]);
+    assert_eq!(
+      read().edit_blocker,
+      Some(PermissionEditBlocker::SourceChanged)
     );
   }
 

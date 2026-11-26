@@ -13,6 +13,7 @@ import {
   getPermissionMode,
   message,
   onAppletInstallationChanged,
+  onMicrophoneRecordingChanged,
   onPermissionsChanged,
   setPermissionMode,
 } from '../lib/tauri';
@@ -34,6 +35,7 @@ const edit_blocker_labels = {
   permission_removed:
     'The installed version no longer requests this permission. Restart to open the installed version.',
   installation_unavailable: 'The installed package is unavailable. Open Library to check it.',
+  microphone_recording_open: 'Finish the current recording to change microphone access.',
 } satisfies Record<NonNullable<ViewPermissionStatus['edit_blocker']>, string>;
 
 function PermissionAccess({
@@ -97,12 +99,14 @@ function PermissionAccess({
     const refresh = () => {
       if (open) setRefreshRequested(true);
     };
-    const unsubscribe = [
+    const subscriptions = [
       onPermissionsChanged(refresh),
       onAppletInstallationChanged((changed_id) => {
         if (changed_id === applet_id) refresh();
       }),
-    ].map((subscription) => subscription.catch(() => undefined));
+    ];
+    if (permission === 'microphone') subscriptions.push(onMicrophoneRecordingChanged(refresh));
+    const unsubscribe = subscriptions.map((subscription) => subscription.catch(() => undefined));
     void Promise.all(unsubscribe).then(() => {
       if (open) void update();
     });
@@ -111,7 +115,7 @@ function PermissionAccess({
       operations.cancel();
       for (const stop of unsubscribe) void stop.then((unlisten) => unlisten?.());
     };
-  }, [applet_id, read_only, unavailable_reason, update]);
+  }, [applet_id, permission, read_only, unavailable_reason, update]);
 
   useEffect(() => {
     if (!refresh_requested || busy || read_only || unavailable_reason) return;

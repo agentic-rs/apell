@@ -147,6 +147,7 @@ pub(crate) enum PermissionEditBlocker {
   SourceChanged,
   PermissionRemoved,
   InstallationUnavailable,
+  MicrophoneRecordingOpen,
 }
 
 impl PermissionEditBlocker {
@@ -158,6 +159,7 @@ impl PermissionEditBlocker {
       Self::InstallationUnavailable => {
         "The installed applet is unavailable. Review it in Library before changing its device permissions."
       }
+      Self::MicrophoneRecordingOpen => "Stop recording before changing microphone access.",
     }
   }
 }

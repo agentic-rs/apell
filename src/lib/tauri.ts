@@ -224,6 +224,8 @@ export const openPermissionSystemSettings = (permission: ManagedPermission) =>
   shellCall<void>('permissions.open_system_settings', { permission });
 export const onPermissionsChanged = (handler: () => void) =>
   listen('apell-permissions-changed', handler);
+export const onMicrophoneRecordingChanged = (handler: () => void) =>
+  listen('apell-microphone-recording-changed', handler);
 export const forgetPermission = (
   applet_id: string,
   permission: ManagedPermission,
