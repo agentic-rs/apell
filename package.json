@@ -10,7 +10,7 @@
     "build:chatbot": "node --experimental-strip-types scripts/build-chatbot.ts",
     "sync:app-icons": "node --experimental-strip-types scripts/sync-app-icons.ts",
     "tauri": "node --experimental-strip-types scripts/tauri.ts",
-    "desktop:dev": "pnpm tauri dev",
+    "desktop:dev": "pnpm dev:local shell",
     "desktop:build": "pnpm tauri build",
     "landing:dev": "vite --config scripts/landing-vite.config.ts",
     "store:build": "tsc --project store/web/tsconfig.json && vite build --config store/web/vite.config.ts",

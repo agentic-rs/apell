@@ -270,7 +270,8 @@ function runShell(device: string | undefined, reuse_frontend = false) {
   run(
     'pnpm',
     [
-      'desktop:dev',
+      'tauri',
+      'dev',
       '--features',
       'local-dev',
       '--config',

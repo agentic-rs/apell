@@ -22,9 +22,10 @@ pnpm install --frozen-lockfile
 pnpm desktop:dev
 ```
 
-For local testing with synthetic credentials, use [Apell Local](docs/local-development.md#run-the-macos-test-app).
-It stores credentials in private files under the checkout, so you can iterate
-without macOS Keychain prompts.
+`pnpm desktop:dev` opens [Apell Local](docs/local-development.md#run-the-macos-test-app).
+It stores test credentials in private files under the checkout, so you can
+iterate without macOS Keychain prompts. To try the steps below with a real model
+connection, start the regular app with `pnpm tauri dev`.
 
 The development and production builds compile Companion's Rust guest for `wasm32-unknown-unknown`, bundle its TypeScript and CSS, and pack the result with the Rust CLI. Rust emits the guest module directly.
 
@@ -73,7 +74,7 @@ pnpm desktop:build --bundles app
 open target/release/bundle/macos/apell-app.app
 ```
 
-The `.app` contains the frontend and Companion bundle and runs without a development server. The macOS configuration uses an ad-hoc signature for local use. Configure a Developer ID locally for public distribution, following [Tauri's macOS signing guide](https://v2.tauri.app/distribute/sign/macos/). For an interactive development build, use `pnpm desktop:dev`. Build products and personal signing configuration stay outside Git.
+The `.app` contains the frontend and Companion bundle and runs without a development server. The macOS configuration uses an ad-hoc signature for local use. Configure a Developer ID locally for public distribution, following [Tauri's macOS signing guide](https://v2.tauri.app/distribute/sign/macos/). Use `pnpm tauri dev` to run the regular app with a development server. Build products and personal signing configuration stay outside Git.
 
 macOS uses Keychain for provider credentials and native file dialogs for packages and encrypted settings transfers. Applets can import images and audio, record microphone audio into private files, and play private audio through the same bridge used on mobile. Recording uses the existing per-applet **Allow once / Remember / Cancel** prompt and macOS microphone permission. Start or resume with the window visible; an ongoing recording continues when the window is hidden, closed, or minimized. Closing or reloading the applet stops capture and retains its partial file. Quitting Apell finalizes the recording before the host stops.
 
