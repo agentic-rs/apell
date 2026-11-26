@@ -15,6 +15,7 @@ function offer(applet_id: string, store_url: string): StoreUpdateEntry {
       name: applet_id,
       version: '1.0.0',
       sha256: 'a'.repeat(64),
+      removal_revision: 'b'.repeat(64),
       network: true,
       permissions: [],
       source: { kind: 'store', store_url, applet_id, channel: 'stable' },

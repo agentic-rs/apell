@@ -11,12 +11,14 @@ import {
   restartApplet,
 } from '../lib/tauri';
 import { readPackageFile } from '../lib/packageFile';
+import { storeSourceLabel } from '../lib/storeState';
 import type {
   AppletInstallResult,
   AppletListReport,
   AppletSession,
   InstallProgress,
   InstalledApplet,
+  PackageSource,
   StoreSwitchSnapshot,
   UnavailableApplet,
 } from '../lib/types';
@@ -30,11 +32,18 @@ import { Sheet } from '../components/Sheet';
 import { UnavailableAppletPermissions } from '../components/UnavailableAppletPermissions';
 import type { StoreDownloads } from '../components/store/useStoreDownloads';
 
+interface RemovalReview {
+  panel: 'remove';
+  removal_revision: string;
+  installation?: { version: string; source: PackageSource | null };
+}
+
 type AppletAction = {
   applet_id: string;
   name: string;
 } & (
-  | { panel: 'actions' | 'info' | 'remove' | 'permissions' }
+  | { panel: 'actions' | 'info' | 'permissions' }
+  | RemovalReview
   | { panel: 'restore'; expected: StoreSwitchSnapshot }
 );
 
@@ -290,9 +299,34 @@ export function Library({
     setBusy(busy);
     onBusyChange(busy);
   };
-  const remove = (target: AppletAction) =>
+  const remove = (target: Extract<AppletAction, RemovalReview>) =>
     void run(async () => {
-      await removeApplet(target.applet_id);
+      const closeReview = () => {
+        library_focus.current = { applet_id: target.applet_id };
+        setAction(undefined);
+      };
+      const refreshAfterFailure = () =>
+        refresh().catch((error) => {
+          setLoadError(`Could not refresh the library. ${message(error)}`);
+        });
+      const result = await removeApplet(target.applet_id, target.removal_revision).catch(
+        async (error) => {
+          const report = await refreshAfterFailure();
+          if (report) {
+            const sameId = ({ applet_id }: { applet_id: string }) => applet_id === target.applet_id;
+            const current = report.applets.find(sameId) ?? report.unavailable.find(sameId);
+            if (current?.removal_revision !== target.removal_revision) closeReview();
+          }
+          throw error;
+        },
+      );
+      if (result.status === 'changed') {
+        closeReview();
+        setFailed(true);
+        setStatus('This applet changed. Review the current installation before removing it.');
+        await refreshAfterFailure();
+        return;
+      }
       setApplets((current) => current.filter((item) => item.applet_id !== target.applet_id));
       setUnavailable((current) => current.filter((item) => item.applet_id !== target.applet_id));
       setRestartRequired((current) => current.filter((id) => id !== target.applet_id));
@@ -360,59 +394,66 @@ export function Library({
               <Icon name="reload" />
             </button>
           </div>
-          {unavailable.map(({ applet_id, error, can_remove, restore_snapshot }) => (
-            <div className="unavailable-applet" key={applet_id} data-library-applet={applet_id}>
-              <strong>{applet_id}</strong>
-              <p>{error}</p>
-              <div className="button-row">
-                {restore_snapshot && (
+          {unavailable.map(
+            ({ applet_id, error, can_remove, removal_revision, restore_snapshot }) => (
+              <div className="unavailable-applet" key={applet_id} data-library-applet={applet_id}>
+                <strong>{applet_id}</strong>
+                <p>{error}</p>
+                <div className="button-row">
+                  {restore_snapshot && (
+                    <button
+                      disabled={busy}
+                      aria-label={`Restore package for ${applet_id}`}
+                      aria-haspopup="dialog"
+                      onClick={(event) => {
+                        event.currentTarget.focus({ preventScroll: true });
+                        showAction({
+                          applet_id,
+                          name: applet_id,
+                          panel: 'restore',
+                          expected: restore_snapshot,
+                        });
+                      }}
+                    >
+                      Restore package
+                    </button>
+                  )}
                   <button
+                    type="button"
+                    id={`library-permissions-${applet_id}`}
                     disabled={busy}
-                    aria-label={`Restore package for ${applet_id}`}
+                    aria-label={`Device permissions for ${applet_id}`}
                     aria-haspopup="dialog"
                     onClick={(event) => {
                       event.currentTarget.focus({ preventScroll: true });
-                      showAction({
-                        applet_id,
-                        name: applet_id,
-                        panel: 'restore',
-                        expected: restore_snapshot,
-                      });
+                      showAction({ applet_id, name: applet_id, panel: 'permissions' });
                     }}
                   >
-                    Restore package
+                    Device permissions
                   </button>
-                )}
-                <button
-                  type="button"
-                  id={`library-permissions-${applet_id}`}
-                  disabled={busy}
-                  aria-label={`Device permissions for ${applet_id}`}
-                  aria-haspopup="dialog"
-                  onClick={(event) => {
-                    event.currentTarget.focus({ preventScroll: true });
-                    showAction({ applet_id, name: applet_id, panel: 'permissions' });
-                  }}
-                >
-                  Device permissions
-                </button>
-                {can_remove && (
-                  <button
-                    className="danger"
-                    disabled={busy}
-                    aria-label={`Remove ${applet_id}`}
-                    aria-haspopup="dialog"
-                    onClick={(event) => {
-                      event.currentTarget.focus({ preventScroll: true });
-                      showAction({ applet_id, name: applet_id, panel: 'remove' });
-                    }}
-                  >
-                    Remove
-                  </button>
-                )}
+                  {can_remove && removal_revision && (
+                    <button
+                      className="danger"
+                      disabled={busy}
+                      aria-label={`Remove ${applet_id}`}
+                      aria-haspopup="dialog"
+                      onClick={(event) => {
+                        event.currentTarget.focus({ preventScroll: true });
+                        showAction({
+                          applet_id,
+                          name: applet_id,
+                          panel: 'remove',
+                          removal_revision,
+                        });
+                      }}
+                    >
+                      Remove
+                    </button>
+                  )}
+                </div>
               </div>
-            </div>
-          ))}
+            ),
+          )}
         </aside>
       )}
       {!loading && !load_error && !applets.length && (
@@ -492,9 +533,23 @@ export function Library({
           >
             {action.panel === 'remove' ? (
               <>
+                <p className="applet-removal-target">
+                  {action.installation ? (
+                    <>
+                      <strong>Version {action.installation.version}</strong>
+                      <bdi>
+                        {action.installation.source
+                          ? storeSourceLabel(action.installation.source)
+                          : 'Local package'}
+                      </bdi>
+                    </>
+                  ) : (
+                    <strong>Package unavailable</strong>
+                  )}
+                </p>
                 <p>
-                  Its saved data stays on this device. Reinstall from the same source to use it
-                  again.
+                  Apell clears this applet’s remembered device permissions. Its saved data stays on
+                  this device for a reinstall from the same source.
                 </p>
                 <div className="button-row">
                   <button disabled={busy} onClick={() => setAction(undefined)}>
@@ -530,13 +585,25 @@ export function Library({
                     Restart applet
                   </button>
                 )}
-                <button
-                  className="applet-menu-action danger"
-                  onClick={() => setAction({ ...action, panel: 'remove' })}
-                >
-                  <Icon name="trash" />
-                  Remove applet
-                </button>
+                {action_applet && (
+                  <button
+                    className="applet-menu-action danger"
+                    onClick={() =>
+                      setAction({
+                        ...action,
+                        panel: 'remove',
+                        removal_revision: action_applet.removal_revision,
+                        installation: {
+                          version: action_applet.version,
+                          source: action_applet.source ?? null,
+                        },
+                      })
+                    }
+                  >
+                    <Icon name="trash" />
+                    Remove applet
+                  </button>
+                )}
               </div>
             )}
           </Sheet>

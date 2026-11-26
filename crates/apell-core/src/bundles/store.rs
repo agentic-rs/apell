@@ -17,6 +17,7 @@ pub struct InstalledApplet {
   pub manifest: Manifest,
   pub sha256: String,
   pub source: Option<PackageSource>,
+  pub removal_revision: String,
   /// Optional package-owned artwork, validated from this exact package snapshot.
   pub icon_data_url: Option<String>,
 }
@@ -27,6 +28,7 @@ pub struct UnavailableApplet {
   pub applet_id: String,
   pub error: String,
   pub can_remove: bool,
+  pub removal_revision: Option<String>,
   #[serde(skip_serializing_if = "Option::is_none")]
   pub restore_snapshot: Option<StoreSwitchSnapshot>,
   #[serde(skip)]
@@ -81,6 +83,11 @@ impl PackageRecord {
     }
   }
 
+  fn removal_revision(&self, available: bool) -> String {
+    let reviewed = serde_json::json!([self, self.legacy, available]);
+    digest(reviewed.to_string().as_bytes())
+  }
+
   fn write(&self, directory: &Path) -> Result<(), String> {
     let pointer = serde_json::to_vec(self).map_err(|_| "Could not encode package source.")?;
     let path = directory.join("active");
@@ -99,6 +106,7 @@ impl PackageRecord {
       manifest: bundle.manifest.clone(),
       sha256: self.sha256.clone(),
       source: self.source.clone(),
+      removal_revision: self.removal_revision(true),
       icon_data_url: bundle
         .read_asset("icon.png")
         .and_then(|bytes| crate::icons::png_data_url(bytes).ok()),
@@ -131,6 +139,27 @@ enum InstallGuard<'a> {
 
 pub struct BundleStore {
   root: PathBuf,
+}
+
+/// Holds the package storage lock from review through removal.
+pub struct PreparedRemoval {
+  _lock: fs::File,
+  directory: PathBuf,
+  record: PackageRecord,
+}
+
+impl PreparedRemoval {
+  pub fn remove(
+    mut self,
+    before_remove: impl FnOnce() -> Result<(), String>,
+  ) -> Result<(), String> {
+    if !self.record.removed {
+      before_remove()?;
+      self.record.removed = true;
+      self.record.write(&self.directory)?;
+    }
+    remove_versions(&self.directory)
+  }
 }
 
 impl BundleStore {
@@ -170,15 +199,39 @@ impl BundleStore {
     applet_id: &str,
     before_remove: impl FnOnce() -> Result<(), String>,
   ) -> Result<(), String> {
-    let _lock = self.lock_storage()?;
-    let mut record = self.record(applet_id)?.ok_or("Applet is not installed.")?;
-    let directory = self.root.join(applet_id);
-    if !record.removed {
-      before_remove()?;
-      record.removed = true;
-      record.write(&directory)?;
+    self
+      .lock_removal(applet_id)?
+      .ok_or("Applet is not installed.")?
+      .remove(before_remove)
+  }
+
+  pub fn prepare_removal(
+    &self,
+    applet_id: &str,
+    expected_revision: &str,
+  ) -> Result<Option<PreparedRemoval>, String> {
+    if !valid_hash(expected_revision) {
+      return Err("Invalid reviewed package revision.".into());
     }
-    remove_versions(&directory)
+    let Some(removal) = self.lock_removal(applet_id)? else {
+      return Ok(None);
+    };
+    let active = &removal.record;
+    if active.removed
+      || active.removal_revision(self.read_active_bundle(active).is_ok()) != expected_revision
+    {
+      return Ok(None);
+    }
+    Ok(Some(removal))
+  }
+
+  fn lock_removal(&self, applet_id: &str) -> Result<Option<PreparedRemoval>, String> {
+    let _lock = self.lock_storage()?;
+    Ok(self.record(applet_id)?.map(|record| PreparedRemoval {
+      _lock,
+      directory: self.root.join(applet_id),
+      record,
+    }))
   }
 
   pub fn install_with_source(
@@ -593,6 +646,7 @@ impl BundleStore {
             applet_id: id.to_owned(),
             error: error.into_message(),
             can_remove: true,
+            removal_revision: Some(active.removal_revision(false)),
             restore_snapshot,
             active_snapshot: Some(snapshot),
           })
@@ -602,6 +656,7 @@ impl BundleStore {
         applet_id: id.to_owned(),
         error,
         can_remove: false,
+        removal_revision: None,
         restore_snapshot: None,
         active_snapshot: None,
       }),

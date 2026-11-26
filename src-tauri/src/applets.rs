@@ -114,6 +114,13 @@ pub(crate) struct DetachedRun {
   version: String,
 }
 
+#[derive(Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub(crate) enum RemoveAppletStatus {
+  Removed,
+  Changed,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct ViewPermission {
   pub mode: PermissionMode,
@@ -370,20 +377,28 @@ impl Host {
       .await
   }
 
-  pub async fn remove_applet(
+  pub(crate) async fn remove_applet(
     &self,
     applet_id: &str,
+    removal_revision: &str,
     on_stopped: impl FnOnce(&str),
-  ) -> Result<(), String> {
-    // An earlier download must finish publishing before removal. Prevent
-    // launch from attaching to the retiring run or starting a replacement.
+  ) -> Result<RemoveAppletStatus, String> {
+    // An earlier download may publish while the confirmation is open. Verify
+    // the package before retiring the run and hold the review through removal.
     let _install = self.store_gate.lock().await;
     let _launch = self.run_gate.lock().await;
-    self.stop_applet_locked(applet_id, on_stopped).await?;
-    let grants = self.grants.clone();
     let store = self.bundles.clone();
     let id = applet_id.to_owned();
-    crate::commands::blocking(move || store.remove(&id, || grants.forget_all(&id))).await
+    let revision = removal_revision.to_owned();
+    let removal = crate::commands::blocking(move || store.prepare_removal(&id, &revision)).await?;
+    let Some(removal) = removal else {
+      return Ok(RemoveAppletStatus::Changed);
+    };
+    self.stop_applet_locked(applet_id, on_stopped).await?;
+    let grants = self.grants.clone();
+    let id = applet_id.to_owned();
+    crate::commands::blocking(move || removal.remove(|| grants.forget_all(&id))).await?;
+    Ok(RemoveAppletStatus::Removed)
   }
 
   pub fn view_bundle(&self, view_id: &str) -> Result<Arc<Bundle>, String> {
@@ -1034,11 +1049,15 @@ mod tests {
     let neighbor = host.view_grant_source(&current.view_id).unwrap();
     host.grants.remember(Camera, "neighbor", &neighbor).unwrap();
 
+    let reviewed = host.bundles.installed(APPLET).unwrap().removal_revision;
     let mut stopped = None;
-    host
-      .remove_applet(APPLET, |id| stopped = Some(id.to_owned()))
-      .await
-      .unwrap();
+    assert_eq!(
+      host
+        .remove_applet(APPLET, &reviewed, |id| stopped = Some(id.to_owned()))
+        .await
+        .unwrap(),
+      RemoveAppletStatus::Removed
+    );
     assert_eq!(stopped.as_deref(), Some(RUN));
     assert!(*run.cancellation.borrow());
     assert!(host.session(RUN, "sqlite.open").is_err());
@@ -1059,6 +1078,52 @@ mod tests {
         .unwrap(),
       json!({"found":true,"value":"dark"})
     );
+  }
+
+  #[tokio::test]
+  async fn stale_removal_preserves_the_new_source_and_leaves_the_run_and_grant_alone() {
+    let root = tempfile::tempdir().unwrap();
+    let host = Host::new(root.path().to_owned()).unwrap();
+    let package = package_with_permissions(APPLET, "1.0.0", &["sqlite", "audio"]);
+    let local = host.bundles.install(&package, &digest(&package)).unwrap();
+    seed_run(&host, RUN, APPLET);
+    let view = host.attach_run(RUN).unwrap();
+    let run = host.session(RUN, "sqlite.open").unwrap();
+    let source = host.view_grant_source(&view.view_id).unwrap();
+    host.detach_view(RUN, &view.view_id).unwrap();
+    host.grants.remember(Microphone, APPLET, &source).unwrap();
+
+    let store = host
+      .bundles
+      .switch_to_store_release(
+        &package,
+        &local.sha256,
+        StoreSource {
+          store_url: "https://store.example".into(),
+          applet_id: APPLET.into(),
+          channel: StoreChannel::Stable,
+        },
+        &StoreSwitchSnapshot {
+          sha256: local.sha256.clone(),
+          source: local.source,
+          removed: false,
+        },
+      )
+      .unwrap();
+    assert_eq!(store.sha256, local.sha256);
+    assert_ne!(store.removal_revision, local.removal_revision);
+    assert_eq!(
+      host
+        .remove_applet(APPLET, &local.removal_revision, |_| panic!(
+          "stale removal stopped the run"
+        ))
+        .await
+        .unwrap(),
+      RemoveAppletStatus::Changed
+    );
+    assert_eq!(host.bundles.installed(APPLET).unwrap().source, store.source);
+    assert!(!*run.cancellation.borrow());
+    assert!(host.grants.remembered(Microphone, APPLET, &source).unwrap());
   }
 
   #[test]

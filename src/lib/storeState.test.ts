@@ -37,6 +37,7 @@ const installed: InstalledApplet = {
   name: 'Chat',
   version: '1.0.0',
   sha256: stable.sha256,
+  removal_revision: 'c'.repeat(64),
   permissions: ['llm', 'fs'],
   network: false,
   source: { kind: 'store', store_url, applet_id: 'chat', channel: 'stable' },
@@ -311,7 +312,14 @@ describe('store catalog filtering', () => {
         },
         { ...nightly_install, applet_id: 'different-id' },
       ],
-      unavailable: [{ applet_id: 'broken', error: 'fixture package read error', can_remove: true }],
+      unavailable: [
+        {
+          applet_id: 'broken',
+          error: 'fixture package read error',
+          can_remove: true,
+          removal_revision: 'b'.repeat(64),
+        },
+      ],
     };
     const reviewed = reviewSavedCatalog(catalog, report);
     expect(

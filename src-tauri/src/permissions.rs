@@ -715,6 +715,7 @@ mod tests {
       .unwrap(),
       sha256: "a".repeat(64),
       source: Some(source),
+      removal_revision: "b".repeat(64),
       icon_data_url: None,
     }
   }

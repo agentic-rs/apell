@@ -13,6 +13,7 @@ export interface Manifest {
 }
 export interface InstalledApplet extends Manifest {
   sha256: string;
+  removal_revision: string;
   icon_data_url?: string | null;
   source?: PackageSource | null;
 }
@@ -38,7 +39,11 @@ export interface UnavailableApplet {
   applet_id: string;
   error: string;
   can_remove: boolean;
+  removal_revision: string | null;
   restore_snapshot?: StoreSwitchSnapshot;
+}
+export interface AppletRemovalResult {
+  status: 'removed' | 'changed';
 }
 export interface AppletListReport {
   applets: InstalledApplet[];

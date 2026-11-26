@@ -35,6 +35,13 @@ struct StopApplet {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct RemoveApplet {
+  applet_id: String,
+  removal_revision: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct InstalledPermissionChange {
   applet_id: String,
   installed_revision: String,
@@ -228,13 +235,18 @@ pub async fn shell_command(
     }
     "applets.update" => crate::install::update(app, &host, params).await,
     "applets.remove" => {
-      let applet_id = string(&params, "applet_id")?;
-      host
-        .remove_applet(applet_id, |id| crate::applets::notify_stopped(&app, id))
+      let request: RemoveApplet =
+        serde_json::from_value(params).map_err(|_| "Review the applet before removing it.")?;
+      let outcome = host
+        .remove_applet(&request.applet_id, &request.removal_revision, |id| {
+          crate::applets::notify_stopped(&app, id)
+        })
         .await?;
-      crate::install::publish_installation_change(&app, applet_id);
-      crate::store_commands::publish_download_change(&app);
-      Ok(Value::Null)
+      if outcome == crate::applets::RemoveAppletStatus::Removed {
+        crate::install::publish_installation_change(&app, &request.applet_id);
+        crate::store_commands::publish_download_change(&app);
+      }
+      serde_json::to_value(outcome).map_err(|_| "Could not encode applet removal.".into())
     }
     "applets.github_release" => crate::install::release(string(&params, "repository")?).await,
     "applets.current" => {

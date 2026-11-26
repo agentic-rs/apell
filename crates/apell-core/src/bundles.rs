@@ -13,8 +13,8 @@ use std::{
   path::Path,
 };
 pub use store::{
-  AppletListReport, AppletReportEntry, BundleStore, InstalledApplet, StoreSwitchSnapshot,
-  UnavailableApplet,
+  AppletListReport, AppletReportEntry, BundleStore, InstalledApplet, PreparedRemoval,
+  StoreSwitchSnapshot, UnavailableApplet,
 };
 
 enum ArchiveError {

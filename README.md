@@ -44,8 +44,9 @@ Store client contract.
 Press and hold a Library icon or right-click it on desktop. Choose **Applet
 info** to check the installed version, change device permissions, and review
 Store updates or switch channels without opening the applet. Choose **Remove
-applet** and confirm to remove it. Removal keeps its local data for a later
-reinstall from the same source.
+applet**, review the installed version and source, and confirm. If the
+installation changes during review, reopen the confirmation for the current
+package. Removal keeps local data for a later reinstall from the same source.
 
 Close returns you to Library and leaves the applet running. Open **Running
 applets** in Library to stop one and free a slot. Stopping ends work still in

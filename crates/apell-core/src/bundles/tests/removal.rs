@@ -2,6 +2,43 @@ use super::*;
 use std::fs;
 
 #[test]
+fn restoring_the_same_package_invalidates_an_unavailable_removal_review() {
+  let dir = tempfile::tempdir().unwrap();
+  let store = BundleStore::new(dir.path().into());
+  let bytes = package("sample", "1.0.0");
+  let installed = store.install(&bytes, &digest(&bytes)).unwrap();
+  let archive = dir
+    .path()
+    .join("sample")
+    .join(format!("{}.apel", installed.sha256));
+  fs::remove_file(archive).unwrap();
+
+  let unavailable = store.list_report().unwrap().unavailable.pop().unwrap();
+  let reviewed = unavailable.removal_revision.unwrap();
+  assert_ne!(reviewed, installed.removal_revision);
+  assert!(store
+    .prepare_removal("sample", &reviewed)
+    .unwrap()
+    .is_some());
+
+  let restored = store
+    .restore_package("sample", &unavailable.restore_snapshot.unwrap(), &bytes)
+    .unwrap();
+  assert_eq!(restored.removal_revision, installed.removal_revision);
+  assert!(store
+    .prepare_removal("sample", &reviewed)
+    .unwrap()
+    .is_none());
+  store
+    .prepare_removal("sample", &restored.removal_revision)
+    .unwrap()
+    .unwrap()
+    .remove(|| Ok(()))
+    .unwrap();
+  assert!(store.installed("sample").is_err());
+}
+
+#[test]
 fn removal_keeps_only_the_binding_and_accepts_a_fresh_install_from_its_source() {
   let github: PackageSource = source(10, "sample.apel").into();
   let stable: PackageSource = store_source(StoreChannel::Stable).into();

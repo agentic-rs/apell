@@ -336,6 +336,13 @@ svg {
 .library-restart {
   margin-top: 10px;
 }
+.applet-removal-target {
+  display: grid;
+  gap: 4px;
+}
+.applet-removal-target bdi {
+  color: var(--muted);
+}
 .error {
   color: var(--danger);
 }

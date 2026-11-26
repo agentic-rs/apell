@@ -10,6 +10,7 @@ import type {
   AppletInstallation,
   AppletListReport,
   AppletPermission,
+  AppletRemovalResult,
   AppletRun,
   AppletSession,
   BackendEvent,
@@ -181,7 +182,8 @@ export const updateApplet = (applet_id: string, sha256: string, source: GitHubPa
     applet_id,
     expected: { sha256, source, removed: false },
   });
-export const removeApplet = (applet_id: string) => shellCall<void>('applets.remove', { applet_id });
+export const removeApplet = (applet_id: string, removal_revision: string) =>
+  shellCall<AppletRemovalResult>('applets.remove', { applet_id, removal_revision });
 export const restoreAppletPackage = (
   applet_id: string,
   expected: StoreSwitchSnapshot,

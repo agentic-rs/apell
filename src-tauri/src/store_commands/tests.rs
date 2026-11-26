@@ -35,6 +35,7 @@ fn installed(version: &str) -> InstalledApplet {
       lib: None,
     },
     sha256: "a".repeat(64),
+    removal_revision: "b".repeat(64),
     icon_data_url: None,
     source: Some(PackageSource::Store(StoreSource {
       store_url: "https://store.example".into(),
@@ -132,6 +133,7 @@ fn saved_catalog_recomputes_installation_flags_without_claiming_updates() {
     applet_id: "broken".into(),
     error: "Broken package".into(),
     can_remove: false,
+    removal_revision: None,
     restore_snapshot: None,
     active_snapshot: None,
   });
@@ -217,6 +219,7 @@ async fn updates_fetch_only_distinct_canonical_installed_origins() {
     applet_id: "broken".into(),
     error: "Broken package".into(),
     can_remove: false,
+    removal_revision: None,
     restore_snapshot: None,
     active_snapshot: None,
   });
@@ -767,6 +770,7 @@ fn source_switch_requires_the_reviewed_active_package_and_cannot_replace_a_broke
     applet_id: "sample".into(),
     error: "Broken package".into(),
     can_remove: true,
+    removal_revision: Some("b".repeat(64)),
     restore_snapshot: None,
     active_snapshot: None,
   });
