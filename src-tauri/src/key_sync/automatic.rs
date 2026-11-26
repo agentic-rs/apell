@@ -61,7 +61,10 @@ pub(super) enum SyncHealth {
 }
 
 impl SyncHealth {
-  pub(super) fn verified_status(self) -> Value {
+  pub(super) fn verified_status(
+    self,
+    keys_outside_account: Option<Vec<OutsideAccountKey>>,
+  ) -> Value {
     let (phase, error) = match self {
       Self::Pending => ("pending", None),
       Self::Syncing => ("syncing", None),
@@ -71,7 +74,12 @@ impl SyncHealth {
       Self::Failed(error) => ("failed", Some(error)),
       Self::Paused(error) => ("paused", Some(error)),
     };
-    json!({"state": "verified", "sync_state": phase, "sync_error": error})
+    json!({
+      "state": "verified",
+      "sync_state": phase,
+      "sync_error": error,
+      "keys_outside_account": keys_outside_account,
+    })
   }
 }
 
@@ -162,6 +170,12 @@ struct Device {
   connections: BTreeMap<String, Tracked>,
 }
 
+#[derive(Serialize)]
+pub(super) struct OutsideAccountKey {
+  connection_id: String,
+  name: String,
+}
+
 impl Device {
   fn load(root: &Path) -> Result<Self, String> {
     match std::fs::symlink_metadata(root.join(PAUSE_FILE)) {
@@ -211,6 +225,33 @@ impl Device {
       .is_none_or(|record| record.belongs_to(owner))
   }
 
+  fn keys_outside_account(
+    &self,
+    settings: &Settings,
+    owner: &Owner,
+    read_present: impl Fn(&Connection) -> Result<bool, String>,
+  ) -> Option<Vec<OutsideAccountKey>> {
+    let mut keys = Vec::new();
+    for connection in &settings.connections {
+      let id = &connection.connection_id;
+      if eligible_endpoint(connection).is_none()
+        || self
+          .connections
+          .get(id)
+          .is_some_and(|record| record.belongs_to(owner))
+      {
+        continue;
+      }
+      if read_present(connection).ok()? {
+        keys.push(OutsideAccountKey {
+          connection_id: id.clone(),
+          name: connection.name.clone(),
+        });
+      }
+    }
+    Some(keys)
+  }
+
   fn enroll(&mut self, owner: &Owner, ids: impl Iterator<Item = String>) -> bool {
     let mut changed = !self.initialized;
     for id in ids {
@@ -248,6 +289,30 @@ fn load_or_pause(root: &Path) -> Result<Option<Device>, String> {
 pub(super) async fn require_device_sync(root: &Path) -> Result<(), String> {
   let root = root.to_owned();
   blocking(move || Device::load(&root).map(|_| ())).await
+}
+
+pub(super) async fn keys_outside_account(
+  app: &AppHandle,
+  host: &Host,
+  account: &str,
+  vault_id: Uuid,
+  settings: Option<Settings>,
+) -> Result<Option<Vec<OutsideAccountKey>>, String> {
+  let app = app.clone();
+  let root = host.root.clone();
+  let owner = Owner {
+    account: account.to_owned(),
+    vault_id,
+  };
+  blocking(move || {
+    let device = Device::load(&root)?;
+    Ok(settings.and_then(|settings| {
+      device.keys_outside_account(&settings, &owner, |connection| {
+        local_key(&app, connection).map(|key| key.is_some())
+      })
+    }))
+  })
+  .await
 }
 
 pub(crate) fn kick(app: &AppHandle) {
@@ -908,8 +973,8 @@ mod tests {
     assert_eq!(automatic.health(first).await, SyncHealth::Pending);
     *automatic.health.lock().await = Some((first, SyncHealth::Failed("Offline".into())));
     assert_eq!(
-      automatic.health(first).await.verified_status(),
-      json!({"state":"verified", "sync_state":"failed", "sync_error":"Offline"}),
+      automatic.health(first).await.verified_status(None),
+      json!({"state":"verified", "sync_state":"failed", "sync_error":"Offline", "keys_outside_account":null}),
     );
     assert_eq!(automatic.health(Uuid::new_v4()).await, SyncHealth::Pending);
   }
@@ -938,8 +1003,8 @@ mod tests {
       ..Plan::default()
     };
     assert_eq!(
-      plan.health(None).verified_status(),
-      json!({"state":"verified", "sync_state":"waiting_for_model_settings", "sync_error":null}),
+      plan.health(None).verified_status(Some(vec![])),
+      json!({"state":"verified", "sync_state":"waiting_for_model_settings", "sync_error":null, "keys_outside_account":[]}),
     );
     assert_eq!(
       plan.health(Some("Could not reach model settings".into())),
@@ -948,8 +1013,8 @@ mod tests {
     plan.conflict = true;
     assert_eq!(plan.health(None), SyncHealth::Conflict);
     assert_eq!(
-      SyncHealth::Paused("Ledger unavailable".into()).verified_status(),
-      json!({"state":"verified", "sync_state":"paused", "sync_error":"Ledger unavailable"}),
+      SyncHealth::Paused("Ledger unavailable".into()).verified_status(None),
+      json!({"state":"verified", "sync_state":"paused", "sync_error":"Ledger unavailable", "keys_outside_account":null}),
     );
   }
 
@@ -964,6 +1029,81 @@ mod tests {
         .into(),
       credential: credential_ref(id),
     }
+  }
+
+  #[test]
+  fn local_coverage_reports_present_eligible_keys_outside_the_exact_vault() {
+    let owner = Owner {
+      account: "current-account".into(),
+      vault_id: Uuid::new_v4(),
+    };
+    let mut device = Device::default();
+    let assignments = [
+      ("paired", Assignment::Paired(owner.clone())),
+      ("local", Assignment::Local),
+      ("unpaired", Assignment::Unpaired(owner.account.clone())),
+      ("blocked", Assignment::Blocked),
+      ("deleted", Assignment::Blocked),
+      (
+        "other-vault",
+        Assignment::Paired(Owner {
+          vault_id: Uuid::new_v4(),
+          ..owner.clone()
+        }),
+      ),
+      (
+        "other-account",
+        Assignment::Paired(Owner {
+          account: "other-account".into(),
+          ..owner.clone()
+        }),
+      ),
+    ];
+    let mut settings = Settings::default();
+    for (id, assignment) in assignments {
+      device.connections.insert(
+        id.into(),
+        Tracked {
+          assignment,
+          common: None,
+        },
+      );
+      settings.connections.push(fixture_connection(id, "openai"));
+    }
+    let mut override_endpoint = fixture_connection("override", "openai");
+    override_endpoint.base_url = "https://provider.example.invalid/v1".into();
+    settings.connections.extend([
+      fixture_connection("untracked", "openai"),
+      fixture_connection("custom", "custom"),
+      fixture_connection("oauth", "codex"),
+      override_endpoint,
+    ]);
+
+    let keys = device.keys_outside_account(&settings, &owner, |connection| {
+      match connection.connection_id.as_str() {
+        "paired" | "custom" | "oauth" | "override" => panic!("not a candidate"),
+        "deleted" => Ok(false),
+        _ => Ok(true),
+      }
+    });
+    assert_eq!(
+      json!(keys),
+      json!([
+        {"connection_id":"local", "name":"local"},
+        {"connection_id":"unpaired", "name":"unpaired"},
+        {"connection_id":"blocked", "name":"blocked"},
+        {"connection_id":"other-vault", "name":"other-vault"},
+        {"connection_id":"other-account", "name":"other-account"},
+        {"connection_id":"untracked", "name":"untracked"},
+      ])
+    );
+    assert!(device
+      .keys_outside_account(&settings, &owner, |_| Ok(false))
+      .unwrap()
+      .is_empty());
+    assert!(device
+      .keys_outside_account(&settings, &owner, |_| Err("Unreadable credential".into()))
+      .is_none());
   }
 
   #[test]

@@ -200,15 +200,26 @@ pub(super) async fn status(
   if !host.account.key_exchange_available() {
     return Ok(json!({ "state": "unavailable" }));
   }
+  // Keep the local vault, ledger, and credentials in the same read when
+  // available. Provider refresh can hold this gate during network I/O.
+  let credentials = host.credential_gate.try_lock().ok();
   let local = stop.wait(local_vault(app, account)).await??;
-  if local.as_ref().is_some_and(is_verified) {
-    let health = match automatic::require_device_sync(&host.root).await {
-      Ok(()) => host.key_sync.automatic.health(session_id).await,
-      Err(error) => SyncHealth::Paused(error),
+  if let Some(vault) = local.as_ref().filter(|vault| is_verified(vault)) {
+    let settings = credentials
+      .as_ref()
+      .and_then(|_| host.settings.try_lock().ok())
+      .map(|settings| settings.clone());
+    let coverage =
+      automatic::keys_outside_account(app, host, account, vault.vault_id, settings).await;
+    drop(credentials);
+    let (health, keys_outside_account) = match coverage {
+      Ok(keys) => (host.key_sync.automatic.health(session_id).await, keys),
+      Err(error) => (SyncHealth::Paused(error), None),
     };
     stop.session(app, host).await?;
-    return Ok(health.verified_status());
+    return Ok(health.verified_status(keys_outside_account));
   }
+  drop(credentials);
   if local_only {
     stop.session(app, host).await?;
     return Ok(json!({ "state": "unverified" }));

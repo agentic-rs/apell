@@ -11,10 +11,18 @@ const model: ConfigSyncStatus = {
   sync_error: null,
 };
 
+type VerifiedKeys = Extract<KeySyncStatus, { state: 'verified' }>;
+
+const outside_keys = [
+  { connection_id: 'fixture-one', name: 'First test connection' },
+  { connection_id: 'fixture-two', name: 'Second test connection' },
+];
+
 function verifiedKeys(
-  sync_state: Extract<KeySyncStatus, { state: 'verified' }>['sync_state'],
-): KeySyncStatus {
-  return { state: 'verified', sync_state, sync_error: null };
+  sync_state: VerifiedKeys['sync_state'],
+  keys_outside_account: VerifiedKeys['keys_outside_account'] = null,
+): VerifiedKeys {
+  return { state: 'verified', sync_state, sync_error: null, keys_outside_account };
 }
 
 describe('Settings Account attention', () => {
@@ -23,11 +31,13 @@ describe('Settings Account attention', () => {
     expect(
       accountSyncAttention(
         { ...failed_model, pending_conflict_id: 'conflict' },
-        verifiedKeys('conflict'),
+        verifiedKeys('conflict', outside_keys),
       ),
     ).toBe('Review model changes');
-    expect(accountSyncAttention(failed_model, verifiedKeys('conflict'))).toBe('Key sync conflict');
-    expect(accountSyncAttention(failed_model, verifiedKeys('failed'))).toBe(
+    expect(accountSyncAttention(failed_model, verifiedKeys('conflict', outside_keys))).toBe(
+      'Key sync conflict',
+    );
+    expect(accountSyncAttention(failed_model, verifiedKeys('failed', outside_keys))).toBe(
       'Couldn’t sync model settings',
     );
   });
@@ -51,5 +61,25 @@ describe('Settings Account attention', () => {
     expect(
       accountSyncAttention({ ...model, syncing: true, sync_error: 'Previous attempt failed' }),
     ).toBeUndefined();
+  });
+
+  it('shows a count when keys are outside sync and there is no higher-priority attention', () => {
+    expect(accountSyncAttention(model, verifiedKeys('current', outside_keys.slice(0, 1)))).toBe(
+      '1 API key outside sync',
+    );
+    expect(accountSyncAttention(model, verifiedKeys('pending', outside_keys))).toBe(
+      '2 API keys outside sync',
+    );
+    expect(accountSyncAttention(model, verifiedKeys('failed', outside_keys))).toBe(
+      'Couldn’t sync keys',
+    );
+    expect(accountSyncAttention(model, verifiedKeys('paused', outside_keys))).toBe(
+      'Key sync paused',
+    );
+    expect(accountSyncAttention(undefined, verifiedKeys('current', outside_keys), true)).toBe(
+      'Sync status unavailable',
+    );
+    expect(accountSyncAttention(model, verifiedKeys('current', null))).toBeUndefined();
+    expect(accountSyncAttention(model, verifiedKeys('current', []))).toBeUndefined();
   });
 });

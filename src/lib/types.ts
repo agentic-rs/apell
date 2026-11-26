@@ -236,6 +236,7 @@ export type KeySyncStatus =
         | 'failed'
         | 'paused';
       sync_error: string | null;
+      keys_outside_account: { connection_id: string; name: string }[] | null;
     }
   | { state: 'unverified'; action: 'setup' | 'pair' | 'upgrade' | 'legacy' }
   | { state: 'unverified'; action: 'check'; error: string };

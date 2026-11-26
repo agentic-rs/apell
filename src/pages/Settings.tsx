@@ -32,10 +32,17 @@ export function Settings() {
   const scope = useRef(new OperationScope());
   const previous_section = useRef<SettingsSection | null>(null);
   const menu_scroll = useRef(0);
+  const connections_from_account = useRef(false);
   const editor_return = useRef<{ id: string; scroll: number }>(undefined);
 
   useBackAction(10, section !== null, () => {
-    if (!busy && !syncing) setSection(null);
+    if (busy || syncing) return;
+    if (section === 'connections' && connections_from_account.current) {
+      connections_from_account.current = false;
+      setSection('account');
+    } else {
+      setSection(null);
+    }
   });
   useLayoutEffect(() => {
     const previous = previous_section.current;
@@ -295,6 +302,10 @@ export function Settings() {
           disabled={editing_disabled || !settings}
           onApplied={() => setReloadRequested(true)}
           onSyncBusyChange={setSyncing}
+          onOpenConnections={() => {
+            connections_from_account.current = true;
+            setSection('connections');
+          }}
         />
       </Activity>
       {section === 'backup' && (

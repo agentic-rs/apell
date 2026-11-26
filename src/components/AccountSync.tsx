@@ -56,6 +56,7 @@ interface AccountSyncProps {
   disabled: boolean;
   onApplied: () => void;
   onSyncBusyChange: (busy: boolean) => void;
+  onOpenConnections: () => void;
 }
 
 export function AccountSync({
@@ -63,6 +64,7 @@ export function AccountSync({
   disabled,
   onApplied,
   onSyncBusyChange,
+  onOpenConnections,
 }: AccountSyncProps) {
   const [account, setAccount] = useState<AccountStatus>();
   const [sync, setSync] = useState<ConfigSyncStatus>();
@@ -478,6 +480,7 @@ export function AccountSync({
               if (session.current === account.account_session_id) onApplied();
             }}
             onBusyChange={(busy) => onKeySyncBusyChange(account.account_session_id, busy)}
+            onOpenConnections={onOpenConnections}
           />
           <button
             className="account-sign-out"

@@ -68,22 +68,27 @@ type AccountSummary = {
 
 const checking_account: AccountSummary = { detail: 'Checking sign-in…' };
 
-export function accountSyncAttention(model?: ConfigSyncStatus, keys?: LocalKeySyncStatus) {
+export function accountSyncAttention(
+  model?: ConfigSyncStatus,
+  keys?: LocalKeySyncStatus,
+  status_unavailable = false,
+) {
   const model_sync = model?.state === 'ready' ? model : undefined;
-  const key_sync = keys?.state === 'verified' ? keys.sync_state : undefined;
+  const key_sync = keys?.state === 'verified' ? keys : undefined;
   if (model_sync?.pending_conflict_id) return 'Review model changes';
-  if (key_sync === 'conflict') return 'Key sync conflict';
+  if (key_sync?.sync_state === 'conflict') return 'Key sync conflict';
   if (model_sync?.sync_error && !model_sync.syncing) return 'Couldn’t sync model settings';
-  switch (key_sync) {
+  switch (key_sync?.sync_state) {
     case 'failed':
       return 'Couldn’t sync keys';
     case 'paused':
       return 'Key sync paused';
     case 'waiting_for_model_settings':
       return 'Keys need model settings';
-    default:
-      return undefined;
   }
+  if (status_unavailable) return 'Sync status unavailable';
+  const count = key_sync?.keys_outside_account?.length;
+  if (count) return `${count} API ${count === 1 ? 'key' : 'keys'} outside sync`;
 }
 
 export function SettingsMenu({
@@ -124,8 +129,8 @@ export function SettingsMenu({
         const attention = accountSyncAttention(
           model.status === 'fulfilled' ? model.value : undefined,
           key_status,
+          model.status === 'rejected' || keys.status === 'rejected',
         );
-        const unavailable = model.status === 'rejected' || keys.status === 'rejected';
         setAccountSummary({
           detail,
           account_session_id,
@@ -135,7 +140,7 @@ export function SettingsMenu({
               : key_status?.state === 'unverified'
                 ? 'Unverified device'
                 : undefined,
-          attention: attention ?? (unavailable ? 'Sync status unavailable' : undefined),
+          attention,
         });
       }
     };

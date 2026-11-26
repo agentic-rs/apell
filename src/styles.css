@@ -669,6 +669,24 @@ svg {
   display: grid;
   gap: 8px;
 }
+.key-sync-coverage {
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+.key-sync-coverage summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.key-sync-coverage ul {
+  margin: 0;
+  padding: 0 0 0 20px;
+  overflow-wrap: anywhere;
+}
+.key-sync-coverage .key-sync-option {
+  margin-top: 8px;
+}
 .key-sync-code {
   display: block;
   width: fit-content;

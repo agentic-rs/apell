@@ -342,12 +342,13 @@ interface Props {
   model_review_needed: boolean;
   onApplied: () => void;
   onBusyChange: (busy: boolean) => void;
+  onOpenConnections: () => void;
 }
 
 const sync_labels = {
   pending: 'Waiting to sync',
   syncing: 'Syncing keys…',
-  current: 'Keys are up to date',
+  current: 'Synced keys are up to date',
   waiting_for_model_settings: 'Waiting for model settings',
   conflict: 'Local and cloud keys differ',
   failed: 'Couldn’t sync keys',
@@ -404,6 +405,7 @@ export function EncryptedKeySync({
   model_review_needed,
   onApplied,
   onBusyChange,
+  onOpenConnections,
 }: Props) {
   const [status, setStatus] = useState<LocalKeySyncStatus | KeySyncStatus>();
   const [flow, setFlow] = useState<Flow>();
@@ -575,6 +577,7 @@ export function EncryptedKeySync({
     ['failed', 'waiting_for_model_settings', 'conflict'].includes(status.sync_state);
   const can_review =
     !status_error && status?.state === 'verified' && status.sync_state === 'conflict';
+  const outside_keys = status?.state === 'verified' ? status.keys_outside_account : null;
 
   return (
     <section className="account-key-sync" aria-label="Encrypted API keys">
@@ -602,6 +605,29 @@ export function EncryptedKeySync({
                 {status.sync_error}
               </p>
             )}
+          {!status_error && !!outside_keys?.length && (
+            <details className="key-sync-coverage">
+              <summary>
+                {outside_keys.length} {outside_keys.length === 1 ? 'API key' : 'API keys'} outside
+                this Account’s sync
+              </summary>
+              <div className="key-sync-option">
+                <ul>
+                  {outside_keys.map(({ connection_id, name }) => (
+                    <li key={connection_id}>
+                      <bdi>{name}</bdi>
+                    </li>
+                  ))}
+                </ul>
+                <p>
+                  To sync one of these keys with this Account, enter it again in Model connections.
+                </p>
+                <button type="button" disabled={button_disabled} onClick={onOpenConnections}>
+                  Open model connections
+                </button>
+              </div>
+            </details>
+          )}
           {!status_error && (
             <div className="account-sync-actions">
               {can_review && (
