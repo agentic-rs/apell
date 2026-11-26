@@ -90,6 +90,8 @@ describe('applet bridge boundary', () => {
       'permissions.set_mode',
       'key_sync.retry',
       'key_sync.local_status',
+      'key_sync.conflicts',
+      'key_sync.resolve_conflict',
       'key_sync.pair_cancel',
       'key_sync.recovery_open',
       'key_sync.recovery_cancel',

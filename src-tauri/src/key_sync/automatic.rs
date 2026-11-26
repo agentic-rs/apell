@@ -1,3 +1,7 @@
+mod conflicts;
+
+pub(super) use conflicts::{resolve_conflict, review_conflicts, ConflictResolution};
+
 use super::crypto::{self, Sealed, Secret, MAX_API_KEY};
 use super::{
   cloud_context, eligible_endpoint, key_context, local_vault, managed, save_head, BackgroundStop,
@@ -41,6 +45,7 @@ const FINGERPRINT_V2_PREFIX: &str = "v2:";
 pub(super) struct Automatic {
   wake: Notify,
   health: Mutex<Option<(String, SyncHealth)>>,
+  reviews: Mutex<conflicts::Reviews>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -71,6 +76,10 @@ impl SyncHealth {
 }
 
 impl Automatic {
+  pub(super) async fn clear_conflict_reviews(&self) {
+    self.reviews.lock().await.clear();
+  }
+
   pub(super) async fn health(&self, account: &str) -> SyncHealth {
     self
       .health
@@ -521,6 +530,92 @@ fn reconcile(local: Option<&str>, cloud: Option<&str>, common: Option<&str>) -> 
   }
 }
 
+struct VaultKeys<'a> {
+  owner: &'a Owner,
+  vault: &'a Secret,
+  encryption: Secret,
+  fingerprint: Secret,
+}
+
+impl<'a> VaultKeys<'a> {
+  fn new(owner: &'a Owner, vault: &'a Secret) -> Self {
+    let vault_id = owner.vault_id.to_string();
+    Self {
+      owner,
+      vault,
+      encryption: derive_api_key_encryption_key(vault, &vault_id),
+      fingerprint: derive_sync_fingerprint_key(vault, &vault_id),
+    }
+  }
+
+  fn context(&self, connection: &Connection) -> Result<Vec<u8>, String> {
+    key_context(&self.owner.account, self.owner.vault_id, connection)
+  }
+
+  fn seal_entry(&self, id: &str, aad: &[u8], value: &[u8]) -> Result<Entry, String> {
+    let Sealed { nonce, ciphertext } = crypto::seal_api_key(&self.encryption, aad, value)?;
+    Ok(Entry {
+      connection_id: id.to_owned(),
+      nonce,
+      ciphertext,
+    })
+  }
+
+  fn inspect(
+    &self,
+    connection: &Connection,
+    local: Option<Zeroizing<String>>,
+    entry: Option<&Entry>,
+    previous: Option<&str>,
+  ) -> Result<KeyCopies, String> {
+    let aad = self.context(connection)?;
+    let cloud = entry
+      .map(|entry| crypto::open_api_key(&self.encryption, self.vault, &aad, &entry.sealed()))
+      .transpose()?;
+    if cloud
+      .as_ref()
+      .is_some_and(|key| std::str::from_utf8(key).is_err())
+    {
+      return Err("An encrypted API key has an invalid format.".into());
+    }
+    let device_hash = local
+      .as_ref()
+      .map(|key| current_fingerprint(&self.fingerprint, &aad, key.as_bytes()));
+    let cloud_hash = cloud
+      .as_ref()
+      .map(|key| current_fingerprint(&self.fingerprint, &aad, key));
+    let baseline = previous.map(|previous| {
+      let device_copy = local
+        .as_ref()
+        .zip(device_hash.as_deref())
+        .map(|(key, hash)| (key.as_bytes(), hash));
+      let cloud_copy = cloud
+        .as_ref()
+        .zip(cloud_hash.as_deref())
+        .map(|(key, hash)| (key.as_slice(), hash));
+      compatible_baseline(self.vault, &aad, previous, [device_copy, cloud_copy])
+    });
+    let merge = reconcile(device_hash.as_deref(), cloud_hash.as_deref(), baseline);
+    Ok(KeyCopies {
+      aad,
+      device: local,
+      cloud,
+      device_hash,
+      cloud_hash,
+      merge,
+    })
+  }
+}
+
+struct KeyCopies {
+  aad: Vec<u8>,
+  device: Option<Zeroizing<String>>,
+  cloud: Option<Zeroizing<Vec<u8>>>,
+  device_hash: Option<String>,
+  cloud_hash: Option<String>,
+  merge: Merge,
+}
+
 struct Upload {
   entries: Vec<Entry>,
   common: Vec<(String, String)>,
@@ -627,7 +722,6 @@ async fn synchronize(
   if let Some(upload) = plan.upload {
     stop
       .wait(save_head(
-        app,
         host,
         &access,
         owner.vault_id,
@@ -705,9 +799,7 @@ fn apply_plan(
       .any(|id| settings.connection(id).is_err() && device.permits(id, owner)),
     ..Plan::default()
   };
-  let vault_id = owner.vault_id.to_string();
-  let encryption_key = derive_api_key_encryption_key(vault_key, &vault_id);
-  let fingerprint_key = derive_sync_fingerprint_key(vault_key, &vault_id);
+  let keys = VaultKeys::new(owner, vault_key);
   for connection in &settings.connections {
     if eligible_endpoint(connection).is_none() {
       continue;
@@ -724,56 +816,34 @@ fn apply_plan(
     if record.is_none() && local.is_some() {
       continue;
     }
-    let aad = key_context(&owner.account, owner.vault_id, connection)?;
-    let cloud = entries
-      .get(id)
-      .map(|entry| crypto::open_api_key(&encryption_key, vault_key, &aad, &entry.sealed()))
-      .transpose();
-    let Ok(cloud) = cloud else {
+    let previous = record.and_then(|record| record.common.as_deref());
+    let Ok(copies) = keys.inspect(connection, local, entries.get(id), previous) else {
       plan.invalid = true;
       continue;
     };
-    let local_hash = local
-      .as_ref()
-      .map(|key| current_fingerprint(&fingerprint_key, &aad, key.as_bytes()));
-    let cloud_hash = cloud
-      .as_ref()
-      .map(|key| current_fingerprint(&fingerprint_key, &aad, key));
-    let previous = record.and_then(|record| record.common.as_deref());
-    let baseline = previous.map(|previous| {
-      let local_copy = local
-        .as_ref()
-        .zip(local_hash.as_deref())
-        .map(|(key, hash)| (key.as_bytes(), hash));
-      let cloud_copy = cloud
-        .as_ref()
-        .zip(cloud_hash.as_deref())
-        .map(|(key, hash)| (key.as_slice(), hash));
-      compatible_baseline(vault_key, &aad, previous, [local_copy, cloud_copy])
-    });
-    match reconcile(local_hash.as_deref(), cloud_hash.as_deref(), baseline) {
+    match copies.merge {
       Merge::Current => {
-        if local_hash.as_deref() != previous {
-          common.push((id.clone(), local_hash));
+        if copies.device_hash.as_deref() != previous {
+          common.push((id.clone(), copies.device_hash));
         }
       }
       Merge::Upload if entries.contains_key(id) || entries.len() < MAX_CONNECTIONS => {
-        let key = local.ok_or("The saved API key changed during sync.")?;
-        let hash = local_hash.ok_or("The saved API key changed during sync.")?;
-        let Sealed { nonce, ciphertext } =
-          crypto::seal_api_key(&encryption_key, &aad, key.as_bytes())?;
+        let key = copies
+          .device
+          .ok_or("The saved API key changed during sync.")?;
+        let hash = copies
+          .device_hash
+          .ok_or("The saved API key changed during sync.")?;
         entries.insert(
           id.clone(),
-          Entry {
-            connection_id: id.clone(),
-            nonce,
-            ciphertext,
-          },
+          keys.seal_entry(id, &copies.aad, key.as_bytes())?,
         );
         uploads.push((id.clone(), hash));
       }
       Merge::Restore => {
-        let key = cloud.ok_or("The cloud API key changed during sync.")?;
+        let key = copies
+          .cloud
+          .ok_or("The cloud API key changed during sync.")?;
         let Ok(value) = encode_key(connection, &key) else {
           plan.invalid = true;
           continue;
@@ -782,7 +852,7 @@ fn apply_plan(
         if record.is_none() {
           device.record(id.clone(), owner, None);
         }
-        common.push((id.clone(), cloud_hash));
+        common.push((id.clone(), copies.cloud_hash));
       }
       Merge::Conflict => plan.conflict = true,
       Merge::Upload => plan.capacity = true,

@@ -366,15 +366,14 @@ async fn cloud_context(
 }
 
 async fn save_head(
-  app: &AppHandle,
   host: &Host,
   access: &Access,
   vault_id: Uuid,
   expected: Option<Uuid>,
   entries: Vec<Entry>,
 ) -> Result<(), String> {
-  verify_account(app, host, &access.account_key).await?;
   automatic::require_device_sync(&host.root).await?;
+  host.account.require_current_access(access).await?;
   let revision_id = Uuid::new_v4();
   let response = host
     .key_sync
@@ -414,6 +413,11 @@ pub(crate) async fn dispatch(app: AppHandle, method: &str, params: Value) -> Res
         return managed::status(&app, &host, method == "key_sync.local_status").await;
       }
       "key_sync.retry" => return managed::retry(&app, &host).await,
+      "key_sync.conflicts" => return automatic::review_conflicts(&app, &host, &stop).await,
+      "key_sync.resolve_conflict" => {
+        let input = parse::<automatic::ConflictResolution>(params)?;
+        return automatic::resolve_conflict(&app, &host, input, &stop).await;
+      }
       "key_sync.pair_cancel" => {
         return managed::cancel_pair(&app, &host, parse(params)?, &stop).await
       }
@@ -481,6 +485,7 @@ pub(crate) async fn sign_out(app: AppHandle) -> Result<Value, String> {
     let result = crate::account::dispatch(app.clone(), &host.account, "account.sign_out").await;
     if result.is_ok() {
       sync.managed.clear().await;
+      sync.automatic.clear_conflict_reviews().await;
       sync.automatic.publish_health(&app, None).await;
       crate::config_sync::clear_activity(&app, &host).await;
     }

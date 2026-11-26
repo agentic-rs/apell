@@ -11,7 +11,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
   future::Future,
-  sync::Arc,
+  sync::{Arc, Weak},
   time::{Duration, Instant},
 };
 use tauri::{AppHandle, Emitter, Manager, Url};
@@ -204,6 +204,12 @@ pub(crate) struct Access {
   refresh_gate: Arc<Mutex<()>>,
 }
 
+impl Access {
+  pub(crate) fn session_marker(&self) -> Weak<Mutex<()>> {
+    Arc::downgrade(&self.refresh_gate)
+  }
+}
+
 pub(crate) struct Account {
   config: Option<Config>,
   client: Client,
@@ -259,6 +265,19 @@ impl Account {
         .as_ref()
         .map(|session| session.stored.account_key()),
     )
+  }
+
+  pub(crate) async fn require_current_access(&self, access: &Access) -> Result<(), String> {
+    let state = self.state.lock().await;
+    if state
+      .session
+      .as_ref()
+      .is_some_and(|session| Arc::ptr_eq(&session.refresh_gate, &access.refresh_gate))
+    {
+      Ok(())
+    } else {
+      Err(SESSION_CHANGED.into())
+    }
   }
 
   pub fn key_exchange_available(&self) -> bool {

@@ -128,6 +128,8 @@ pub async fn shell_command(
     "key_sync.status"
     | "key_sync.local_status"
     | "key_sync.retry"
+    | "key_sync.conflicts"
+    | "key_sync.resolve_conflict"
     | "key_sync.create"
     | "key_sync.pair_start"
     | "key_sync.pair_list"

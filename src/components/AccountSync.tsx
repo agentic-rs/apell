@@ -402,6 +402,7 @@ export function AccountSync({
             )}
           </section>
           <EncryptedKeySync
+            providers={providers}
             model_review_needed={pending_conflict}
             model_sync_enabled={
               sync?.state === 'disabled' ? undefined : sync && sync.state === 'ready'

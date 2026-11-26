@@ -20,6 +20,8 @@ import type {
   CreateConnectionDraft,
   DraftCredential,
   InstallProgress,
+  KeySyncConflict,
+  KeySyncConflictResolution,
   KeySyncPairing,
   KeySyncRecovery,
   KeySyncStatus,
@@ -187,6 +189,9 @@ export const reviewConfigSync = () => shellCall<ConfigSyncReviewResult>('sync.re
 export const getKeySyncStatus = () => shellCall<KeySyncStatus>('key_sync.status');
 export const getLocalKeySyncStatus = () => shellCall<LocalKeySyncStatus>('key_sync.local_status');
 export const retryKeySync = () => shellCall<void>('key_sync.retry');
+export const reviewKeySyncConflicts = () => shellCall<KeySyncConflict[]>('key_sync.conflicts');
+export const resolveKeySyncConflict = (resolution: KeySyncConflictResolution) =>
+  shellCall<{ warning: string | null }>('key_sync.resolve_conflict', resolution);
 export const onKeySyncChanged = (handler: () => void) => listen('apell-key-sync-changed', handler);
 export const onLlmSettingsChanged = (handler: () => void) =>
   listen('apell-llm-settings-changed', handler);

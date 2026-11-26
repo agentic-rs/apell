@@ -231,6 +231,20 @@ export type KeySyncStatus =
   | { state: 'unverified'; action: 'check'; error: string };
 export type LocalKeySyncStatus =
   Exclude<KeySyncStatus, { state: 'unverified' }> | { state: 'unverified' };
+export interface KeySyncConflict {
+  connection_id: string;
+  review_id: string;
+  name: string;
+  provider_id: string;
+  model_id: string;
+  device_has_key: boolean;
+  cloud_has_key: boolean;
+}
+export interface KeySyncConflictResolution {
+  connection_id: string;
+  review_id: string;
+  resolution: 'keep_device' | 'use_cloud';
+}
 export interface KeySyncPairing {
   pair_id: string;
   code: string;

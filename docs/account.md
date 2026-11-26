@@ -253,9 +253,14 @@ on the device where you added it and resolve any pending review there. Use
 **Encrypted API keys** section shows checking, waiting, and sync errors
 separately from device verification. An unverified device shows **Check again**
 if Apell cannot reach the service to determine how to verify it.
-Apell keeps local and cloud copies when both have changed
-independently. Provider OAuth sessions and custom endpoint credentials stay
-on the device.
+Apell keeps local and cloud copies when both have changed independently.
+Choose **Review key conflicts** to see which connections are affected and
+whether each side has a key. Confirm a choice for each connection. Keeping
+this device's copy replaces the encrypted Account backup. Using the cloud
+copy changes the key on this device. If the selected side has no key, the
+confirmation explains which saved copy will be removed. Refresh the review
+if a copy changes before you apply your choice. Provider OAuth sessions
+and custom endpoint credentials stay on the device.
 
 Closing a pairing or recovery sheet ends that verification request on this
 device. Start a new request to continue. Signing out interrupts outstanding

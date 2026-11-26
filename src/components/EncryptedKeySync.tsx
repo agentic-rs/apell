@@ -15,7 +15,8 @@ import {
   startKeySyncPairing,
   startKeySyncRecovery,
 } from '../lib/tauri';
-import type { KeySyncPairing, KeySyncRecovery, KeySyncStatus } from '../lib/types';
+import type { KeySyncPairing, KeySyncRecovery, KeySyncStatus, LlmProvider } from '../lib/types';
+import { KeySyncConflictReview } from './KeySyncConflictReview';
 import { OperationScope } from './providers/state';
 import { Sheet } from './Sheet';
 
@@ -27,7 +28,7 @@ const expired_approval_error =
 type VerificationRequest =
   | { kind: 'join'; pairing: KeySyncPairing }
   | { kind: 'recover' | 'upgrade'; challenge: KeySyncRecovery };
-type Flow = VerificationRequest | { kind: 'approve' };
+type Flow = VerificationRequest | { kind: 'approve' } | { kind: 'review' };
 type Progress = 'waiting' | 'expired' | 'rejected' | { error: string };
 
 const titles = {
@@ -35,6 +36,7 @@ const titles = {
   approve: 'Approve a device',
   recover: 'Recover access',
   upgrade: 'Verify your Account',
+  review: 'Review key conflicts',
 };
 
 function hasExpired(expires_at: number) {
@@ -316,6 +318,7 @@ function Approvals({
 }
 
 interface Props {
+  providers: LlmProvider[];
   disabled: boolean;
   model_sync_enabled?: boolean;
   model_review_needed: boolean;
@@ -370,12 +373,13 @@ function ModelSettingsRecovery({
 async function cancelRequest(flow: Flow | undefined) {
   if (flow?.kind === 'join') {
     await cancelKeySyncPairing(flow.pairing.pair_id).catch(() => {});
-  } else if (flow && flow.kind !== 'approve') {
+  } else if (flow?.kind === 'recover' || flow?.kind === 'upgrade') {
     await cancelKeySyncRecovery(flow.challenge.request_id).catch(() => {});
   }
 }
 
 export function EncryptedKeySync({
+  providers,
   disabled,
   model_sync_enabled,
   model_review_needed,
@@ -387,6 +391,8 @@ export function EncryptedKeySync({
   const active_flow = useRef<Flow | undefined>(undefined);
   const [busy, setBusy] = useState(false);
   const [approving, setApproving] = useState(false);
+  const [resolving, setResolving] = useState(false);
+  const resolution_pending = useRef(false);
   const [error, setError] = useState('');
   const [status_error, setStatusError] = useState('');
   const [checking, setChecking] = useState(true);
@@ -408,7 +414,12 @@ export function EncryptedKeySync({
     try {
       const current = await getKeySyncStatus();
       if (read_version.current !== version) return;
-      if (current.state === 'signed_out') showFlow();
+      if (
+        current.state === 'signed_out' ||
+        (active_flow.current?.kind === 'review' && current.state !== 'verified')
+      ) {
+        showFlow();
+      }
       setStatus(current);
       setStatusError('');
     } catch (error) {
@@ -491,6 +502,7 @@ export function EncryptedKeySync({
   }
 
   function close() {
+    if (resolution_pending.current) return;
     const current = active_flow.current;
     showFlow();
     setError('');
@@ -521,7 +533,7 @@ export function EncryptedKeySync({
   }
 
   if (status?.state === 'signed_out') return null;
-  const button_disabled = disabled || busy;
+  const button_disabled = disabled || busy || resolving;
   const verification_action =
     !status_error && status?.state === 'unverified' ? status.action : null;
   const check_error =
@@ -531,6 +543,8 @@ export function EncryptedKeySync({
     !status_error &&
     status?.state === 'verified' &&
     ['failed', 'waiting_for_model_settings', 'conflict'].includes(status.sync_state);
+  const can_review =
+    !status_error && status?.state === 'verified' && status.sync_state === 'conflict';
 
   return (
     <section className="account-key-sync" aria-label="Encrypted API keys">
@@ -551,12 +565,6 @@ export function EncryptedKeySync({
               review_needed={model_review_needed}
             />
           )}
-          {!status_error && status.sync_state === 'conflict' && (
-            <p>
-              Apell kept both copies. Review the provider connections on your devices before
-              retrying.
-            </p>
-          )}
           {!status_error &&
             status.sync_state !== 'waiting_for_model_settings' &&
             status.sync_error && (
@@ -566,10 +574,24 @@ export function EncryptedKeySync({
             )}
           {!status_error && (
             <div className="account-sync-actions">
+              {can_review && (
+                <button
+                  type="button"
+                  className="primary"
+                  disabled={button_disabled || checking || retrying}
+                  onClick={(event) => {
+                    event.currentTarget.focus({ preventScroll: true });
+                    setError('');
+                    showFlow({ kind: 'review' });
+                  }}
+                >
+                  Review key conflicts
+                </button>
+              )}
               {can_retry && (
                 <button
                   type="button"
-                  disabled={disabled || checking || retrying}
+                  disabled={button_disabled || checking || retrying}
                   onClick={() => void retry()}
                 >
                   {retrying ? 'Retrying…' : 'Retry key sync'}
@@ -684,34 +706,54 @@ export function EncryptedKeySync({
         </p>
       )}
       {flow && (
-        <Sheet open title={titles[flow.kind]} onClose={close} dismissible={!busy && !approving}>
-          <div className="transfer-form">
-            {flow.kind === 'approve' && (
-              <Approvals
-                request={flow}
-                isCurrent={isCurrentFlow}
-                onBusyChange={(active) => {
-                  setApproving(active);
-                  onBusyChange(active);
-                }}
-              />
-            )}
-            {flow.kind !== 'approve' && (
-              <Verification
-                request={flow}
-                isCurrent={isCurrentFlow}
-                onComplete={deviceVerified}
-                busy={busy}
-                onOpen={() => openRecovery(flow)}
-                onRestart={() => void startRequest(flow.kind, flow)}
-              />
-            )}
-            {error && (
-              <p className="status error" role="alert">
-                {error}
-              </p>
-            )}
-          </div>
+        <Sheet
+          open
+          title={titles[flow.kind]}
+          onClose={close}
+          dismissible={!busy && !approving && !resolving}
+        >
+          {flow.kind === 'review' ? (
+            <KeySyncConflictReview
+              providers={providers}
+              disabled={button_disabled || status?.state !== 'verified'}
+              onMutationChange={(active) => {
+                resolution_pending.current = active;
+                setResolving(active);
+                onBusyChange(active);
+              }}
+              onApplied={() => {
+                onApplied();
+                void refresh();
+              }}
+            />
+          ) : (
+            <div className="transfer-form">
+              {flow.kind === 'approve' ? (
+                <Approvals
+                  request={flow}
+                  isCurrent={isCurrentFlow}
+                  onBusyChange={(active) => {
+                    setApproving(active);
+                    onBusyChange(active);
+                  }}
+                />
+              ) : (
+                <Verification
+                  request={flow}
+                  isCurrent={isCurrentFlow}
+                  onComplete={deviceVerified}
+                  busy={busy}
+                  onOpen={() => openRecovery(flow)}
+                  onRestart={() => void startRequest(flow.kind, flow)}
+                />
+              )}
+              {error && (
+                <p className="status error" role="alert">
+                  {error}
+                </p>
+              )}
+            </div>
+          )}
         </Sheet>
       )}
     </section>
