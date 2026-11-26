@@ -116,6 +116,7 @@ export interface StorePendingDownload extends StoreDownloadIdentity {
   name: string;
   downloaded_bytes: number;
   size_bytes: number;
+  restore_snapshot?: StoreSwitchSnapshot;
 }
 export interface StoreCatalogEntry extends StoreApplet {
   installed: InstalledApplet | null;
@@ -183,6 +184,8 @@ export interface StoreInstallRequest {
 }
 export type StoreInstallResult =
   ({ status: 'installed' } & AppletInstallResult) | { status: 'paused'; received_bytes: number };
+export type StoreRestoreResult =
+  ({ status: 'restored' } & AppletInstallResult) | { status: 'paused'; received_bytes: number };
 export interface BackendEvent {
   session_id: string;
   event: { name: string; payload: unknown };

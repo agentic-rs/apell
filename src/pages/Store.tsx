@@ -1,8 +1,9 @@
-import { useLayoutEffect, useRef, useState } from 'react';
-import type { AppletSession } from '../lib/types';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import type { AppletSession, StorePendingDownload, StoreSwitchSnapshot } from '../lib/types';
 import { storeChannelName } from '../lib/storeState';
 import { useBackAction } from '../lib/backNavigation';
 import { AppletIcon } from '../components/AppletIcon';
+import { RestorePackageSheet } from '../components/RestorePackageSheet';
 import { Sheet } from '../components/Sheet';
 import { StoreAddress } from '../components/store/StoreAddress';
 import { StoreCatalogView } from '../components/store/StoreCatalogView';
@@ -12,6 +13,8 @@ import { storeDownloadId } from '../components/store/StorePendingDownloadNotice'
 import { useStore } from '../components/store/useStore';
 import type { StoreDownloads } from '../components/store/useStoreDownloads';
 import './store.css';
+
+type RepairDownload = StorePendingDownload & { restore_snapshot: StoreSwitchSnapshot };
 
 export function Store({
   onLaunch,
@@ -29,6 +32,8 @@ export function Store({
   const [downloads_open, setDownloadsOpen] = useState(false);
   const [downloads_from_library, setDownloadsFromLibrary] = useState(false);
   const [download_return_id, setDownloadReturnId] = useState<string>();
+  const [repair, setRepair] = useState<RepairDownload>();
+  const [repair_status, setRepairStatus] = useState('');
   const downloads_request_handled = useRef(0);
   const downloads_requested = downloads_request > downloads_request_handled.current;
   const state = useStore(onLaunch, onBusyChange, downloads.refresh, {
@@ -38,6 +43,7 @@ export function Store({
   const downloads_heading = useRef<HTMLHeadingElement>(null);
   const download_return = useRef<HTMLButtonElement>(null);
   const download_review = useRef<HTMLDivElement>(null);
+  const repair_focus = useRef<'download' | 'heading'>(undefined);
   const { query, updates_only } = state.browse;
   const opening = state.operation === 'open' || state.operation === 'restart';
   const installed_source = state.installed?.source;
@@ -81,6 +87,13 @@ export function Store({
       document.getElementById('store-open-downloads')?.focus({ preventScroll: true });
     }
   }, [page, downloads_open, state.config?.store_url]);
+  useEffect(() => {
+    if (repair || !repair_focus.current) return;
+    const entry = repair_focus.current === 'download' ? download_return.current : null;
+    repair_focus.current = undefined;
+    const target = entry && !entry.disabled ? entry : downloads_heading.current;
+    target?.focus({ preventScroll: true });
+  }, [repair]);
 
   const rememberListScroll = () => {
     if (page !== 'address' && page !== 'detail') list_scroll.current[page] = window.scrollY;
@@ -91,6 +104,7 @@ export function Store({
     state.closeDetail();
     list_scroll.current.downloads = 0;
     setDownloadReturnId(undefined);
+    setRepairStatus('');
     setDownloadsFromLibrary(from_library);
     setDownloadsOpen(true);
     downloads.refresh();
@@ -140,6 +154,11 @@ export function Store({
       {state.status && (
         <p className="store-feedback store-success" role="status">
           {state.status}
+        </p>
+      )}
+      {page === 'downloads' && repair_status && (
+        <p className="store-feedback store-success" role="status">
+          {repair_status}
         </p>
       )}
       {state.action_error && (
@@ -267,7 +286,13 @@ export function Store({
           onReview={(pending) => {
             rememberListScroll();
             setDownloadReturnId(storeDownloadId(pending));
-            state.reviewDownload(pending);
+            setRepairStatus('');
+            if (pending.restore_snapshot) {
+              state.closeDetail();
+              setRepair({ ...pending, restore_snapshot: pending.restore_snapshot });
+            } else {
+              state.reviewDownload(pending);
+            }
           }}
         />
       ) : (
@@ -313,6 +338,30 @@ export function Store({
           onDiscard={() => {
             setDownloadReturnId(undefined);
             state.discardDownload();
+          }}
+        />
+      )}
+      {repair && (
+        <RestorePackageSheet
+          target={{
+            applet_id: repair.applet_id,
+            name: repair.name,
+            expected: repair.restore_snapshot,
+          }}
+          downloads={downloads}
+          pending_download={repair}
+          onBusyChange={onBusyChange}
+          onClose={(reason) => {
+            repair_focus.current = reason === 'discarded' ? 'heading' : 'download';
+            setRepair(undefined);
+          }}
+          onRestored={({ applet, restart_required }) => {
+            const summary = `${applet.name} ${applet.version} restored.`;
+            setRepairStatus(
+              restart_required ? `${summary} Restart it from Library to use it.` : summary,
+            );
+            repair_focus.current = 'heading';
+            setRepair(undefined);
           }}
         />
       )}

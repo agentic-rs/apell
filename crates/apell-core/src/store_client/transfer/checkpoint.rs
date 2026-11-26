@@ -42,6 +42,18 @@ impl DownloadIdentity {
     self.origin == origin && self.applet_id == applet_id
   }
 
+  pub fn store_source(&self) -> StoreSource {
+    StoreSource {
+      store_url: self.origin.clone(),
+      applet_id: self.applet_id.clone(),
+      channel: self.channel,
+    }
+  }
+
+  pub fn sha256(&self) -> &str {
+    &self.sha256
+  }
+
   fn checkpoint(&self, cache: &Path) -> DownloadCheckpoint {
     DownloadCheckpoint::for_release(
       cache,
@@ -52,12 +64,7 @@ impl DownloadIdentity {
   }
 
   fn valid(&self) -> bool {
-    let source = StoreSource {
-      store_url: self.origin.clone(),
-      applet_id: self.applet_id.clone(),
-      channel: self.channel,
-    };
-    source.validate().is_ok()
+    self.store_source().validate().is_ok()
       && lowercase_hash(&self.sha256)
       && self.version.len() <= 80
       && semver::Version::parse(&self.version)
@@ -83,6 +90,14 @@ pub struct PendingDownload {
 }
 
 impl PendingDownload {
+  pub fn identity(&self) -> &DownloadIdentity {
+    &self.identity
+  }
+
+  pub fn downloaded_bytes(&self) -> u64 {
+    self.downloaded_bytes
+  }
+
   pub fn downloaded_bytes_for(&self, release: &StoreRelease) -> Option<u64> {
     (self.size_bytes == release.size_bytes
       && self.identity.version == release.version

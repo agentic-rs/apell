@@ -64,6 +64,15 @@ struct IconQuery {
   store_url: String,
   icon_url: String,
 }
+
+#[derive(Serialize)]
+struct PendingStoreDownload {
+  #[serde(flatten)]
+  download: PendingDownload,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  restore_snapshot: Option<StoreSwitchSnapshot>,
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct InstallQuery {
@@ -189,6 +198,16 @@ fn input<T: serde::de::DeserializeOwned>(params: Value) -> Result<T, String> {
 }
 fn output<T: Serialize>(result: T) -> Result<Value, String> {
   serde_json::to_value(result).map_err(|_| "Could not encode the store response.".into())
+}
+
+fn discard_request(mut params: Value) -> Result<(DownloadIdentity, bool), String> {
+  let fields = params.as_object_mut().ok_or("Invalid store request.")?;
+  let repair = match fields.remove("repair") {
+    None => false,
+    Some(Value::Bool(true)) => true,
+    _ => return Err("Invalid store request.".into()),
+  };
+  Ok((input(params)?, repair))
 }
 async fn config(host: &Host) -> Result<StoreConfig, String> {
   let root = host.root.clone();
@@ -454,13 +473,26 @@ pub async fn dispatch(
       )
     }
     "store.pending_downloads" => {
-      let _gate = host.store_gate.lock().await;
-      output(DownloadCheckpoint::pending_downloads(&download_cache(&app)?).await?)
+      let downloads = {
+        let _gate = host.store_gate.lock().await;
+        DownloadCheckpoint::pending_downloads(&download_cache(&app)?).await?
+      };
+      let mut entries: Vec<_> = downloads
+        .into_iter()
+        .map(|download| PendingStoreDownload {
+          download,
+          restore_snapshot: None,
+        })
+        .collect();
+      entries.extend(restore::pending_downloads(&app, host).await?);
+      output(entries)
     }
     "store.discard_download" => {
-      let identity: DownloadIdentity = input(params)?;
-      let cache = download_cache(&app)?;
-      let discarded = {
+      let (identity, repair) = discard_request(params)?;
+      let discarded = if repair {
+        restore::discard(&app, host, &identity).await
+      } else {
+        let cache = download_cache(&app)?;
         let _gate = host.store_gate.lock().await;
         DownloadCheckpoint::discard(&cache, &identity).await
       };
@@ -472,12 +504,16 @@ pub async fn dispatch(
       publish_download_change(&app);
       result
     }
-    "store.restore_package" => restore::restore_package(app, host, input(params)?).await,
+    "store.restore_package" => {
+      let result = restore::restore_package(app.clone(), host, input(params)?).await;
+      publish_download_change(&app);
+      result
+    }
     _ => Err("Unknown store command.".into()),
   }
 }
 
-fn publish_download_change(app: &AppHandle) {
+pub(crate) fn publish_download_change(app: &AppHandle) {
   let _ = app.emit_to("main", "apell-store-download-changed", ());
 }
 

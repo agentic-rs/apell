@@ -163,6 +163,7 @@ function Shell() {
                   <Library
                     onLaunch={launch}
                     onBusyChange={setBusy}
+                    downloads={downloads}
                     installOpen={install_open}
                     onInstallOpen={() => setInstallOpen(true)}
                     onInstallClose={() => setInstallOpen(false)}

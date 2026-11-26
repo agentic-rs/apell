@@ -18,9 +18,9 @@ release notes, and declared access before choosing **Install**.
 
 Apell saves public catalog listings and recently viewed applet details on the
 device, including after a restart. Store refreshes the page you’re viewing and
-keeps previous listings visible while checking. Downloads reads paused
-transfers from your device. Open a download to check its release at the original
-Store. Discover and Updates can both show saved applet details when the Store
+keeps previous listings visible while checking. Downloads shows paused installs,
+updates, and repairs saved on your device. Open a download to review its original
+release. Discover and Updates can both show saved applet details when the Store
 is unreachable.
 Apell checks local installations to show their installed channels and sources
 in saved listings. Update badges require a fresh Store response.
@@ -70,8 +70,8 @@ Open **Downloads** in Store or tap the paused downloads row in the Library
 after reopening Apell. Choose **Review** to check that exact release at its
 original Store, even after changing the Store address. A source or channel
 switch still requires confirmation. Choose **Discard download** to clear its
-progress. Apell keeps up to four saved downloads on this device. To start
-another at the limit, finish or discard one of the saved downloads.
+progress. Apell keeps up to four saved install or update downloads on this
+device. To start another at the limit, finish or discard a saved download.
 If a Store cannot resume the transfer, Apell downloads the package
 again and checks the full checksum before installing. On iOS, a download you
 start can keep going while the phone is locked for as long as iOS grants
@@ -87,9 +87,11 @@ operations leave the previous installation intact.
 If a Store applet’s package is missing or damaged, choose **Restore package →
 Download from original Store** in the Library. Apell restores only the release
 that matches the recorded checksum and channel, even when Discover points to
-another Store. If the repair download is interrupted, retry to download the
-archive again. You can also choose the original `.apel` file. Restore keeps the
-applet’s saved data, permissions, and update source.
+another Store. After an interruption, choose **Continue repair download** in Library or
+review the **Repair paused** entry in Downloads. Apell saves up to four repair
+downloads. You can discard their saved progress or choose the original `.apel`
+file at any time between attempts. Restore keeps the applet’s saved data,
+permissions, and update source.
 
 ## Accounts and package ownership
 

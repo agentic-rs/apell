@@ -192,7 +192,11 @@ pub async fn shell_command(
       crate::permissions::installed_info(app, string(&params, "applet_id")?.to_owned()).await
     }
     "applets.install" => crate::install::install(app, &host, params).await,
-    "applets.restore_package" => crate::install::restore_package(&host, params).await,
+    "applets.restore_package" => {
+      let result = crate::install::restore_package(&host, params).await?;
+      crate::store_commands::publish_download_change(&app);
+      Ok(result)
+    }
     "applets.update" => crate::install::update(app, &host, string(&params, "applet_id")?).await,
     "applets.remove" => {
       host
@@ -200,6 +204,7 @@ pub async fn shell_command(
           crate::applets::notify_stopped(&app, id)
         })
         .await?;
+      crate::store_commands::publish_download_change(&app);
       Ok(Value::Null)
     }
     "applets.github_release" => crate::install::release(string(&params, "repository")?).await,

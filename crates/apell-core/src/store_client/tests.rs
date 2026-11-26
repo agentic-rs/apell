@@ -200,6 +200,31 @@ async fn downloads_verify_raw_bytes_and_report_progress() {
 }
 
 #[tokio::test]
+async fn a_stale_local_review_prevents_requesting_the_download_body() {
+  let bytes = package("sample", "1.0.0", &["sqlite"]);
+  let selected = release(&bytes, "1.0.0");
+  let server = MockStore::release(&selected, bytes).await;
+  let cache = tempfile::tempdir().unwrap();
+  let checkpoint = DownloadCheckpoint::new(cache.path(), &server.origin, &selected);
+  let result = StoreClient::new(&server.origin)
+    .unwrap()
+    .download_resumable_with_recheck(
+      "sample",
+      &selected,
+      &checkpoint,
+      std::future::pending(),
+      async { Err("The record changed".into()) },
+      |_, _| panic!("A rejected record should produce no body progress"),
+    )
+    .await;
+  assert!(matches!(result, Err(error) if error == "The record changed"));
+  let requests = server.requests.lock().unwrap();
+  assert_eq!(requests.len(), 1);
+  assert!(requests[0].starts_with("GET /api/v1/applets/sample HTTP/"));
+  assert_eq!(std::fs::read_dir(cache.path()).unwrap().count(), 0);
+}
+
+#[tokio::test]
 async fn interrupted_download_resumes_the_reviewed_range_and_rejects_bad_ranges() {
   let bytes = package("sample", "1.0.0", &["sqlite"]);
   let selected = release(&bytes, "1.0.0");

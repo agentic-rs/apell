@@ -21,6 +21,29 @@ impl StoreClient {
     pause: impl Future<Output = ()>,
     progress: impl Fn(u64, Option<u64>),
   ) -> Result<DownloadOutcome, String> {
+    self
+      .download_resumable_with_recheck(
+        applet_id,
+        selected,
+        checkpoint,
+        pause,
+        async { Ok(()) },
+        progress,
+      )
+      .await
+  }
+
+  /// Revalidate the caller's local authorization after the live Store review,
+  /// before preparing the checkpoint or requesting package bytes.
+  pub async fn download_resumable_with_recheck(
+    &self,
+    applet_id: &str,
+    selected: &StoreRelease,
+    checkpoint: &DownloadCheckpoint,
+    pause: impl Future<Output = ()>,
+    recheck: impl Future<Output = Result<(), String>>,
+    progress: impl Fn(u64, Option<u64>),
+  ) -> Result<DownloadOutcome, String> {
     selected.validate(applet_id)?;
     let size = selected.size_bytes;
     let mut received = checkpoint.reviewed_received(size).await;
@@ -31,6 +54,11 @@ impl StoreClient {
       _ = &mut pause => return paused(received),
       result = self.review_download(applet_id, selected) => result?,
     };
+    tokio::select! {
+      biased;
+      _ = &mut pause => return paused(received),
+      result = recheck => result?,
+    }
     checkpoint
       .prepare(&self.origin, applet_id, name, selected)
       .await?;

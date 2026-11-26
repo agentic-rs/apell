@@ -472,6 +472,9 @@ svg {
 .sheet-content > .status {
   margin-top: 16px;
 }
+.restore-discard-actions {
+  margin-top: 12px;
+}
 .panel {
   width: 100%;
   max-width: 540px;

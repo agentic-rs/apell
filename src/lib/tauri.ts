@@ -47,6 +47,7 @@ import type {
   StoreInstallRequest,
   StoreInstallResult,
   StorePendingDownload,
+  StoreRestoreResult,
   StoreSavedDetail,
   StoreSwitchSnapshot,
   StoreUpdatesReport,
@@ -110,8 +111,11 @@ const storeDownloadIdentity = ({
   channel,
   sha256,
 });
-export const discardStoreDownload = (download: StoreDownloadIdentity) =>
-  shellCall<boolean>('store.discard_download', storeDownloadIdentity(download));
+export const discardStoreDownload = (download: StorePendingDownload) =>
+  shellCall<boolean>('store.discard_download', {
+    ...storeDownloadIdentity(download),
+    ...(download.restore_snapshot ? { repair: true } : {}),
+  });
 export const getStoreDetail = (store_url: string, applet_id: string, installed_source = false) =>
   shellCall<StoreDetail>('store.detail', {
     store_url,
@@ -164,7 +168,14 @@ export const restoreStorePackage = (
   applet_id: string,
   expected: StoreSwitchSnapshot,
   operation_id: string,
-) => shellCall<AppletInstallResult>('store.restore_package', { applet_id, expected, operation_id });
+  pending_download?: StoreDownloadIdentity,
+) =>
+  shellCall<StoreRestoreResult>('store.restore_package', {
+    applet_id,
+    expected,
+    operation_id,
+    ...(pending_download && { pending_download: storeDownloadIdentity(pending_download) }),
+  });
 export const launchApplet = (applet_id: string) =>
   shellCall<AppletSession>('applets.launch', { applet_id });
 export const restartApplet = (applet_id: string) =>

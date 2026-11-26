@@ -7,10 +7,9 @@ import {
   message,
   onInstallProgress,
   removeApplet,
-  restoreAppletPackage,
-  restoreStorePackage,
   restartApplet,
 } from '../lib/tauri';
+import { readPackageFile } from '../lib/packageFile';
 import type {
   AppletInstallResult,
   AppletListReport,
@@ -20,13 +19,13 @@ import type {
   StoreSwitchSnapshot,
   UnavailableApplet,
 } from '../lib/types';
-import { storeChannelName } from '../lib/storeState';
-import { AppletPackagePicker } from '../components/AppletPackagePicker';
 import { InstallSheet } from '../components/InstallSheet';
 import { AppletTile } from '../components/AppletTile';
 import { AppletInfoSheet } from '../components/AppletInfoSheet';
 import { Icon } from '../components/Icon';
+import { RestorePackageSheet } from '../components/RestorePackageSheet';
 import { Sheet } from '../components/Sheet';
+import type { StoreDownloads } from '../components/store/useStoreDownloads';
 
 type AppletAction = {
   applet_id: string;
@@ -35,18 +34,10 @@ type AppletAction = {
   { panel: 'actions' | 'info' | 'remove' } | { panel: 'restore'; expected: StoreSwitchSnapshot }
 );
 
-async function readPackageFile(file: File) {
-  if (file.size > 24 * 1024 * 1024) throw new Error('Bundle exceeds 24 MiB.');
-  const bytes = new Uint8Array(await file.arrayBuffer());
-  let binary = '';
-  for (let offset = 0; offset < bytes.length; offset += 32768)
-    binary += String.fromCharCode(...bytes.subarray(offset, offset + 32768));
-  return btoa(binary);
-}
-
 interface LibraryProps {
   onLaunch: (session: AppletSession) => void;
   onBusyChange: (busy: boolean) => void;
+  downloads: StoreDownloads;
   installOpen: boolean;
   onInstallOpen: () => void;
   onInstallClose: () => void;
@@ -55,6 +46,7 @@ interface LibraryProps {
 export function Library({
   onLaunch,
   onBusyChange,
+  downloads,
   installOpen,
   onInstallOpen,
   onInstallClose,
@@ -80,7 +72,6 @@ export function Library({
       applet.applet_id === restart_offer_id && restart_required.includes(applet.applet_id),
   );
   const action_applet = applets.find((applet) => applet.applet_id === action?.applet_id);
-  const restore_source = action?.panel === 'restore' ? action.expected.source : undefined;
 
   const applyReport = (report: AppletListReport) => {
     setApplets(report.applets);
@@ -242,26 +233,14 @@ export function Library({
     setAction(target);
   };
   const restored = async (result: AppletInstallResult) => {
-    progress_filter.current = undefined;
     library_focus.current = { applet_id: result.applet.applet_id };
     setAction(undefined);
     await installed(result, 'restored');
   };
-  const restoreFromFile = (target: Extract<AppletAction, { panel: 'restore' }>, file: File) =>
-    void run(async () => {
-      await restored(
-        await restoreAppletPackage(target.applet_id, target.expected, await readPackageFile(file)),
-      );
-    }, 'Restoring package…');
-  const restoreFromStore = (target: Extract<AppletAction, { panel: 'restore' }>) => {
-    const operation_id = crypto.randomUUID();
-    void run(
-      async () => {
-        await restored(await restoreStorePackage(target.applet_id, target.expected, operation_id));
-      },
-      'Checking the original Store…',
-      { operation_id },
-    );
+  const repairBusyChanged = (busy: boolean) => {
+    pending.current = busy;
+    setBusy(busy);
+    onBusyChange(busy);
   };
   const remove = (target: AppletAction) =>
     void run(async () => {
@@ -410,70 +389,25 @@ export function Library({
           onInstalled={(result) => void installed(result)}
           onRestart={(applet) => openApplet(applet, true)}
         />
+      ) : action?.panel === 'restore' ? (
+        <RestorePackageSheet
+          key={action.applet_id}
+          target={action}
+          downloads={downloads}
+          onBusyChange={repairBusyChanged}
+          onClose={() => setAction(undefined)}
+          onRestored={restored}
+        />
       ) : (
         action && (
           <Sheet
             key={action.panel}
             open
-            title={
-              action.panel === 'remove'
-                ? `Remove ${action.name}?`
-                : action.panel === 'restore'
-                  ? 'Restore package'
-                  : action.name
-            }
+            title={action.panel === 'remove' ? `Remove ${action.name}?` : action.name}
             dismissible={!busy}
-            onClose={() => {
-              if (action.panel === 'restore') {
-                setStatus('');
-                setFailed(false);
-              }
-              setAction(undefined);
-            }}
+            onClose={() => setAction(undefined)}
           >
-            {action.panel === 'restore' ? (
-              <>
-                <p>
-                  Restore the original package for <strong>{action.name}</strong> and keep its saved
-                  data and permissions.
-                </p>
-                {restore_source?.kind === 'store' && (
-                  <button
-                    type="button"
-                    className="install-option"
-                    aria-labelledby="library-restore-store-title"
-                    aria-describedby="library-restore-store-source"
-                    disabled={busy}
-                    onClick={() => restoreFromStore(action)}
-                  >
-                    <span className="option-icon" aria-hidden="true">
-                      <Icon name="download" />
-                    </span>
-                    <span>
-                      <strong id="library-restore-store-title">Download from original Store</strong>
-                      <small id="library-restore-store-source">
-                        <bdi>{restore_source.store_url}</bdi> ·{' '}
-                        {storeChannelName(restore_source.channel)}
-                      </small>
-                    </span>
-                  </button>
-                )}
-                <AppletPackagePicker
-                  title="Choose original .apel file"
-                  label="Choose original .apel file"
-                  disabled={busy}
-                  onFile={(file) => restoreFromFile(action, file)}
-                />
-                {status && (
-                  <p
-                    className={`status${failed ? ' error' : ''}`}
-                    role={failed ? 'alert' : 'status'}
-                  >
-                    {status}
-                  </p>
-                )}
-              </>
-            ) : action.panel === 'remove' ? (
+            {action.panel === 'remove' ? (
               <>
                 <p>
                   Its saved data stays on this device. Reinstall from the same source to use it
