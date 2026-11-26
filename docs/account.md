@@ -205,7 +205,8 @@ publishes local changes and checks for cloud changes while it runs. Use **Sync
 now** to check immediately. Apell shows changes on this device that are still
 waiting to sync. If a manual or background sync fails, **Model settings**
 shows the failure so you can retry there. The **Apell Account** row in
-Settings shows when model or encrypted API-key sync needs attention.
+Settings shows this device’s verification status and when model or encrypted
+API-key sync needs attention.
 If you sign in again, Apell closes reviews and verification sheets from the
 previous sign-in. Reopen the review or start a new verification to continue.
 Model settings sync includes connection labels, built-in provider and model
@@ -230,9 +231,11 @@ cloud revision still matches.
 ## Sync encrypted API keys
 
 In **Settings → Apell Account → Encrypted API keys**, signed-in devices show
-**Verified** or **Unverified**. On the first device, choose **Verify this
-device** to create the vault. On an additional device, choose **Pair this
-device** and open **Approve a device** on a verified device. Compare the six
+**Verified** or **Unverified** from local state, even while offline. For an
+unverified device, Apell checks Account to find the available verification
+options. Choose **Verify this device** on the first device to create the vault.
+On an additional device, choose **Pair this device** and open
+**Approve a device** on a verified device. Compare the six
 digits on both screens and approve the matching request. When all verified
 devices are unavailable, choose **Recover access** and verify your Account
 again in the browser. Return to Apell after the browser confirms verification.

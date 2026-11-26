@@ -24,6 +24,7 @@ function SettingsRow({
   icon,
   title,
   detail,
+  detail_note,
   attention,
   onOpen,
 }: {
@@ -31,6 +32,7 @@ function SettingsRow({
   icon: ComponentProps<typeof Icon>['name'];
   title: string;
   detail: string;
+  detail_note?: string;
   attention?: string;
   onOpen: (section: SettingsSection) => void;
 }) {
@@ -47,6 +49,7 @@ function SettingsRow({
       <span className="settings-menu-text">
         <strong>{title}</strong>
         <small>{detail}</small>
+        {detail_note && <small>{detail_note}</small>}
         {attention && <small className="settings-menu-attention">{attention}</small>}
       </span>
       <span className="settings-menu-chevron">
@@ -56,7 +59,12 @@ function SettingsRow({
   );
 }
 
-type AccountSummary = { detail: string; attention?: string };
+type AccountSummary = {
+  detail: string;
+  account_session_id?: string;
+  verification?: 'Verified device' | 'Unverified device';
+  attention?: string;
+};
 
 const checking_account: AccountSummary = { detail: 'Checking sign-in…' };
 
@@ -101,19 +109,32 @@ export function SettingsMenu({
         setAccountSummary({ detail });
         return;
       }
-      setAccountSummary((current) => (current.detail === detail ? current : { detail }));
+      const { account_session_id } = account;
+      setAccountSummary((current) =>
+        current.account_session_id === account_session_id
+          ? { ...current, detail }
+          : { detail, account_session_id },
+      );
       const [model, keys] = await Promise.allSettled([
-        getConfigSyncStatus(account.account_session_id),
-        getLocalKeySyncStatus(account.account_session_id),
+        getConfigSyncStatus(account_session_id),
+        getLocalKeySyncStatus(account_session_id),
       ]);
       if (alive && request === sequence) {
+        const key_status = keys.status === 'fulfilled' ? keys.value : undefined;
         const attention = accountSyncAttention(
           model.status === 'fulfilled' ? model.value : undefined,
-          keys.status === 'fulfilled' ? keys.value : undefined,
+          key_status,
         );
         const unavailable = model.status === 'rejected' || keys.status === 'rejected';
         setAccountSummary({
           detail,
+          account_session_id,
+          verification:
+            key_status?.state === 'verified'
+              ? 'Verified device'
+              : key_status?.state === 'unverified'
+                ? 'Unverified device'
+                : undefined,
           attention: attention ?? (unavailable ? 'Sync status unavailable' : undefined),
         });
       }
@@ -180,6 +201,7 @@ export function SettingsMenu({
           icon="account"
           title="Apell Account"
           detail={account_summary.detail}
+          detail_note={account_summary.verification}
           attention={account_summary.attention}
           onOpen={onOpen}
         />

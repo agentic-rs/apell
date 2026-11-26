@@ -7,6 +7,7 @@ import {
   finishKeySyncPairing,
   finishKeySyncRecovery,
   getKeySyncStatus,
+  getLocalKeySyncStatus,
   listKeySyncPairings,
   message,
   onKeySyncChanged,
@@ -15,7 +16,13 @@ import {
   startKeySyncPairing,
   startKeySyncRecovery,
 } from '../lib/tauri';
-import type { KeySyncPairing, KeySyncRecovery, KeySyncStatus, LlmProvider } from '../lib/types';
+import type {
+  KeySyncPairing,
+  KeySyncRecovery,
+  KeySyncStatus,
+  LlmProvider,
+  LocalKeySyncStatus,
+} from '../lib/types';
 import { KeySyncConflictReview } from './KeySyncConflictReview';
 import { OperationScope } from './providers/state';
 import { Sheet } from './Sheet';
@@ -398,7 +405,7 @@ export function EncryptedKeySync({
   onApplied,
   onBusyChange,
 }: Props) {
-  const [status, setStatus] = useState<KeySyncStatus>();
+  const [status, setStatus] = useState<LocalKeySyncStatus | KeySyncStatus>();
   const [flow, setFlow] = useState<Flow>();
   const active_flow = useRef<Flow | undefined>(undefined);
   const [busy, setBusy] = useState(false);
@@ -421,21 +428,29 @@ export function EncryptedKeySync({
     setFlow(next);
   }
 
+  function updateStatus(current: LocalKeySyncStatus | KeySyncStatus) {
+    if (
+      current.state === 'signed_out' ||
+      (active_flow.current?.kind === 'review' && current.state !== 'verified')
+    ) {
+      showFlow();
+    }
+    setStatus(current);
+    setStatusError('');
+  }
+
   async function refresh() {
     if (!visible.current) return;
     const version = ++read_version.current;
     setChecking(true);
     try {
-      const current = await getKeySyncStatus(account_session_id);
+      const local = await getLocalKeySyncStatus(account_session_id);
       if (read_version.current !== version) return;
-      if (
-        current.state === 'signed_out' ||
-        (active_flow.current?.kind === 'review' && current.state !== 'verified')
-      ) {
-        showFlow();
-      }
-      setStatus(current);
-      setStatusError('');
+      updateStatus(local);
+      if (local.state !== 'unverified') return;
+
+      const current = await getKeySyncStatus(account_session_id);
+      if (read_version.current === version) updateStatus(current);
     } catch (error) {
       if (read_version.current === version) setStatusError(message(error));
     } finally {
@@ -551,11 +566,9 @@ export function EncryptedKeySync({
 
   if (status?.state === 'signed_out') return null;
   const button_disabled = disabled || busy || resolving;
-  const verification_action =
-    !status_error && status?.state === 'unverified' ? status.action : null;
-  const check_error =
-    status_error ||
-    (status?.state === 'unverified' && status.action === 'check' ? status.error : '');
+  const verification = status?.state === 'unverified' && 'action' in status ? status : undefined;
+  const verification_action = !status_error && !checking ? verification?.action : undefined;
+  const check_error = status_error || (verification?.action === 'check' ? verification.error : '');
   const can_retry =
     !status_error &&
     status?.state === 'verified' &&
@@ -638,6 +651,7 @@ export function EncryptedKeySync({
           <p>
             <strong>Unverified</strong>
           </p>
+          {checking && !check_error && <p role="status">Checking verification options…</p>}
           {verification_action === 'setup' && (
             <>
               <p>
