@@ -28,7 +28,7 @@ without macOS Keychain prompts.
 
 The development and production builds compile Companion's Rust guest for `wasm32-unknown-unknown`, bundle its TypeScript and CSS, and pack the result with the Rust CLI. Rust emits the guest module directly.
 
-1. Open **Settings**, choose a provider, enter its API key or complete sign-in, select a model, then **Save connection**.
+1. Open **Settings → Model connections**, choose a provider, enter its API key or complete sign-in, select a model, then **Save connection**. Choose **Settings → Default model** to set the model used by applets without their own selection.
 2. Tap **+ → Try Companion** and open its icon. Use Companion's model button to choose the provider and model for a chat. Provider credentials stay in Apell's native credential store.
 3. Send a message. Use **… → Reload applet** during a reply, or close Companion and reopen its icon. Both actions attach a fresh interface to the same running backend. **About this applet** shows the version and declared permissions.
 

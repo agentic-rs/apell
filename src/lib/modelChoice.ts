@@ -1,5 +1,5 @@
 import type { LlmSelection, LlmTarget } from '../../packages/applet-sdk/src/types';
-import type { LlmConnection, LlmSettings } from './types';
+import type { LlmConnection, LlmProvider, LlmSettings } from './types';
 
 export interface ModelChoice {
   id: number;
@@ -74,13 +74,71 @@ export class AppletModelChooser {
   }
 }
 
+export type ConnectionReadiness =
+  | { state: 'provider_unavailable'; provider?: undefined }
+  | {
+      state: 'ready' | 'needs_model' | 'needs_api_key' | 'needs_sign_in' | 'credential_unavailable';
+      provider: LlmProvider;
+    };
+
+const connection_help = {
+  needs_model: { label: 'Choose a model', action: 'Choose a model' },
+  needs_api_key: { label: 'API key needed', action: 'Add API key' },
+  needs_sign_in: { label: 'Provider sign-in needed', action: 'Sign in' },
+  credential_unavailable: { label: 'Credential unavailable', action: 'Edit connection' },
+  provider_unavailable: { label: 'Provider unavailable', action: 'Edit connection' },
+};
+
+export function connectionReadiness(
+  connection: LlmConnection,
+  providers: readonly LlmProvider[],
+): ConnectionReadiness {
+  const provider = providers.find((item) => item.provider_id === connection.provider_id);
+  if (!provider) return { state: 'provider_unavailable' };
+  if (connection.credential_status === 'unavailable') {
+    return { state: 'credential_unavailable', provider };
+  }
+  if (connection.credential_status === 'absent' && !provider.auth_methods.includes('none')) {
+    return {
+      state: provider.auth_methods.includes('device_code') ? 'needs_sign_in' : 'needs_api_key',
+      provider,
+    };
+  }
+  return { state: validModelId(connection.model_id) ? 'ready' : 'needs_model', provider };
+}
+
+export function connectionReadinessLabel({ state }: ConnectionReadiness): string | undefined {
+  return state === 'ready' ? undefined : connection_help[state].label;
+}
+
+export function connectionReadinessAction({ state }: ConnectionReadiness): string | undefined {
+  return state === 'ready' ? undefined : connection_help[state].action;
+}
+
 export function selectableProvider(settings: LlmSettings, connection: LlmConnection) {
-  if (connection.credential_status === 'unavailable') return undefined;
-  const provider = settings.providers.find((item) => item.provider_id === connection.provider_id);
-  return provider &&
-    (provider.auth_methods.includes('none') || connection.credential_status === 'present')
-    ? provider
+  const readiness = connectionReadiness(connection, settings.providers);
+  return readiness.state === 'ready' || readiness.state === 'needs_model'
+    ? readiness.provider
     : undefined;
+}
+
+export function initialModelTarget(
+  settings: LlmSettings,
+  current?: LlmTarget,
+): LlmTarget | undefined {
+  const { connections, providers, active_connection_id } = settings;
+  if (current && connections.some((entry) => entry.connection_id === current.connection_id)) {
+    return current;
+  }
+  const preferred = connections.find((entry) => entry.connection_id === active_connection_id);
+  const candidates = preferred
+    ? [preferred, ...connections.filter((entry) => entry !== preferred)]
+    : connections;
+  const connection =
+    candidates.find((entry) => connectionReadiness(entry, providers).state === 'ready') ??
+    candidates.find((entry) => connectionReadiness(entry, providers).state === 'needs_model') ??
+    candidates[0];
+  return connection && { connection_id: connection.connection_id, model_id: connection.model_id };
 }
 
 export function publicSelection(

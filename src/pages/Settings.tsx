@@ -1,14 +1,23 @@
 import { Activity, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useBackAction } from '../lib/backNavigation';
-import { activateConnection, getSettings, message, onLlmSettingsChanged } from '../lib/tauri';
+import {
+  activateConnection,
+  getSettings,
+  message,
+  onAccountChanged,
+  onLlmSettingsChanged,
+} from '../lib/tauri';
+import { connectionReadiness } from '../lib/modelChoice';
 import type { LlmConnection, LlmSettings } from '../lib/types';
 import { ConnectionEditor } from '../components/providers/ConnectionEditor';
+import { SavedConnectionDetails } from '../components/providers/SavedConnectionDetails';
 import { OperationScope } from '../components/providers/state';
 import { Icon } from '../components/Icon';
 import { AccountSync } from '../components/AccountSync';
 import { AppletPermissions } from '../components/AppletPermissions';
 import { SettingsTransfer } from '../components/SettingsTransfer';
 import { SettingsMenu, type SettingsSection } from '../components/SettingsMenu';
+import { DefaultModelSettings } from '../components/DefaultModelSettings';
 
 export function Settings() {
   const [section, setSection] = useState<SettingsSection | null>(null);
@@ -23,6 +32,7 @@ export function Settings() {
   const scope = useRef(new OperationScope());
   const previous_section = useRef<SettingsSection | null>(null);
   const menu_scroll = useRef(0);
+  const editor_return = useRef<{ id: string; scroll: number }>(undefined);
 
   useBackAction(10, section !== null, () => {
     if (!busy && !syncing) setSection(null);
@@ -35,6 +45,19 @@ export function Settings() {
     window.scrollTo(0, section ? 0 : menu_scroll.current);
     document.getElementById(target)?.focus({ preventScroll: true });
   }, [section]);
+  useLayoutEffect(() => {
+    if (editor) {
+      window.scrollTo(0, 0);
+      document.getElementById('settings-connection-editor')?.focus({ preventScroll: true });
+    } else if (editor_return.current) {
+      const { id, scroll } = editor_return.current;
+      editor_return.current = undefined;
+      window.scrollTo(0, scroll);
+      (document.getElementById(id) ?? document.getElementById(`settings-${section}`))?.focus({
+        preventScroll: true,
+      });
+    }
+  }, [editor, section]);
 
   const load = async () => {
     const operation = scope.current.start();
@@ -60,19 +83,15 @@ export function Settings() {
   }, []);
   useEffect(() => {
     let active = true;
-    let unsubscribe: (() => void) | undefined;
-    void onLlmSettingsChanged(() => {
+    const refresh = () => {
       if (active) setReloadRequested(true);
-    }).then(
-      (unlisten) => {
-        if (active) unsubscribe = unlisten;
-        else unlisten();
-      },
-      () => {},
+    };
+    const unsubscribe = [onLlmSettingsChanged(refresh), onAccountChanged(refresh)].map(
+      (subscription) => subscription.catch(() => undefined),
     );
     return () => {
       active = false;
-      unsubscribe?.();
+      for (const stop of unsubscribe) void stop.then((unlisten) => unlisten?.());
     };
   }, []);
   useEffect(() => {
@@ -84,16 +103,52 @@ export function Settings() {
 
   const editing_disabled = busy || loading || syncing;
 
+  const editConnection = (connection: LlmConnection | undefined, trigger_id: string) => {
+    editor_return.current = { id: trigger_id, scroll: window.scrollY };
+    setEditor({ connection });
+    setStatus('');
+  };
+  const setActive = (connection_id: string) =>
+    setSettings(
+      (current) =>
+        current && {
+          ...current,
+          active_connection_id: connection_id,
+          pending_preferred_connection_id: null,
+        },
+    );
+  const activate = async (connection_id: string) => {
+    const operation = scope.current.start();
+    if (!operation) return;
+    setBusy(true);
+    setStatus('');
+    try {
+      await activateConnection(connection_id);
+      if (operation.isCurrent()) {
+        setActive(connection_id);
+        document.getElementById('settings-default-model')?.focus({ preventScroll: true });
+      }
+    } catch (error) {
+      if (operation.isCurrent()) setStatus(message(error));
+    } finally {
+      if (operation.isCurrent()) {
+        operation.finish();
+        setBusy(false);
+      }
+    }
+  };
+
   const connections_editor = editor && settings && (
     <ConnectionEditor
       connection={editor.connection}
+      back_label={section === 'default-model' ? 'Default model' : undefined}
       providers={settings.providers}
       active_connection_id={settings.active_connection_id}
       onBack={() => {
         setEditor(undefined);
         setStatus('');
       }}
-      onSaved={(connection, previous_id) =>
+      onSaved={(connection, previous_id) => {
         setSettings((current) => {
           if (!current) return current;
           return {
@@ -108,17 +163,10 @@ export function Settings() {
                 )
               : [...current.connections, connection],
           };
-        })
-      }
-      onActivated={(connection_id) =>
-        setSettings(
-          (current) =>
-            current && {
-              ...current,
-              active_connection_id: connection_id,
-            },
-        )
-      }
+        });
+        setReloadRequested(true);
+      }}
+      onActivated={setActive}
       onDeleted={(connection_id) => {
         setSettings(
           (current) =>
@@ -131,6 +179,10 @@ export function Settings() {
                 current.active_connection_id === connection_id
                   ? null
                   : current.active_connection_id,
+              pending_preferred_connection_id:
+                current.pending_preferred_connection_id === connection_id
+                  ? null
+                  : current.pending_preferred_connection_id,
             },
         );
         setEditor(undefined);
@@ -149,15 +201,7 @@ export function Settings() {
       <h2 id="settings-connections" className="settings-section-title" tabIndex={-1}>
         Model connections
       </h2>
-      {settings && (
-        <p>
-          {!settings.connections.length
-            ? 'Add a connection to use a model in your applets.'
-            : settings.active_connection_id === null
-              ? 'Choose a connection to set the default model for your applets.'
-              : 'The active model is shared by your applets. Credentials stay in Apell.'}
-        </p>
-      )}
+      {settings && !settings.connections.length && <p>Add a provider connection to use models.</p>}
       {loading && !settings && (
         <p className="status connection-status" role="status">
           Loading connections…
@@ -167,20 +211,8 @@ export function Settings() {
         <div className="connection-list">
           {settings.connections.map((connection) => {
             const active = settings.active_connection_id === connection.connection_id;
-            const provider = settings.providers.find(
-              (item) => item.provider_id === connection.provider_id,
-            );
-            const needs_credential =
-              connection.credential_status === 'absent' &&
-              provider &&
-              !provider.auth_methods.includes('none');
-            const credential_action = provider?.auth_methods.includes('device_code')
-              ? 'Sign in'
-              : 'Add API key';
-            const editConnection = () => {
-              setEditor({ connection });
-              setStatus('');
-            };
+            const readiness = connectionReadiness(connection, settings.providers);
+            const id = `settings-connection-${connection.connection_id}`;
             return (
               <div
                 className={`connection-row${active ? ' active' : ''}`}
@@ -188,65 +220,18 @@ export function Settings() {
               >
                 <button
                   type="button"
+                  id={id}
                   className="connection-detail"
                   disabled={editing_disabled}
                   aria-label={`Edit ${connection.name}`}
-                  onClick={editConnection}
+                  onClick={() => editConnection(connection, id)}
                 >
-                  <strong>{connection.name}</strong>
-                  <span>{connection.model_id || 'Choose a model'}</span>
-                  <small>
-                    {provider?.name ?? connection.provider_id}
-                    {connection.credential_status === 'unavailable'
-                      ? ' · Credential unavailable'
-                      : ''}
-                  </small>
+                  <SavedConnectionDetails connection={connection} readiness={readiness} />
                 </button>
-                {active ? (
-                  <span className="connection-badge">Active</span>
-                ) : needs_credential ? (
-                  <button
-                    type="button"
-                    className="connection-use"
-                    disabled={editing_disabled}
-                    aria-label={`${credential_action} for ${connection.name}`}
-                    onClick={editConnection}
-                  >
-                    {credential_action}
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    className="connection-use"
-                    disabled={editing_disabled || !connection.model_id}
-                    aria-label={`Use ${connection.name}`}
-                    onClick={async () => {
-                      const operation = scope.current.start();
-                      if (!operation) return;
-                      setBusy(true);
-                      setStatus('');
-                      try {
-                        await activateConnection(connection.connection_id);
-                        if (operation.isCurrent())
-                          setSettings(
-                            (current) =>
-                              current && {
-                                ...current,
-                                active_connection_id: connection.connection_id,
-                              },
-                          );
-                      } catch (error) {
-                        if (operation.isCurrent()) setStatus(message(error));
-                      } finally {
-                        if (operation.isCurrent()) {
-                          operation.finish();
-                          setBusy(false);
-                        }
-                      }
-                    }}
-                  >
-                    Use
-                  </button>
+                {active && (
+                  <span className="connection-badge">
+                    {readiness.state === 'ready' ? 'Default' : 'Selected'}
+                  </span>
                 )}
               </div>
             );
@@ -267,8 +252,9 @@ export function Settings() {
         <button
           type="button"
           className="add-connection"
+          id="settings-add-connection"
           disabled={editing_disabled || !settings.providers.length}
-          onClick={() => setEditor({})}
+          onClick={() => editConnection(undefined, 'settings-add-connection')}
         >
           <Icon name="add" /> Add connection
         </button>
@@ -289,6 +275,18 @@ export function Settings() {
           }}
         />
       )}
+      {section === 'default-model' &&
+        (connections_editor || (
+          <DefaultModelSettings
+            settings={settings}
+            loading={loading}
+            disabled={editing_disabled}
+            error={status}
+            onActivate={(id) => void activate(id)}
+            onEdit={editConnection}
+            onRetry={() => void load()}
+          />
+        ))}
       {section === 'connections' && (connections_editor || connections)}
       <Activity mode={section === 'account' ? 'visible' : 'hidden'}>
         <AccountSync

@@ -13,9 +13,11 @@ import type {
   LlmSettings,
   LocalKeySyncStatus,
 } from '../lib/types';
+import { connectionReadiness, connectionReadinessLabel } from '../lib/modelChoice';
 import { Icon } from './Icon';
 
-export type SettingsSection = 'account' | 'connections' | 'permissions' | 'backup';
+export type SettingsSection =
+  'account' | 'default-model' | 'connections' | 'permissions' | 'backup';
 
 function SettingsRow({
   section,
@@ -137,11 +139,27 @@ export function SettingsMenu({
     };
   }, []);
 
-  const active_model = settings?.connections.find(
+  const active = settings?.connections.find(
     (connection) => connection.connection_id === settings.active_connection_id,
-  )?.model_id;
-  const model_detail = settings
-    ? active_model || 'No active model'
+  );
+  const pending = settings?.connections.find(
+    (connection) => connection.connection_id === settings.pending_preferred_connection_id,
+  );
+  const problem =
+    active && settings
+      ? connectionReadinessLabel(connectionReadiness(active, settings.providers))
+      : undefined;
+  const default_detail = active
+    ? active.model_id && active.model_id !== active.name
+      ? `${active.name} · ${active.model_id}`
+      : active.name
+    : settings
+      ? 'No default selected'
+      : loading
+        ? 'Loading connections…'
+        : 'Connections unavailable';
+  const connection_detail = settings
+    ? `${settings.connections.length} saved ${settings.connections.length === 1 ? 'connection' : 'connections'}`
     : loading
       ? 'Loading connections…'
       : 'Connections unavailable';
@@ -160,10 +178,18 @@ export function SettingsMenu({
       </div>
       <div className="settings-menu-group">
         <SettingsRow
+          section="default-model"
+          icon="chat"
+          title="Default model"
+          detail={default_detail}
+          attention={problem ?? (pending ? 'Synced choice pending' : undefined)}
+          onOpen={onOpen}
+        />
+        <SettingsRow
           section="connections"
           icon="connections"
           title="Model connections"
-          detail={model_detail}
+          detail={connection_detail}
           onOpen={onOpen}
         />
         <SettingsRow

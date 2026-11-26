@@ -199,6 +199,7 @@ export interface LlmConnection {
 }
 export interface LlmSettings {
   active_connection_id: string | null;
+  pending_preferred_connection_id: string | null;
   connections: LlmConnection[];
   providers: LlmProvider[];
 }

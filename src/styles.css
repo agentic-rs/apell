@@ -820,6 +820,29 @@ svg {
   border-color: var(--selection-line);
   background: var(--selection);
 }
+.default-model-pending {
+  margin-top: 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--subtle);
+  overflow-wrap: anywhere;
+}
+.default-model-pending p {
+  margin: 4px 0 0;
+}
+.default-model-option {
+  width: 100%;
+  text-align: start;
+}
+.default-model-action {
+  flex: none;
+  max-width: 42%;
+  color: var(--muted);
+  font-size: 14px;
+  text-align: end;
+  overflow-wrap: normal;
+}
 .connection-detail {
   display: grid;
   flex: 1;

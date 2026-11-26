@@ -375,6 +375,7 @@ pub(in crate::key_sync) async fn resolve_conflict(
       .await?;
       drop(credentials);
       let _ = app.emit_to("main", "apell-llm-settings-changed", ());
+      crate::config_sync::kick(app);
       warning
     }
   };

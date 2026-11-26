@@ -223,10 +223,58 @@ pub(crate) fn encode_account(account: &AccountConfig) -> Result<String, String> 
 }
 
 fn credential_status(app: &AppHandle, connection: &Connection) -> &'static str {
-  match read_account(app, connection) {
-    Ok(Some(_)) => "present",
-    Ok(None) => "absent",
+  match read_account(app, connection)
+    .and_then(|account| saved_credential_evidence(connection, account.as_ref()))
+  {
+    Ok(true) => "present",
+    Ok(false) => "absent",
     Err(_) => "unavailable",
+  }
+}
+
+fn saved_credential_evidence(
+  connection: &Connection,
+  account: Option<&AccountConfig>,
+) -> Result<bool, String> {
+  let Some(account) = account else {
+    return Ok(false);
+  };
+  if !account.enabled {
+    return Err("The saved provider credential is disabled. Update it in Settings.".into());
+  }
+  let secret = if connection.is_oauth() {
+    account.refresh_token.as_ref()
+  } else {
+    account.api_key.as_ref()
+  };
+  let Some(secret) = secret else {
+    return Ok(false);
+  };
+  let secret = secret.expose();
+  if secret.is_empty() || !secret.bytes().all(|byte| byte.is_ascii_graphic()) {
+    return Err("The saved provider credential is invalid. Update it in Settings.".into());
+  }
+  Ok(true)
+}
+
+pub(crate) fn validate_saved_route(app: &AppHandle, connection: &Connection) -> Result<(), String> {
+  validate_saved_route_with(connection, |connection| read_account(app, connection))
+}
+
+fn validate_saved_route_with(
+  connection: &Connection,
+  read: impl FnOnce(&Connection) -> Result<Option<AccountConfig>, String>,
+) -> Result<(), String> {
+  validate_config(&connection.config())?;
+  let account = read(connection)?;
+  if saved_credential_evidence(connection, account.as_ref())?
+    || matches!(connection.provider_id.as_str(), "custom" | "llama-cpp")
+  {
+    Ok(())
+  } else if connection.is_oauth() {
+    Err("Sign in before using this connection.".into())
+  } else {
+    Err("Add credentials before using this connection.".into())
   }
 }
 
@@ -398,8 +446,11 @@ pub async fn dispatch(
   match method {
     "llm.settings" => {
       let saved = host.settings.lock().await.clone();
+      let pending_preferred_connection_id =
+        crate::config_sync::pending_preferred_connection_id(&app, host, &saved).await;
       blocking(move || Ok(json!({
         "active_connection_id": saved.active_connection_id,
+        "pending_preferred_connection_id": pending_preferred_connection_id,
         "connections": saved.connections.iter().map(|connection| connection.public(credential_status(&app, connection))).collect::<Vec<_>>(),
         "providers": providers::presets(),
       }))).await
@@ -425,18 +476,8 @@ pub async fn dispatch(
       let _gate = host.credential_gate.lock().await;
       let mut current = host.settings.lock().await;
       let connection = current.connection(id)?.clone();
-      validate_config(&connection.config())?;
       let app_read = app.clone();
-      let checked = connection.clone();
-      blocking(move || {
-        if !matches!(checked.provider_id.as_str(), "custom" | "llama-cpp")
-          && read_account(&app_read, &checked)?.is_none()
-        {
-          return Err("Add credentials before using this connection.".into());
-        }
-        Ok(())
-      })
-      .await?;
+      blocking(move || validate_saved_route(&app_read, &connection)).await?;
       let mut next = current.clone();
       next.active_connection_id = Some(id.to_owned());
       let root = host.root.clone();
@@ -529,6 +570,58 @@ pub async fn dispatch(
 mod tests {
   use super::*;
   use std::cell::{Cell, RefCell};
+
+  fn test_saved_connection(provider_id: &str) -> Connection {
+    Connection {
+      connection_id: "fixture-id".into(),
+      name: "Fixture".into(),
+      provider_id: provider_id.into(),
+      base_url: providers::default_base_url(provider_id).unwrap().into(),
+      model_id: "fixture-model".into(),
+      credential: crate::settings::credential_ref("fixture-id"),
+    }
+  }
+
+  #[test]
+  fn saved_model_readiness_checks_auth_even_for_optional_credentials() {
+    let mut optional = test_saved_connection("custom");
+    assert!(validate_saved_route_with(&optional, |_| Ok(None)).is_ok());
+    assert!(validate_saved_route_with(&optional, |_| Err("vault unavailable".into())).is_err());
+    optional.model_id.clear();
+    assert!(validate_saved_route_with(&optional, |_| panic!("check the model first")).is_err());
+
+    let required = test_saved_connection("openai");
+    assert!(validate_saved_route_with(&required, |_| Ok(None)).is_err());
+    // This account decodes correctly and is bound to the same driver, but has no key.
+    let empty = providers::static_account("custom", &required.connection_id, None).unwrap();
+    assert!(validate_saved_route_with(&required, |_| Ok(Some(empty))).is_err());
+    let mut keyed =
+      providers::static_account("openai", &required.connection_id, Some("fixture-key")).unwrap();
+    assert!(saved_credential_evidence(&required, Some(&keyed)).unwrap());
+    keyed.enabled = false;
+    assert!(validate_saved_route_with(&required, |_| Ok(Some(keyed))).is_err());
+  }
+
+  #[test]
+  fn local_oauth_readiness_requires_saved_refresh_evidence_without_network() {
+    let oauth = test_saved_connection("codex");
+    let account = |refresh_token| {
+      serde_json::from_value(json!({
+        "id": oauth.connection_id,
+        "provider": oauth.provider_id,
+        "refresh_token": refresh_token,
+        "access_token": "fixture-access",
+      }))
+      .unwrap()
+    };
+    assert!(validate_saved_route_with(&oauth, |_| Ok(Some(account(None)))).is_err());
+    assert!(
+      validate_saved_route_with(&oauth, |_| Ok(Some(account(Some("fixture-refresh"))))).is_ok()
+    );
+    assert!(
+      validate_saved_route_with(&oauth, |_| Ok(Some(account(Some("invalid token"))))).is_err()
+    );
+  }
 
   #[tokio::test]
   async fn cancelling_snapshot_waiter_cannot_let_rotated_credentials_overwrite_a_newer_save() {

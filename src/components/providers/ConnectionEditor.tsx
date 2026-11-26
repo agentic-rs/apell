@@ -23,6 +23,7 @@ import type {
 } from '../../lib/types';
 import { Icon } from '../Icon';
 import { useBackAction } from '../../lib/backNavigation';
+import { connectionReadiness, connectionReadinessLabel } from '../../lib/modelChoice';
 import { ApiKeyField } from './ApiKeyField';
 import { ModelPicker } from './ModelPicker';
 import {
@@ -44,6 +45,7 @@ interface EditorProps {
   connection?: LlmConnection;
   providers: LlmProvider[];
   active_connection_id: string | null;
+  back_label?: string;
   onSaved: (connection: LlmConnection, previous_id?: string) => void;
   onActivated: (connection_id: string) => void;
   onDeleted: (connection_id: string) => void;
@@ -76,7 +78,9 @@ export function ConnectionEditor(props: EditorProps) {
   const accepts_key = provider?.auth_methods.includes('api_key') ?? false;
   const changed_destination = destinationChanged(draft, saved);
   const dirty = hasChanges(draft, saved, staged_login);
-  const can_probe = !!saved && !dirty && !busy;
+  const readiness = saved && connectionReadiness(saved, props.providers);
+  const readiness_label = readiness && connectionReadinessLabel(readiness);
+  const can_probe = readiness?.state === 'ready' && !dirty && !busy;
   const active = saved?.connection_id === props.active_connection_id;
   const inherited_status = !changed_destination ? saved?.credential_status : undefined;
   const credential_status = native_draft?.credential_status ?? inherited_status;
@@ -217,15 +221,23 @@ export function ConnectionEditor(props: EditorProps) {
     <section className="settings connection-editor panel" aria-busy={!!busy}>
       <div className="settings-heading">
         <button type="button" className="text-button" disabled={back_disabled} onClick={goBack}>
-          <Icon name="back" /> Connections
+          <Icon name="back" /> {props.back_label ?? 'Connections'}
         </button>
-        {active && <span className="connection-badge">Active</span>}
+        {active && (
+          <span className="connection-badge">
+            {readiness?.state === 'ready' ? 'Default' : 'Selected'}
+          </span>
+        )}
       </div>
-      <h2>{saved ? saved.name : 'Add connection'}</h2>
+      <h2 id="settings-connection-editor" className="settings-section-title" tabIndex={-1}>
+        {saved ? saved.name : 'Add connection'}
+      </h2>
       <p>
-        {active
-          ? 'New requests use the saved settings.'
-          : 'Choose a provider, connect your account, and select a model.'}
+        {readiness_label
+          ? `${readiness_label}.`
+          : active
+            ? 'Applets use this connection by default.'
+            : 'Choose a provider, connect your account, and select a model.'}
       </p>
       <form
         onSubmit={(event) => {
@@ -446,22 +458,22 @@ export function ConnectionEditor(props: EditorProps) {
           {!active && (
             <button
               type="button"
-              disabled={!can_probe || !saved.model_id.trim()}
+              disabled={!can_probe}
               onClick={() =>
                 void run('activate', async (operation) => {
                   await activateConnection(saved.connection_id);
                   if (!operation.isCurrent()) return;
                   props.onActivated(saved.connection_id);
-                  announce('New requests will use this connection.');
+                  announce('Default model updated.');
                 })
               }
             >
-              {busy === 'activate' ? 'Switching…' : 'Use connection'}
+              {busy === 'activate' ? 'Switching…' : 'Set as default'}
             </button>
           )}
           <button
             type="button"
-            disabled={!can_probe || !saved.model_id.trim()}
+            disabled={!can_probe}
             onClick={() =>
               void run('test', async (operation) => {
                 const request_id = requestId();
@@ -481,7 +493,11 @@ export function ConnectionEditor(props: EditorProps) {
           >
             {busy === 'test' ? 'Testing…' : 'Test connection'}
           </button>
-          <p className="status">Testing sends a small model request and may use account credits.</p>
+          {readiness?.state === 'ready' && (
+            <p className="status">
+              Testing sends a small model request and may use account credits.
+            </p>
+          )}
         </div>
       )}
       {status && (

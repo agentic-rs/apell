@@ -8,7 +8,7 @@ use crate::{
   commands::blocking,
   host::Host,
   key_sync::BackgroundStop,
-  provider_commands::{commit_settings, finish_snapshot, read_account},
+  provider_commands::{commit_settings, finish_snapshot, validate_saved_route},
   settings::{Connection, Settings, LEGACY_DEMO_CONNECTION_ID},
 };
 use apell_core::bundles::{atomic_write, digest};
@@ -158,6 +158,7 @@ pub async fn dispatch(
             result["status"]["pending_conflict_id"] = json!(pending);
             state.pending_conflict_id = pending;
             save_state(&host, &key, state).await?;
+            let _ = app.emit_to("main", "apell-llm-settings-changed", ());
           }
           return Ok(result);
         }
@@ -198,10 +199,14 @@ async fn set_enabled(
     let _gate = stop.wait(host.config_sync.gate.lock()).await?;
     let mut state = stop.wait(load_state(host, account)).await??;
     require_identity(app, host, account, stop).await?;
+    let changed = state.enabled != enabled;
     state.enabled = enabled;
     let result = stop.wait(local_status(host, &state)).await??;
     stop.check()?;
     save_state(host, account, state).await?;
+    if changed {
+      let _ = app.emit_to("main", "apell-llm-settings-changed", ());
+    }
     clear_activity(app, host).await;
     Ok(result)
   }
@@ -325,6 +330,21 @@ fn pending_preference<'a>(state: &'a DeviceState, settings: &Settings) -> Option
   Some(preferred)
 }
 
+pub(crate) async fn pending_preferred_connection_id(
+  app: &AppHandle,
+  host: &Host,
+  settings: &Settings,
+) -> Option<String> {
+  let account = host.account.account_key(app).await.ok()??;
+  let state = load_state(host, &account).await.ok()?;
+  let preferred = settings
+    .connection(pending_preference(&state, settings)?)
+    .ok()?;
+  // Loading the optional cursor may overlap with an Account change.
+  let current = host.account.account_key(app).await.ok()??;
+  (account == current).then(|| preferred.connection_id.clone())
+}
+
 async fn compare_settings(
   app: &AppHandle,
   host: &Host,
@@ -402,7 +422,7 @@ async fn synchronize(
   compared: ComparedSettings,
   options: SyncOptions<'_>,
 ) -> Result<Value, String> {
-  let SyncOptions { stop, automatic } = options;
+  let stop = options.stop;
   let ComparedSettings {
     head,
     local,
@@ -422,6 +442,7 @@ async fn synchronize(
       "uploaded",
       stop.wait(upload(host, access, &local, None)).await??,
       local_active,
+      false,
     ),
     Some(remote) => {
       let conflict = conflict_id(&access.account_key, &remote, &local_hash);
@@ -438,12 +459,17 @@ async fn synchronize(
         cloud_apply_blocker.as_ref(),
       );
       match action {
-        Action::Current => ("current", remote, local_active),
+        Action::Current => {
+          let activated =
+            activate_pending_preference(app, host, access, &state, &local_hash, stop).await?;
+          let applied = activated.is_some();
+          ("current", remote, activated.or(local_active), applied)
+        }
         Action::Upload => {
           let revision = stop
             .wait(upload(host, access, &local, Some(remote.revision_id)))
             .await??;
-          ("uploaded", revision, local_active)
+          ("uploaded", revision, local_active, false)
         }
         Action::Download => {
           let active = apply_remote(
@@ -457,10 +483,7 @@ async fn synchronize(
             allow_removals,
           )
           .await?;
-          if automatic {
-            let _ = app.emit_to("main", "apell-llm-settings-changed", ());
-          }
-          ("downloaded", remote, active)
+          ("downloaded", remote, active, true)
         }
         Action::Conflict => {
           require_identity(app, host, &access.account_key, stop).await?;
@@ -476,16 +499,17 @@ async fn synchronize(
           );
           if changed {
             save_state(host, &access.account_key, state).await?;
+            let _ = app.emit_to("main", "apell-llm-settings-changed", ());
           }
           return Ok(output);
         }
       }
     }
   };
-  let (outcome, revision, local_active) = result;
+  let (outcome, revision, local_active, applied) = result;
   // A completed local apply includes its cursor write even if sign-out began
   // during credential storage. Other outcomes can still stop before a commit.
-  if outcome == "downloaded" {
+  if applied {
     require_account(app, host, access).await?;
   } else {
     require_identity(app, host, &access.account_key, stop).await?;
@@ -501,13 +525,75 @@ async fn synchronize(
   state.cursor = Some(cursor);
   state.pending_conflict_id = None;
   let output = json!({"state": outcome, "status": local_status(host, &state).await?});
-  if changed {
-    save_state(host, &access.account_key, state).await?;
+  let checkpoint = if changed {
+    save_state(host, &access.account_key, state).await
+  } else {
+    Ok(())
+  };
+  if applied || (changed && checkpoint.is_ok()) {
+    let _ = app.emit_to("main", "apell-llm-settings-changed", ());
   }
+  checkpoint?;
   if changed || outcome != "current" {
     crate::key_sync::kick(app);
   }
   Ok(output)
+}
+
+async fn activate_pending_preference(
+  app: &AppHandle,
+  host: &Host,
+  access: &Access,
+  state: &DeviceState,
+  local_hash: &str,
+  stop: &SyncStop,
+) -> Result<Option<String>, String> {
+  let Some(cursor) = state.cursor.as_ref() else {
+    return Ok(None);
+  };
+  if cursor.local_active == cursor.remote_active || cursor.snapshot_hash != local_hash {
+    return Ok(None);
+  }
+
+  // The caller holds config_sync.gate and has compared with the current cloud
+  // snapshot. Recheck local metadata and manual selection before applying it.
+  let _gate = stop.wait(host.credential_gate.lock()).await?;
+  let mut current = stop.wait(host.settings.lock()).await?;
+  let Some(preferred) = pending_preference(state, &current) else {
+    return Ok(None);
+  };
+  let preferred = preferred.to_owned();
+  host.account.require_current_access(access).await?;
+  stop.check()?;
+  let work_app = app.clone();
+  let root = host.root.clone();
+  let next = current.clone();
+  let updated = blocking(move || {
+    persist_preference_if_ready(&root, next, preferred, |connection| {
+      validate_saved_route(&work_app, connection).is_ok()
+    })
+  })
+  .await?;
+  let Some(next) = updated else {
+    return Ok(None);
+  };
+  let active = next.active_connection_id.clone();
+  *current = next;
+  Ok(active)
+}
+
+fn persist_preference_if_ready(
+  root: &std::path::Path,
+  mut settings: Settings,
+  preferred: String,
+  ready: impl FnOnce(&Connection) -> bool,
+) -> Result<Option<Settings>, String> {
+  if !settings.connection(&preferred).is_ok_and(ready) {
+    return Ok(None);
+  }
+  settings.active_connection_id = Some(preferred);
+  settings.persist(root)?;
+  Ok(Some(settings))
 }
 
 enum Action {
@@ -629,8 +715,8 @@ async fn apply_remote(
   let next = blocking(move || {
     if !local_only {
       retain_usable_active(&mut next, previous_active, automatic, |connection| {
-        can_activate(&app, connection)
-      })?;
+        validate_saved_route(&app, connection).is_ok()
+      });
     }
     commit_settings(
       &app,
@@ -650,21 +736,20 @@ fn retain_usable_active(
   next: &mut Settings,
   previous_active: Option<String>,
   preserve_unspecified: bool,
-  usable: impl Fn(&Connection) -> Result<bool, String>,
-) -> Result<(), String> {
+  usable: impl Fn(&Connection) -> bool,
+) {
   match next.active() {
-    Some(selected) if usable(selected)? => return Ok(()),
-    None if !preserve_unspecified => return Ok(()),
+    Some(selected) if usable(selected) => return,
+    None if !preserve_unspecified => return,
     _ => {}
   }
   let previous = previous_active
     .as_deref()
     .and_then(|id| next.connection(id).ok());
   next.active_connection_id = match previous {
-    Some(connection) if usable(connection)? => previous_active,
+    Some(connection) if usable(connection) => previous_active,
     _ => None,
   };
-  Ok(())
 }
 
 pub(crate) async fn add_credential_connections(
@@ -749,16 +834,6 @@ pub(crate) async fn apply_key_restores<T: Send + 'static>(
   // The restore can commit settings before a later sync checkpoint fails.
   *current = next;
   result
-}
-
-fn can_activate(app: &AppHandle, connection: &Connection) -> Result<bool, String> {
-  if apell_core::llm::validate_config(&connection.config()).is_err() {
-    return Ok(false);
-  }
-  if matches!(connection.provider_id.as_str(), "custom" | "llama-cpp") {
-    return Ok(true);
-  }
-  Ok(read_account(app, connection)?.is_some())
 }
 
 async fn upload(
@@ -895,6 +970,64 @@ mod tests {
     settings.active_connection_id = Some("fallback".into());
     state.pending_conflict_id = Some("fixture-conflict".into());
     assert_eq!(pending_preference(&state, &settings), None);
+  }
+
+  #[test]
+  fn ready_pending_preference_persists_without_changing_the_synced_snapshot() {
+    let (mut settings, _) = snapshot("preferred-model")
+      .settings(&Settings::default())
+      .unwrap();
+    let mut fallback = settings.connections[0].clone();
+    fallback.connection_id = "fallback".into();
+    fallback.credential = credential_ref("fallback");
+    settings.connections.push(fallback);
+    settings.active_connection_id = Some("fallback".into());
+    let cloud = Snapshot::capture(&settings, Some("fixture"));
+    let state = DeviceState {
+      enabled: true,
+      pending_conflict_id: None,
+      cursor: Some(Cursor {
+        revision_id: "fixture-revision".into(),
+        snapshot_hash: cloud.fingerprint().unwrap(),
+        remote_active: "fixture".into(),
+        local_active: "fallback".into(),
+        updated_at: String::new(),
+      }),
+    };
+    let selection = pending_preference(&state, &settings).unwrap().to_owned();
+    let directory = tempfile::tempdir().unwrap();
+    settings.persist(directory.path()).unwrap();
+    let waiting = persist_preference_if_ready(
+      directory.path(),
+      settings.clone(),
+      selection.clone(),
+      |_| false,
+    )
+    .unwrap();
+    assert!(waiting.is_none());
+    assert_eq!(
+      Settings::load(directory.path())
+        .unwrap()
+        .active_connection_id
+        .as_deref(),
+      Some("fallback")
+    );
+
+    let updated =
+      persist_preference_if_ready(directory.path(), settings, selection, |connection| {
+        connection.connection_id == "fixture"
+      })
+      .unwrap()
+      .unwrap();
+    assert_eq!(
+      Settings::load(directory.path())
+        .unwrap()
+        .active_connection_id
+        .as_deref(),
+      Some("fixture")
+    );
+    assert!(capture(&updated, &state) == cloud);
+    assert!(pending_preference(&state, &updated).is_none());
   }
 
   #[test]
@@ -1115,7 +1248,7 @@ mod tests {
     let cloud = snapshot("cloud-model");
     let (mut next, _) = cloud.settings(&Settings::default()).unwrap();
     assert!(next.active_connection_id.is_none());
-    retain_usable_active(&mut next, Some("fixture".into()), true, |_| Ok(true)).unwrap();
+    retain_usable_active(&mut next, Some("fixture".into()), true, |_| true);
     assert_eq!(next.active_connection_id.as_deref(), Some("fixture"));
     let state = DeviceState {
       enabled: true,
@@ -1131,10 +1264,29 @@ mod tests {
     assert!(capture(&next, &state) == cloud);
 
     next.active_connection_id = None;
-    retain_usable_active(&mut next, Some("fixture".into()), true, |_| Ok(false)).unwrap();
+    retain_usable_active(&mut next, Some("fixture".into()), true, |_| false);
     assert!(next.active_connection_id.is_none());
-    retain_usable_active(&mut next, Some("fixture".into()), false, |_| Ok(true)).unwrap();
+    retain_usable_active(&mut next, Some("fixture".into()), false, |_| true);
     assert!(next.active_connection_id.is_none());
+  }
+
+  #[test]
+  fn an_unready_cloud_preference_only_falls_back_to_the_previous_usable_default() {
+    let (mut settings, _) = snapshot("cloud-model")
+      .settings(&Settings::default())
+      .unwrap();
+    let mut fallback = settings.connections[0].clone();
+    fallback.connection_id = "fallback".into();
+    fallback.credential = credential_ref("fallback");
+    settings.connections.push(fallback);
+    settings.active_connection_id = Some("fixture".into());
+    let ready = |connection: &Connection| connection.connection_id == "fallback";
+    retain_usable_active(&mut settings, Some("fallback".into()), true, ready);
+    assert_eq!(settings.active_connection_id.as_deref(), Some("fallback"));
+
+    settings.active_connection_id = Some("fixture".into());
+    retain_usable_active(&mut settings, None, true, ready);
+    assert!(settings.active_connection_id.is_none());
   }
 
   #[test]

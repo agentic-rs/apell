@@ -1,6 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import type { LlmSelection } from '../../packages/applet-sdk/src/types';
-import { publicSelection, selectableProvider, type ModelChoice } from '../lib/modelChoice';
+import {
+  connectionReadiness,
+  connectionReadinessLabel,
+  initialModelTarget,
+  publicSelection,
+  selectableProvider,
+  type ModelChoice,
+} from '../lib/modelChoice';
 import {
   createConnectionDraft,
   discardConnectionDraft,
@@ -33,17 +40,10 @@ export function LlmModelPicker({ choice }: { choice: ModelChoice }) {
     getSettings()
       .then((saved) => {
         if (closed) return;
-        const { connections } = saved;
-        const prior = connections.find(
-          (entry) => entry.connection_id === choice.current?.connection_id,
-        );
-        const initial =
-          prior ??
-          connections.find((entry) => entry.connection_id === saved.active_connection_id) ??
-          connections[0];
+        const initial = initialModelTarget(saved, choice.current);
         setSettings(saved);
         setConnectionId(initial?.connection_id ?? '');
-        setModelId(prior ? choice.current!.model_id : (initial?.model_id ?? ''));
+        setModelId(initial?.model_id ?? '');
       })
       .catch((error) => {
         if (!closed) setStatus(message(error));
@@ -57,6 +57,10 @@ export function LlmModelPicker({ choice }: { choice: ModelChoice }) {
   const connections = settings?.connections ?? [];
   const connection = connections.find((entry) => entry.connection_id === connection_id);
   const usable = settings && connection && selectableProvider(settings, connection);
+  const unavailable_label =
+    !usable && settings && connection
+      ? connectionReadinessLabel(connectionReadiness(connection, settings.providers))
+      : undefined;
   const selected =
     connection && settings ? publicSelection(settings, connection, model_id) : undefined;
 
@@ -125,11 +129,19 @@ export function LlmModelPicker({ choice }: { choice: ModelChoice }) {
                   setLoading(false);
                 }}
               >
-                {connections.map((entry) => (
-                  <option key={entry.connection_id} value={entry.connection_id}>
-                    {entry.name}
-                  </option>
-                ))}
+                {connections.map((entry) => {
+                  const readiness = connectionReadiness(entry, settings.providers);
+                  const reason =
+                    readiness.state === 'needs_model'
+                      ? undefined
+                      : connectionReadinessLabel(readiness);
+                  return (
+                    <option key={entry.connection_id} value={entry.connection_id}>
+                      {entry.name}
+                      {reason && ` · ${reason}`}
+                    </option>
+                  );
+                })}
               </select>
             </label>
             {usable && connection ? (
@@ -154,20 +166,24 @@ export function LlmModelPicker({ choice }: { choice: ModelChoice }) {
                     {status}
                   </p>
                 )}
-                <button
-                  type="button"
-                  className="primary"
-                  disabled={!selected}
-                  onClick={() => {
-                    if (selected) finish(selected);
-                  }}
-                >
-                  Use model
-                </button>
               </>
             ) : (
-              <p className="status">Update this connection in Settings to use it.</p>
+              <p className="status">
+                {unavailable_label
+                  ? `${unavailable_label}. Edit this connection in Settings.`
+                  : 'Choose a connection.'}
+              </p>
             )}
+            <button
+              type="button"
+              className="primary"
+              disabled={!selected}
+              onClick={() => {
+                if (selected) finish(selected);
+              }}
+            >
+              Use model
+            </button>
           </>
         )}
         <button type="button" onClick={() => finish(null)}>

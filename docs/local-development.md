@@ -59,21 +59,23 @@ settings, register a package in the local Store first.
 
 ## Run the macOS test app
 
-With the container and `pnpm dev:local web` running, open another terminal:
+For shell UI and local provider settings, start Apell Local directly:
 
 ```sh
 pnpm dev:local shell
 ```
 
-**Apell Local** runs the macOS shell with hot reload, its own app data, and the
-local Store configured by default. Running `shell` without a device name uses
-the `default` profile in this checkout. Its mock credential store saves Account
+**Apell Local** runs the macOS shell with hot reload and uses the `default`
+device profile in this checkout. Its mock credential store saves Account
 sessions, provider keys, and applet secrets in owner-only files across app
-restarts. WebView data is temporary. If you used an unnamed profile on an
-earlier local build, sign in again and add your test connections to the new
-profile. Native connections to the Store, Account, and encrypted relay trust
-the generated development CA. Open device approval and recovery pages in a
-test browser that trusts this CA.
+restarts. It runs without macOS Keychain or Docker. WebView data is temporary.
+If you used an unnamed profile on an earlier local build, sign in again and
+add your test connections to the new profile.
+
+For Account sign-in, sync, and Store testing, also run `pnpm dev:local up` and
+`pnpm dev:local web`. Apell Local uses the generated development CA to connect
+to those services. Open device approval and recovery pages in a test browser
+that trusts this CA.
 
 The fictional account can test first verification and encrypted API key sync.
 Use fictional model settings and API keys. If the fixture restarts while a

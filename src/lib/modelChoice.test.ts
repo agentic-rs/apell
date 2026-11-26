@@ -1,6 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
-import { AppletModelChooser, publicSelection, type ModelChoice } from './modelChoice';
-import type { LlmConnection, LlmSettings } from './types';
+import {
+  AppletModelChooser,
+  connectionReadiness,
+  connectionReadinessAction,
+  connectionReadinessLabel,
+  initialModelTarget,
+  publicSelection,
+  type ModelChoice,
+} from './modelChoice';
+import type { LlmConnection, LlmProvider, LlmSettings } from './types';
 
 const connection: LlmConnection = {
   connection_id: 'connection_one',
@@ -12,6 +20,7 @@ const connection: LlmConnection = {
 };
 const settings: LlmSettings = {
   active_connection_id: 'different-connection',
+  pending_preferred_connection_id: null,
   connections: [connection],
   providers: [
     {
@@ -22,6 +31,97 @@ const settings: LlmSettings = {
     },
   ],
 };
+
+describe('saved connection readiness', () => {
+  const providers: LlmProvider[] = [
+    ...settings.providers,
+    { provider_id: 'openai', name: 'OpenAI', base_url: '', auth_methods: ['api_key'] },
+    { provider_id: 'codex', name: 'Codex', base_url: '', auth_methods: ['device_code'] },
+  ];
+
+  it('allows an absent optional key but blocks all unreadable credentials', () => {
+    expect(connectionReadiness(connection, providers).state).toBe('ready');
+    const unavailable = connectionReadiness(
+      { ...connection, credential_status: 'unavailable' },
+      providers,
+    );
+    expect(unavailable.state).toBe('credential_unavailable');
+    expect(connectionReadinessLabel(unavailable)).toBe('Credential unavailable');
+    expect(connectionReadinessAction(unavailable)).toBe('Edit connection');
+    expect(
+      connectionReadiness({ ...connection, provider_id: 'missing-provider' }, providers).state,
+    ).toBe('provider_unavailable');
+  });
+
+  it('distinguishes missing provider authentication from a missing saved model', () => {
+    const without_key = connectionReadiness({ ...connection, provider_id: 'openai' }, providers);
+    expect(without_key.state).toBe('needs_api_key');
+    expect(connectionReadinessAction(without_key)).toBe('Add API key');
+    const without_sign_in = connectionReadiness(
+      { ...connection, provider_id: 'codex', model_id: '' },
+      providers,
+    );
+    expect(without_sign_in.state).toBe('needs_sign_in');
+    expect(connectionReadinessAction(without_sign_in)).toBe('Sign in');
+    for (const model_id of ['', '   ', 'bad\nmodel', '模'.repeat(86)]) {
+      expect(connectionReadiness({ ...connection, model_id }, providers).state).toBe('needs_model');
+    }
+  });
+
+  it('permits a manual applet override for a connection that needs a saved model', () => {
+    const without_model = { ...connection, model_id: '' };
+    expect(connectionReadiness(without_model, providers).state).toBe('needs_model');
+    expect(publicSelection(settings, without_model, 'manual-model')).toMatchObject({
+      connection_id: without_model.connection_id,
+      model_id: 'manual-model',
+    });
+  });
+});
+
+describe('initial applet model target', () => {
+  const default_connection: LlmConnection = {
+    ...connection,
+    connection_id: 'default-connection',
+    model_id: 'preferred-model',
+  };
+  const picker_settings = {
+    ...settings,
+    active_connection_id: default_connection.connection_id,
+    connections: [connection, default_connection],
+  };
+
+  it('keeps an explicit prior choice even when the connection is unavailable', () => {
+    const prior = { connection_id: connection.connection_id, model_id: 'manual-choice' };
+    expect(
+      initialModelTarget(
+        {
+          ...picker_settings,
+          connections: [{ ...connection, credential_status: 'unavailable' }, default_connection],
+        },
+        prior,
+      ),
+    ).toEqual(prior);
+  });
+
+  it('prefers a ready default, falling back to a usable connection without changing it', () => {
+    expect(initialModelTarget(picker_settings)?.connection_id).toBe(
+      default_connection.connection_id,
+    );
+    const blocked = { ...default_connection, credential_status: 'unavailable' as const };
+    expect(
+      initialModelTarget({ ...picker_settings, connections: [connection, blocked] })?.connection_id,
+    ).toBe(connection.connection_id);
+    expect(
+      initialModelTarget({
+        ...picker_settings,
+        connections: [blocked, { ...connection, model_id: '' }],
+      }),
+    ).toEqual({ connection_id: connection.connection_id, model_id: '' });
+    expect(initialModelTarget({ ...picker_settings, connections: [blocked] })?.connection_id).toBe(
+      blocked.connection_id,
+    );
+  });
+});
 
 describe('applet model chooser', () => {
   it('denies undeclared permissions and invalid applet-supplied targets before opening a sheet', async () => {

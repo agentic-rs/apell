@@ -207,9 +207,11 @@ waiting to sync. The **Apell Account** row in Settings shows when model or
 encrypted API-key sync needs attention.
 Model settings sync includes connection labels, built-in provider and model
 selections, and the preferred active model. API keys can be synced separately
-through **Encrypted API keys**. A usable local model can serve as a fallback
-until the preferred model’s key arrives. Apell activates the restored model
-while the settings still match the last sync.
+through **Encrypted API keys**. **Settings → Default model** shows the
+connection in use and any pending synced choice. A usable local model can
+serve as a fallback until the preferred connection is ready. Apell activates
+the synced choice when its credential becomes available and the settings
+still match the last sync.
 When devices make conflicting edits, or the cloud copy removes a connection
 from this device, Apell keeps the local settings and shows **Review changes**.
 This remains available after restarting Apell. Open it to compare the changed
