@@ -42,12 +42,14 @@ export interface UnavailableApplet {
 export interface AppletListReport {
   applets: InstalledApplet[];
   unavailable: UnavailableApplet[];
+  restart_required: string[];
 }
 export interface AppletPermission {
   applet_id: string;
   name: string;
   manifest: AppletPermissionManifest | null;
   grants: PermissionGrant[];
+  restart_required: boolean;
 }
 export interface AppletPermissionManifest extends Pick<Manifest, 'network' | 'permissions'> {
   has_lib: boolean;

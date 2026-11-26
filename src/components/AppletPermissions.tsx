@@ -12,7 +12,7 @@ import './AppletPermissions.css';
 const access_labels: Record<PermissionGrant['access'], string> = {
   ...permission_mode_labels,
   previous_package: 'Approval saved for an earlier package',
-  undeclared: 'No longer requested',
+  undeclared: 'Unused by installed package',
   unverified_package: 'Applet unavailable',
 };
 
@@ -78,27 +78,50 @@ function AppletPermissionGroup({
   const fixed = rows.filter((row) => row.kind === 'fixed');
   return (
     <details className="applet-permission-group" open={open}>
-      <summary>{applet.name}</summary>
-      <dl>
-        {applet.grants.map((grant) => (
-          <PermissionRow
-            key={grant.permission}
-            applet_name={applet.name}
-            grant={grant}
-            busy={busy}
-            unavailable_reason={
-              managed.find((row) => row.key === grant.permission)?.unavailable_reason
-            }
-            reset={() => reset(grant.permission)}
-          />
-        ))}
-        {fixed.map((row) => (
-          <div className="applet-permission-row" key={row.key}>
-            <dt>{row.label}</dt>
-            <dd className="applet-permission-state">{row.status}</dd>
-          </div>
-        ))}
-      </dl>
+      <summary>
+        <span className="applet-permission-name">{applet.name}</span>
+        {applet.restart_required && (
+          <span className="applet-permission-restart">Restart required</span>
+        )}
+      </summary>
+      {applet.grants.length > 0 && (
+        <div className="applet-permission-section">
+          <h3>Device approvals</h3>
+          <dl>
+            {applet.grants.map((grant) => (
+              <PermissionRow
+                key={grant.permission}
+                applet_name={applet.name}
+                grant={grant}
+                busy={busy}
+                unavailable_reason={
+                  managed.find((row) => row.key === grant.permission)?.unavailable_reason
+                }
+                reset={() => reset(grant.permission)}
+              />
+            ))}
+          </dl>
+        </div>
+      )}
+      {fixed.length > 0 && (
+        <div className="applet-permission-section">
+          <h3>Package access</h3>
+          {applet.restart_required && (
+            <p className="applet-permission-restart-note">
+              This list shows the installed package’s access. The applet keeps using its previous
+              package until you restart it.
+            </p>
+          )}
+          <dl>
+            {fixed.map((row) => (
+              <div className="applet-permission-row" key={row.key}>
+                <dt>{row.label}</dt>
+                <dd className="applet-permission-state">{row.status}</dd>
+              </div>
+            ))}
+          </dl>
+        </div>
+      )}
     </details>
   );
 }

@@ -32,6 +32,8 @@ Review an update's permissions, including newly declared access, then choose
 **Update**. Updates are manual, and existing applet data is retained.
 If the old version is running, choose **Restart applet** after installing to
 open the new package and backend. This leaves Apell and other applets running.
+If you restart later, the applet keeps a badge in the Library. Open its actions
+and choose **Restart applet** when you’re ready.
 
 Each Store installation records the Store address, applet ID, and channel.
 To change channels inside a running applet, open **About this applet** from the

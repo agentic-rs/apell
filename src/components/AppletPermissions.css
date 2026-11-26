@@ -47,6 +47,32 @@
   outline-offset: -3px;
 }
 
+.applet-permission-name {
+  flex: 1;
+  min-width: 0;
+}
+
+.applet-permission-restart {
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+.applet-permission-section > h3 {
+  margin: 0;
+  padding: 10px 14px 8px;
+  border-top: 1px solid var(--line);
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.applet-permission-restart-note {
+  margin: 0;
+  padding: 0 14px 10px;
+  color: var(--muted);
+  font-size: 0.8125rem;
+}
+
 .applet-permission-group dl {
   margin: 0;
 }

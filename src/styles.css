@@ -215,6 +215,7 @@ svg {
   user-select: none;
 }
 .applet-icon {
+  position: relative;
   --spinner-track: #f7f3fa40;
   display: grid;
   place-items: center;
@@ -224,6 +225,23 @@ svg {
   background: var(--applet-icon-background);
   color: var(--applet-icon-foreground);
   box-shadow: 0 3px 7px var(--shadow);
+}
+.applet-restart-badge {
+  position: absolute;
+  inset: -4px -4px auto auto;
+  display: grid;
+  place-items: center;
+  width: 23px;
+  height: 23px;
+  border: 2px solid var(--canvas);
+  border-radius: 50%;
+  background: var(--badge);
+  color: var(--badge-text);
+}
+.applet-restart-badge svg {
+  width: 14px;
+  height: 14px;
+  stroke-width: 2;
 }
 .applet-icon img {
   display: block;

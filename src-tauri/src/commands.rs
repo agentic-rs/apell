@@ -2,11 +2,12 @@ use crate::host::{public_config, string, Host, NETWORK_DISABLED};
 use crate::permissions::ManagedPermission;
 use crate::provider_commands::{snapshot, ModelRoute, ModelSnapshot};
 use crate::settings::Settings;
+use apell_core::bundles::AppletListReport;
 use apell_core::llm::{
   deserialize_target, LlmEvent, LlmFailure, LlmFiles, LlmProvenance, LlmRequest, LlmResult,
   LlmStatus, LlmTarget,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::atomic::Ordering;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -16,6 +17,13 @@ use tauri::{AppHandle, Emitter, Manager, State};
 struct ConfigQuery {
   #[serde(default, deserialize_with = "deserialize_target")]
   target: Option<LlmTarget>,
+}
+
+#[derive(Serialize)]
+struct ShellAppletList {
+  #[serde(flatten)]
+  packages: AppletListReport,
+  restart_required: Vec<String>,
 }
 
 fn failed_generation(
@@ -115,9 +123,20 @@ pub async fn shell_command(
       // The first library load must observe any pending developer installs.
       #[cfg(all(target_os = "ios", debug_assertions))]
       let _gate = host.store_gate.lock().await;
-      let store = host.bundles.clone();
       blocking(move || {
-        serde_json::to_value(store.list_report()?).map_err(|_| "Could not encode applets.".into())
+        let host = app.state::<Host>();
+        let packages = host.bundles.list_report()?;
+        let restart_required = packages
+          .applets
+          .iter()
+          .filter(|applet| host.needs_applet_restart(applet))
+          .map(|applet| applet.manifest.applet_id.clone())
+          .collect();
+        serde_json::to_value(ShellAppletList {
+          packages,
+          restart_required,
+        })
+        .map_err(|_| "Could not encode applets.".into())
       })
       .await
     }

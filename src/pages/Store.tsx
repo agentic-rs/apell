@@ -72,16 +72,6 @@ export function Store({
           {state.status}
         </p>
       )}
-      {!state.detail && !state.installed && state.restart_after_install && (
-        <div className="store-form-actions">
-          <StoreOpenButton
-            restart_required
-            busy={!!state.operation}
-            opening={opening}
-            onOpen={state.openApplet}
-          />
-        </div>
-      )}
       {state.action_error && (
         <p className="store-feedback error" role="alert">
           {state.action_error}

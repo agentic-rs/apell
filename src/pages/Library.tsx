@@ -11,6 +11,7 @@ import {
 } from '../lib/tauri';
 import type {
   AppletInstallResult,
+  AppletListReport,
   AppletSession,
   InstalledApplet,
   UnavailableApplet,
@@ -49,12 +50,25 @@ export function Library({
   const [failed, setFailed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [launching_id, setLaunchingId] = useState('');
-  const [restart_offer, setRestartOffer] = useState<InstalledApplet>();
+  const [restart_required, setRestartRequired] = useState<string[]>([]);
+  const [restart_offer_id, setRestartOfferId] = useState<string>();
   const [removal, setRemoval] = useState<Removal>();
   const pending = useRef(false);
   const list_revision = useRef(0);
   const library = useRef<HTMLElement>(null);
   const restore_library_focus = useRef(false);
+  const restart_offer = applets.find(
+    (applet) =>
+      applet.applet_id === restart_offer_id && restart_required.includes(applet.applet_id),
+  );
+  const action_applet = applets.find((applet) => applet.applet_id === removal?.applet_id);
+
+  const applyReport = (report: AppletListReport) => {
+    setApplets(report.applets);
+    setUnavailable(report.unavailable);
+    setRestartRequired(report.restart_required ?? []);
+    setLoadError('');
+  };
 
   useEffect(() => {
     if (busy || !restore_library_focus.current) return;
@@ -68,11 +82,7 @@ export function Library({
     const isCurrent = () => !disposed && revision === list_revision.current;
     listApplets()
       .then((report) => {
-        if (isCurrent()) {
-          setApplets(report.applets);
-          setUnavailable(report.unavailable);
-          setLoadError('');
-        }
+        if (isCurrent()) applyReport(report);
       })
       .catch((error) => {
         if (isCurrent()) setLoadError(message(error));
@@ -125,12 +135,9 @@ export function Library({
   };
   const refresh = async () => {
     list_revision.current++;
-    const report = await listApplets();
-    setApplets(report.applets);
-    setUnavailable(report.unavailable);
-    setLoadError('');
+    applyReport(await listApplets());
   };
-  const installed = async ({ applet, restart_required }: AppletInstallResult) => {
+  const installed = async ({ applet, restart_required: needs_restart }: AppletInstallResult) => {
     const { applet_id, name, version } = applet;
     setApplets((current) =>
       current.some((item) => item.applet_id === applet_id)
@@ -138,9 +145,13 @@ export function Library({
         : [...current, applet],
     );
     setUnavailable((current) => current.filter((item) => item.applet_id !== applet_id));
-    setRestartOffer(restart_required ? applet : undefined);
+    setRestartRequired((current) => {
+      const other_applets = current.filter((id) => id !== applet_id);
+      return needs_restart ? [...other_applets, applet_id] : other_applets;
+    });
+    setRestartOfferId(needs_restart ? applet_id : undefined);
     setStatus(
-      restart_required
+      needs_restart
         ? `${name} ${version} installed. Restart to use it.`
         : `${name} ${version} installed.`,
     );
@@ -152,13 +163,17 @@ export function Library({
     }
   };
   const openApplet = (applet: InstalledApplet, restart = false) => {
-    if (removal || installOpen || pending.current) return;
-    if (!restart) setLaunchingId(applet.applet_id);
+    if (installOpen || pending.current || (removal && !restart)) return;
+    if (restart) setRemoval(undefined);
+    else setLaunchingId(applet.applet_id);
     void run(
       async () => {
         const open = restart ? restartApplet : launchApplet;
         const session = await open(applet.applet_id);
-        if (restart) setRestartOffer(undefined);
+        if (restart) {
+          setRestartRequired((current) => current.filter((id) => id !== applet.applet_id));
+          setRestartOfferId((current) => (current === applet.applet_id ? undefined : current));
+        }
         setStatus('');
         onLaunch(session);
       },
@@ -176,7 +191,8 @@ export function Library({
       await removeApplet(target.applet_id);
       setApplets((current) => current.filter((item) => item.applet_id !== target.applet_id));
       setUnavailable((current) => current.filter((item) => item.applet_id !== target.applet_id));
-      setRestartOffer((current) => (current?.applet_id === target.applet_id ? undefined : current));
+      setRestartRequired((current) => current.filter((id) => id !== target.applet_id));
+      setRestartOfferId((current) => (current === target.applet_id ? undefined : current));
       restore_library_focus.current = true;
       setRemoval(undefined);
       try {
@@ -205,6 +221,7 @@ export function Library({
             applet={applet}
             launching={launching_id === applet.applet_id}
             disabled={busy}
+            restart_required={restart_required.includes(applet.applet_id)}
             onActions={() =>
               showRemoval({ applet_id: applet.applet_id, name: applet.name, confirm: false })
             }
@@ -304,6 +321,15 @@ export function Library({
             </>
           ) : (
             <div className="applet-menu-actions">
+              {action_applet && restart_required.includes(action_applet.applet_id) && (
+                <button
+                  className="applet-menu-action"
+                  onClick={() => openApplet(action_applet, true)}
+                >
+                  <Icon name="reload" />
+                  Restart applet
+                </button>
+              )}
               <button
                 className="applet-menu-action danger"
                 onClick={() => setRemoval({ ...removal, confirm: true })}

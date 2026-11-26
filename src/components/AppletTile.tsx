@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import type { InstalledApplet } from '../lib/types';
 import { AppletIcon } from './AppletIcon';
 import { Icon } from './Icon';
@@ -38,12 +38,21 @@ interface AppletTileProps {
   applet: InstalledApplet;
   disabled: boolean;
   launching: boolean;
+  restart_required: boolean;
   onOpen: () => void;
   onActions: () => void;
 }
 
-export function AppletTile({ applet, disabled, launching, onOpen, onActions }: AppletTileProps) {
+export function AppletTile({
+  applet,
+  disabled,
+  launching,
+  restart_required,
+  onOpen,
+  onActions,
+}: AppletTileProps) {
   const [press] = useState(() => new AppletPress());
+  const restart_description = useId();
   useEffect(() => () => press.cancel(), [press, disabled]);
 
   const showActions = (button: HTMLButtonElement) => {
@@ -58,6 +67,7 @@ export function AppletTile({ applet, disabled, launching, onOpen, onActions }: A
         className="applet-icon-button"
         disabled={disabled}
         aria-label={`Open ${applet.name}`}
+        aria-describedby={restart_required ? restart_description : undefined}
         aria-keyshortcuts="Shift+F10"
         onPointerDown={(event) => {
           if (!event.isPrimary || event.button !== 0) {
@@ -89,8 +99,18 @@ export function AppletTile({ applet, disabled, launching, onOpen, onActions }: A
       >
         <span className="applet-icon" aria-hidden="true">
           {launching ? <span className="spinner" /> : <AppletIcon applet={applet} />}
+          {restart_required && (
+            <span className="applet-restart-badge">
+              <Icon name="reload" />
+            </span>
+          )}
         </span>
         <span className="applet-name">{applet.name}</span>
+        {restart_required && (
+          <span className="visually-hidden" id={restart_description}>
+            Restart available.
+          </span>
+        )}
       </button>
       <button
         className="icon-button applet-actions-button"

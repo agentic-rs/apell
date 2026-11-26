@@ -5,7 +5,7 @@ use apell_core::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::path::PathBuf;
+use std::{collections::HashSet, path::PathBuf};
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -213,7 +213,11 @@ impl PermissionGrants {
     Ok(grants)
   }
 
-  fn installed_summary(&self, applet: InstalledApplet) -> Result<AppletPermissionSummary, String> {
+  fn installed_summary(
+    &self,
+    applet: InstalledApplet,
+    restart_required: bool,
+  ) -> Result<AppletPermissionSummary, String> {
     let source = GrantSource::from(&applet);
     let manifest = applet.manifest;
     let grants = self.summary(&manifest.applet_id, Some(&source), &manifest.permissions)?;
@@ -226,13 +230,19 @@ impl PermissionGrants {
         has_lib: manifest.lib.is_some(),
       }),
       grants,
+      restart_required,
     })
   }
 
-  fn summaries(&self, report: AppletListReport) -> Result<Vec<AppletPermissionSummary>, String> {
+  fn summaries(
+    &self,
+    report: AppletListReport,
+    pending_restarts: &HashSet<String>,
+  ) -> Result<Vec<AppletPermissionSummary>, String> {
     let mut entries = Vec::new();
     for applet in report.applets {
-      entries.push(self.installed_summary(applet)?);
+      let restart_required = pending_restarts.contains(&applet.manifest.applet_id);
+      entries.push(self.installed_summary(applet, restart_required)?);
     }
     for applet in report.unavailable {
       let grants = self.summary(&applet.applet_id, None, &[])?;
@@ -242,6 +252,7 @@ impl PermissionGrants {
           name: applet.applet_id,
           manifest: None,
           grants,
+          restart_required: false,
         });
       }
     }
@@ -269,12 +280,20 @@ struct AppletPermissionSummary {
   name: String,
   manifest: Option<PermissionManifest>,
   grants: Vec<GrantSummary>,
+  restart_required: bool,
 }
 
 pub async fn list(host: &Host) -> Result<Value, String> {
   let bundles = host.bundles.clone();
   let store = host.grants.clone();
-  crate::commands::blocking(move || Ok(json!(store.summaries(bundles.list_report()?)?))).await
+  let report = crate::commands::blocking(move || bundles.list_report()).await?;
+  let pending_restarts = report
+    .applets
+    .iter()
+    .filter(|applet| host.needs_applet_restart(applet))
+    .map(|applet| applet.manifest.applet_id.clone())
+    .collect();
+  crate::commands::blocking(move || Ok(json!(store.summaries(report, &pending_restarts)?))).await
 }
 
 #[cfg(test)]
@@ -311,11 +330,14 @@ mod tests {
     applet.manifest.permissions = vec!["secrets".into(), "fs".into(), "photos".into()];
     applet.manifest.lib = Some("lib/app.wasm".into());
     let summary = grants
-      .summaries(AppletListReport {
-        applets: vec![applet],
-        unavailable: Vec::new(),
-        retained: Default::default(),
-      })
+      .summaries(
+        AppletListReport {
+          applets: vec![applet],
+          unavailable: Vec::new(),
+          retained: Default::default(),
+        },
+        &HashSet::new(),
+      )
       .unwrap();
     assert_eq!(
       json!(summary),
@@ -328,8 +350,58 @@ mod tests {
           "has_lib":true,
         },
         "grants":[],
+        "restart_required":false,
       }])
     );
+  }
+
+  #[test]
+  fn settings_marks_package_restart_independently_of_saved_grants() {
+    let dir = tempfile::tempdir().unwrap();
+    let grants = PermissionGrants::new(dir.path().into());
+    let mut applet = installed(
+      StoreSource {
+        store_url: "https://store.example".into(),
+        applet_id: "recorder".into(),
+        channel: StoreChannel::Stable,
+      }
+      .into(),
+    );
+    let source = GrantSource::from(&applet);
+    grants
+      .remember(
+        ManagedPermission::Microphone,
+        &applet.manifest.applet_id,
+        &source,
+      )
+      .unwrap();
+    applet.manifest.network = false;
+    applet.manifest.permissions.clear();
+    let pending_restarts = HashSet::from([applet.manifest.applet_id.clone()]);
+    let entries = grants
+      .summaries(
+        AppletListReport {
+          applets: vec![applet],
+          unavailable: Vec::new(),
+          retained: Default::default(),
+        },
+        &pending_restarts,
+      )
+      .unwrap();
+    let [entry] = entries.as_slice() else {
+      panic!("Expected one applet permission summary.");
+    };
+    assert!(entry.restart_required);
+    assert!(!entry.manifest.as_ref().unwrap().network);
+    assert!(entry.manifest.as_ref().unwrap().permissions.is_empty());
+    let [approval] = entry.grants.as_slice() else {
+      panic!("Expected one saved device approval.");
+    };
+    assert_eq!(approval.permission, ManagedPermission::Microphone);
+    assert!(approval.access == PermissionAccess::Undeclared);
+    assert!(grants
+      .remembered(ManagedPermission::Microphone, &entry.applet_id, &source)
+      .unwrap());
   }
 
   #[test]
