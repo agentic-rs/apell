@@ -505,6 +505,7 @@ fn installed_source_path_updates_or_switches_only_within_an_active_applets_store
     store_url: original.into(),
     applet_id: "sample".into(),
     installed_source: true,
+    resume_download: false,
     release: release("2.0.0-nightly.1"),
     expected_installed_sha256: Some(saved.sha256.clone()),
     switch_snapshot: None,

@@ -7,7 +7,13 @@ import {
   reviewStoreRelease,
   storeChannelRelease,
 } from './storeState';
-import type { InstalledApplet, StoreCatalogEntry, StoreDetail, StoreRelease } from './types';
+import type {
+  InstalledApplet,
+  StoreCatalogEntry,
+  StoreDetail,
+  StorePendingDownload,
+  StoreRelease,
+} from './types';
 
 const store_url = 'https://store.example.invalid';
 const stable: StoreRelease = {
@@ -182,6 +188,78 @@ describe('store release review', () => {
     expect(newStoreAccess({ ...stable, network: false }, { ...installed, network: true })).toEqual(
       [],
     );
+  });
+});
+
+describe('paused Store download review', () => {
+  const paused = {
+    ...stable,
+    version: '2.0.0',
+    sha256: 'b'.repeat(64),
+    action: 'update' as const,
+    downloaded_bytes: 1024,
+  };
+  const latest = {
+    ...paused,
+    version: '3.0.0',
+    sha256: 'c'.repeat(64),
+    downloaded_bytes: undefined,
+  };
+  const pending_download: StorePendingDownload = {
+    origin: store_url,
+    applet_id: applet.applet_id,
+    name: applet.name,
+    version: paused.version,
+    channel: 'stable',
+    sha256: paused.sha256,
+    size_bytes: paused.size_bytes,
+    downloaded_bytes: paused.downloaded_bytes,
+  };
+  const current = {
+    ...detail,
+    applet: { ...applet, latest_release: latest, latest_stable_release: latest },
+    releases: [latest, paused, ...detail.releases],
+  };
+
+  it('keeps the exact paused update selected when an update check recommends a newer version', () => {
+    expect(reviewStoreRelease(current, {}, true).release).toBe(latest);
+    expect(reviewStoreRelease(current, { pending_download }, true).release).toBe(paused);
+  });
+
+  it('does not substitute a release when the saved identity or progress no longer matches', () => {
+    for (const change of [
+      { version: '2.0.1' },
+      { sha256: latest.sha256 },
+      { channel: 'nightly' as const },
+      { size_bytes: paused.size_bytes + 1 },
+      { origin: 'https://other.example.invalid' },
+      { applet_id: 'other' },
+    ]) {
+      expect(
+        reviewStoreRelease(current, { pending_download: { ...pending_download, ...change } })
+          .release,
+      ).toBeUndefined();
+    }
+    expect(
+      reviewStoreRelease(
+        { ...current, releases: [{ ...paused, downloaded_bytes: undefined }] },
+        { pending_download },
+      ).release,
+    ).toBeUndefined();
+  });
+
+  it('keeps a paused channel switch on the installed Store and requires that source', () => {
+    const switch_release = { ...paused, prerelease: true, action: 'switch_channel' as const };
+    const choice = { pending_download: { ...pending_download, channel: 'nightly' as const } };
+    const switch_detail = { ...current, releases: [switch_release, ...current.releases] };
+    expect(reviewStoreRelease(switch_detail, choice, true).release).toBe(switch_release);
+    expect(
+      reviewStoreRelease(
+        { ...switch_detail, installed: { ...installed, source: null } },
+        choice,
+        true,
+      ).release,
+    ).toBeUndefined();
   });
 });
 

@@ -111,10 +111,15 @@ pub async fn shell_command(
       blocking(move || tauri_plugin_apell_sensors::background_task(&app)).await?;
       Ok(Value::Null)
     }
-    "store.config" | "store.set_url" | "store.catalog" | "store.updates" | "store.detail"
-    | "store.icon" | "store.install" => {
-      crate::store_commands::dispatch(app, &host, &method, params).await
-    }
+    "store.config"
+    | "store.set_url"
+    | "store.catalog"
+    | "store.updates"
+    | "store.detail"
+    | "store.icon"
+    | "store.pending_download"
+    | "store.discard_download"
+    | "store.install" => crate::store_commands::dispatch(app, &host, &method, params).await,
     "applets.list" => {
       // The first library load must observe any pending developer installs.
       #[cfg(all(target_os = "ios", debug_assertions))]

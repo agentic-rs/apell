@@ -9,14 +9,14 @@ use apell_core::{
     StoreSwitchSnapshot,
   },
   store_client::{
-    normalize_store_url, DownloadCheckpoint, DownloadOutcome, StoreApplet, StoreCatalog,
-    StoreClient, StoreRelease,
+    normalize_store_url, DownloadCheckpoint, DownloadIdentity, DownloadOutcome, StoreApplet,
+    StoreCatalog, StoreClient, StoreRelease,
   },
 };
 use futures_util::{stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::{collections::BTreeMap, future::Future, time::Duration};
+use std::{collections::BTreeMap, future::Future, path::PathBuf, time::Duration};
 use tauri::{AppHandle, Emitter, Manager};
 
 pub use state::StoreConfig;
@@ -59,6 +59,8 @@ struct InstallQuery {
   applet_id: String,
   #[serde(default)]
   installed_source: bool,
+  #[serde(default)]
+  resume_download: bool,
   release: StoreRelease,
   expected_installed_sha256: Option<String>,
   switch_snapshot: Option<StoreSwitchSnapshot>,
@@ -155,15 +157,19 @@ fn download_checkpoint(
   store_url: &str,
   release: &StoreRelease,
 ) -> Result<DownloadCheckpoint, String> {
-  let cache = app
-    .path()
-    .app_cache_dir()
-    .map_err(|_| "Store download cache is unavailable.")?;
   Ok(DownloadCheckpoint::new(
-    &cache.join("store-downloads"),
+    &download_cache(app)?,
     store_url,
     release,
   ))
+}
+
+fn download_cache(app: &AppHandle) -> Result<PathBuf, String> {
+  app
+    .path()
+    .app_cache_dir()
+    .map(|cache| cache.join("store-downloads"))
+    .map_err(|_| "Store download cache is unavailable.".into())
 }
 
 fn input<T: serde::de::DeserializeOwned>(params: Value) -> Result<T, String> {
@@ -447,6 +453,15 @@ pub async fn dispatch(
           .await?,
       )
     }
+    "store.pending_download" => {
+      let _gate = host.store_gate.lock().await;
+      output(DownloadCheckpoint::pending(&download_cache(&app)?).await?)
+    }
+    "store.discard_download" => {
+      let identity: DownloadIdentity = input(params)?;
+      let _gate = host.store_gate.lock().await;
+      output(DownloadCheckpoint::discard(&download_cache(&app)?, &identity).await?)
+    }
     "store.install" => install(app, host, input(params)?).await,
     _ => Err("Unknown store command.".into()),
   }
@@ -657,6 +672,11 @@ async fn install(app: AppHandle, host: &Host, request: InstallQuery) -> Result<V
   };
   let operation_id = &request.operation_id;
   let checkpoint = download_checkpoint(&app, &store_url, &request.release)?;
+  if request.resume_download && checkpoint.received(request.release.size_bytes).await == 0 {
+    return Err(
+      "The saved download is no longer on this device. Review the release to start again.".into(),
+    );
+  }
   #[cfg(target_os = "ios")]
   let lease = crate::ios::WakeLease::begin(&app).await;
   let pause = async {

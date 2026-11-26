@@ -48,6 +48,14 @@ pub(super) fn lowercase_hash(value: &str) -> bool {
       .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
+pub(super) fn valid_applet_name(name: &str) -> bool {
+  !name.trim().is_empty() && name.len() <= 100 && !name.chars().any(char::is_control)
+}
+
+pub(super) fn release_download_path(applet_id: &str, version: &str) -> String {
+  format!("/api/v1/applets/{applet_id}/versions/{version}/download")
+}
+
 pub(super) fn icon_hash(path: &str) -> Result<&str, String> {
   path
     .strip_prefix("/media/")
@@ -83,11 +91,7 @@ impl StoreRelease {
       || self.size_bytes == 0
       || self.size_bytes > MAX_BUNDLE_BYTES as u64
       || self.prerelease != !version.pre.is_empty()
-      || self.download_url
-        != format!(
-          "/api/v1/applets/{applet_id}/versions/{}/download",
-          self.version
-        )
+      || self.download_url != release_download_path(applet_id, &self.version)
       || self.published_at.is_empty()
       || self.published_at.len() > 64
       || self.published_at.chars().any(char::is_control)
@@ -117,9 +121,7 @@ impl StoreApplet {
 
   pub fn validate(&self) -> Result<(), String> {
     if !crate::valid_name(&self.applet_id)
-      || self.name.trim().is_empty()
-      || self.name.len() > 100
-      || self.name.chars().any(char::is_control)
+      || !valid_applet_name(&self.name)
       || self.description.trim().is_empty()
       || self.description.len() > 2_000
       || self.description.chars().any(char::is_control)

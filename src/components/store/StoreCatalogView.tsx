@@ -1,4 +1,4 @@
-import type { StoreCatalog, StoreSource } from '../../lib/types';
+import type { StoreCatalog, StorePendingDownload, StoreSource } from '../../lib/types';
 import {
   installedStoreChannel,
   matchingStoreApplets,
@@ -8,6 +8,7 @@ import {
 } from '../../lib/storeState';
 import { Icon } from '../Icon';
 import { StoreIcon } from './StoreIcon';
+import { StorePendingDownloadNotice } from './StorePendingDownloadNotice';
 import { StoreUpdatesView } from './StoreUpdatesView';
 import type { StoreUpdateResults } from './updatesState';
 
@@ -15,6 +16,7 @@ export function StoreCatalogView({
   catalog,
   store_url,
   updates,
+  pending_download,
   loading,
   error,
   query,
@@ -25,10 +27,12 @@ export function StoreCatalogView({
   onAddress,
   onSelect,
   onSelectUpdate,
+  onReviewDownload,
 }: {
   catalog?: StoreCatalog;
   store_url?: string | null;
   updates?: StoreUpdateResults;
+  pending_download?: StorePendingDownload;
   loading: boolean;
   error: string;
   query: string;
@@ -39,6 +43,7 @@ export function StoreCatalogView({
   onAddress: () => void;
   onSelect: (applet_id: string) => void;
   onSelectUpdate: (source: StoreSource) => void;
+  onReviewDownload: () => void;
 }) {
   const update_count =
     updates?.sources.reduce((count, source) => count + source.updates.length, 0) ?? 0;
@@ -94,6 +99,9 @@ export function StoreCatalogView({
           Updates{update_count ? ` (${update_count})` : ''}
         </button>
       </div>
+      {pending_download && (
+        <StorePendingDownloadNotice pending={pending_download} onReview={onReviewDownload} />
+      )}
       {updates_only ? (
         <StoreUpdatesView
           report={updates}

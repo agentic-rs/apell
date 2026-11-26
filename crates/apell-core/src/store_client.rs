@@ -2,7 +2,7 @@
 mod model;
 mod transfer;
 pub use model::{StoreApplet, StoreCatalog, StoreDetail, StoreRelease};
-pub use transfer::{DownloadCheckpoint, DownloadOutcome};
+pub use transfer::{DownloadCheckpoint, DownloadIdentity, DownloadOutcome, PendingDownload};
 
 use crate::bundles::{digest, parse};
 use crate::icons::{png_data_url, MAX_ICON_BYTES};
@@ -145,7 +145,11 @@ impl StoreClient {
     verify_download(bytes, applet_id, selected).await
   }
 
-  async fn review_download(&self, applet_id: &str, selected: &StoreRelease) -> Result<(), String> {
+  async fn review_download(
+    &self,
+    applet_id: &str,
+    selected: &StoreRelease,
+  ) -> Result<String, String> {
     selected.validate(applet_id)?;
     let detail = self.detail(applet_id).await?;
     let current = detail
@@ -156,7 +160,7 @@ impl StoreClient {
     if current != selected {
       return Err("The selected release changed. Review its details again.".into());
     }
-    Ok(())
+    Ok(detail.applet.name)
   }
 
   pub async fn icon(&self, icon_url: &str) -> Result<String, String> {

@@ -93,6 +93,16 @@ export interface StoreConfig {
   store_url: string | null;
 }
 export type StoreChannel = 'stable' | 'nightly';
+export interface StorePendingDownload {
+  origin: string;
+  applet_id: string;
+  name: string;
+  version: string;
+  channel: StoreChannel;
+  sha256: string;
+  downloaded_bytes: number;
+  size_bytes: number;
+}
 export interface StoreCatalogEntry extends StoreApplet {
   installed: InstalledApplet | null;
   update_available: boolean;
@@ -153,6 +163,7 @@ export interface StoreInstallRequest {
   switch_snapshot?: StoreSwitchSnapshot;
   channel_snapshot?: StoreSwitchSnapshot;
   installed_source?: boolean;
+  resume_download?: boolean;
   operation_id: string;
 }
 export type StoreInstallResult =

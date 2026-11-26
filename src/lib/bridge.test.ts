@@ -78,6 +78,8 @@ describe('applet bridge boundary', () => {
       'store.detail',
       'navigation.background',
       'store.icon',
+      'store.pending_download',
+      'store.discard_download',
       'store.install',
       'permissions.list',
       'permissions.forget',

@@ -3,6 +3,7 @@ import type {
   InstallProgress,
   StoreChannel,
   StoreDetail,
+  StorePendingDownload,
   StoreReleaseOption,
 } from '../../lib/types';
 import {
@@ -49,6 +50,7 @@ export function StoreOpenButton({
 export function StoreDetailView({
   detail,
   installed_source,
+  reviewing_download,
   restart_required,
   review,
   fresh,
@@ -66,6 +68,7 @@ export function StoreDetailView({
 }: {
   detail: StoreDetail;
   installed_source: boolean;
+  reviewing_download?: StorePendingDownload;
   restart_required: boolean;
   review: ReturnType<typeof reviewStoreRelease>;
   fresh: boolean;
@@ -99,18 +102,26 @@ export function StoreDetailView({
     installed && !default_channel ? storeSourceLabel(installed.source ?? null) : null;
   const can_switch_source = !installed_source && release?.action === 'switch_source' && !!previous;
   const can_switch_channel =
-    !installed_source && release?.action === 'switch_channel' && !!detail.channel_snapshot;
+    (!installed_source || !!reviewing_download) &&
+    release?.action === 'switch_channel' &&
+    !!detail.channel_snapshot;
   const confirm_required = can_switch_source || can_switch_channel;
   const can_install =
     fresh &&
     release &&
     (release.action === 'update' ||
-      (!installed_source && (release.action === 'install' || confirm_required)));
+      (!installed_source && release.action === 'install') ||
+      confirm_required);
   return (
     <section className="store-detail" aria-label={detail.applet.name} aria-busy={refreshing}>
       <div className="store-toolbar">
         <button className="store-back" disabled={busy} onClick={onBack}>
-          <Icon name="back" /> {installed_source ? 'Back to updates' : 'All applets'}
+          <Icon name="back" />{' '}
+          {reviewing_download
+            ? 'Back to Store'
+            : installed_source
+              ? 'Back to updates'
+              : 'All applets'}
         </button>
         <button
           className="icon-button"
@@ -160,7 +171,16 @@ export function StoreDetailView({
       )}
       <div className="store-detail-layout">
         <div className="store-download-panel">
-          {installed_source ? (
+          {reviewing_download ? (
+            <>
+              <strong>Paused download · {reviewing_download.version}</strong>
+              {!release && fresh && (
+                <p className="store-action-reason">
+                  This release is no longer available to resume.
+                </p>
+              )}
+            </>
+          ) : installed_source ? (
             release ? (
               <strong>Release {release.version}</strong>
             ) : (

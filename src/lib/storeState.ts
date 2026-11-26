@@ -5,6 +5,7 @@ import type {
   StoreApplet,
   StoreChannel,
   StoreDetail,
+  StorePendingDownload,
   StoreRelease,
   InstalledApplet,
   PackageSource,
@@ -134,6 +135,7 @@ export interface StoreReleaseChoice {
   version?: string;
   channel?: StoreChannel;
   remembered_version?: string;
+  pending_download?: StorePendingDownload;
 }
 
 export function reviewStoreRelease(
@@ -144,6 +146,29 @@ export function reviewStoreRelease(
   const installed_channel =
     detail.installed_channel ??
     installedStoreChannel(detail.store_url, detail.applet.applet_id, detail.installed);
+  const pending = choice.pending_download;
+  if (pending) {
+    const release =
+      detail.store_url === pending.origin &&
+      detail.applet.applet_id === pending.applet_id &&
+      (!installed_source || installed_channel)
+        ? detail.releases.find(
+            (item) =>
+              item.version === pending.version &&
+              item.sha256 === pending.sha256 &&
+              item.size_bytes === pending.size_bytes &&
+              storeReleaseChannel(item) === pending.channel &&
+              (item.downloaded_bytes ?? 0) > 0,
+          )
+        : undefined;
+    return {
+      channel: pending.channel,
+      installed_channel,
+      versions: release ? [release] : [],
+      recommended: undefined,
+      release,
+    };
+  }
   const explicit = installed_source
     ? undefined
     : detail.releases.find((release) => release.version === choice.version);

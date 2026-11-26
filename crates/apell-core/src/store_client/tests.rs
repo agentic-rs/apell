@@ -252,6 +252,20 @@ async fn interrupted_download_resumes_the_reviewed_range_and_rejects_bad_ranges(
   assert!(
     matches!(result, DownloadOutcome::Paused { received_bytes } if received_bytes == middle as u64)
   );
+  let pending = DownloadCheckpoint::pending(cache.path()).await.unwrap();
+  assert_eq!(
+    serde_json::to_value(pending).unwrap(),
+    serde_json::json!({
+      "origin": server.origin,
+      "applet_id": "sample",
+      "name": "Sample",
+      "version": "1.0.0",
+      "channel": "stable",
+      "sha256": selected.sha256,
+      "downloaded_bytes": middle,
+      "size_bytes": size,
+    }),
+  );
   assert!(client
     .download_resumable(
       "sample",
@@ -277,6 +291,10 @@ async fn interrupted_download_resumes_the_reviewed_range_and_rejects_bad_ranges(
     .unwrap();
   assert!(matches!(result, DownloadOutcome::Verified(downloaded) if downloaded == bytes));
   assert_eq!(checkpoint.received(size as u64).await, 0);
+  assert!(DownloadCheckpoint::pending(cache.path())
+    .await
+    .unwrap()
+    .is_none());
   let requests = server.requests.lock().unwrap();
   assert!(requests
     .last()
@@ -286,6 +304,90 @@ async fn interrupted_download_resumes_the_reviewed_range_and_rejects_bad_ranges(
     .last()
     .unwrap()
     .contains(&format!("if-range: {etag}")));
+}
+
+#[tokio::test]
+async fn stale_discard_cannot_remove_a_replacement_and_eviction_clears_discovery() {
+  async fn retain_partial(
+    cache: &std::path::Path,
+    version: &str,
+  ) -> (DownloadCheckpoint, DownloadIdentity) {
+    let bytes = package("sample", version, &["sqlite"]);
+    let selected = release(&bytes, version);
+    let server = MockStore::new(vec![
+      (
+        "/api/v1/applets/sample".into(),
+        Reply::json(&detail(&selected)),
+      ),
+      (
+        selected.download_url.clone(),
+        Reply::ok(bytes[..16].to_vec()).header("Content-Length", &bytes.len().to_string()),
+      ),
+    ])
+    .await;
+    let checkpoint = DownloadCheckpoint::new(cache, &server.origin, &selected);
+    let result = StoreClient::new(&server.origin)
+      .unwrap()
+      .download_resumable(
+        "sample",
+        &selected,
+        &checkpoint,
+        std::future::pending(),
+        |_, _| {},
+      )
+      .await
+      .unwrap();
+    assert!(matches!(
+      result,
+      DownloadOutcome::Paused { received_bytes: 16 }
+    ));
+    let identity = serde_json::from_value(serde_json::json!({
+      "origin": server.origin,
+      "applet_id": "sample",
+      "version": version,
+      "channel": if selected.prerelease { "nightly" } else { "stable" },
+      "sha256": selected.sha256,
+    }))
+    .unwrap();
+    (checkpoint, identity)
+  }
+
+  let cache = tempfile::tempdir().unwrap();
+  let (original, stale) = retain_partial(cache.path(), "1.0.0").await;
+  let (replacement, exact) = retain_partial(cache.path(), "2.0.0-nightly.1").await;
+  assert_eq!(original.received(u64::MAX).await, 0);
+  assert!(!DownloadCheckpoint::discard(cache.path(), &stale)
+    .await
+    .unwrap());
+  assert_eq!(replacement.received(u64::MAX).await, 16);
+  let pending = DownloadCheckpoint::pending(cache.path()).await.unwrap();
+  assert_eq!(serde_json::to_value(pending).unwrap()["channel"], "nightly");
+  assert!(DownloadCheckpoint::discard(cache.path(), &exact)
+    .await
+    .unwrap());
+  assert_eq!(replacement.received(u64::MAX).await, 0);
+  assert!(std::fs::read_dir(cache.path()).unwrap().next().is_none());
+  assert!(!DownloadCheckpoint::discard(cache.path(), &exact)
+    .await
+    .unwrap());
+
+  retain_partial(cache.path(), "2.0.0-nightly.2").await;
+  let part = std::fs::read_dir(cache.path())
+    .unwrap()
+    .flatten()
+    .map(|entry| entry.path())
+    .find(|path| {
+      path
+        .extension()
+        .is_some_and(|extension| extension == "part")
+    })
+    .unwrap();
+  std::fs::remove_file(part).unwrap();
+  assert!(DownloadCheckpoint::pending(cache.path())
+    .await
+    .unwrap()
+    .is_none());
+  assert!(std::fs::read_dir(cache.path()).unwrap().next().is_none());
 }
 
 #[tokio::test]

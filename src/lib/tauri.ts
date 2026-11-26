@@ -41,6 +41,7 @@ import type {
   StoreDetail,
   StoreInstallRequest,
   StoreInstallResult,
+  StorePendingDownload,
   StoreUpdatesReport,
 } from './types';
 
@@ -80,6 +81,16 @@ export const setStoreUrl = (store_url: string) =>
 export const getStoreCatalog = (store_url: string) =>
   shellCall<StoreCatalog>('store.catalog', { store_url });
 export const getStoreUpdates = () => shellCall<StoreUpdatesReport>('store.updates');
+export const getStorePendingDownload = () =>
+  shellCall<StorePendingDownload | null>('store.pending_download');
+export const discardStoreDownload = ({
+  origin,
+  applet_id,
+  version,
+  channel,
+  sha256,
+}: StorePendingDownload) =>
+  shellCall<boolean>('store.discard_download', { origin, applet_id, version, channel, sha256 });
 export const getStoreDetail = (store_url: string, applet_id: string, installed_source = false) =>
   shellCall<StoreDetail>('store.detail', {
     store_url,

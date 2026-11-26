@@ -1,8 +1,9 @@
-import { useLayoutEffect, useRef } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
 import type { AppletSession } from '../lib/types';
 import { storeChannelName } from '../lib/storeState';
 import { useBackAction } from '../lib/backNavigation';
 import { AppletIcon } from '../components/AppletIcon';
+import { Sheet } from '../components/Sheet';
 import { StoreAddress } from '../components/store/StoreAddress';
 import { StoreCatalogView } from '../components/store/StoreCatalogView';
 import { StoreDetailView, StoreOpenButton } from '../components/store/StoreDetailView';
@@ -20,6 +21,7 @@ export function Store({
   const { query, updates_only } = state.browse;
   const opening = state.operation === 'open' || state.operation === 'restart';
   const installed_source = state.installed?.source;
+  const reviewing_download = state.reviewing_download;
   const page = state.address_open
     ? 'address'
     : state.selected_id
@@ -93,6 +95,7 @@ export function Store({
           <StoreDetailView
             detail={state.detail}
             installed_source={state.installed_source}
+            reviewing_download={reviewing_download}
             restart_required={state.restart_required}
             review={state.review}
             fresh={state.detail_fresh}
@@ -111,7 +114,11 @@ export function Store({
         ) : (
           <section className="store-detail-loading" aria-busy={state.detail_loading}>
             <button className="store-back" disabled={!!state.operation} onClick={state.closeDetail}>
-              {state.installed_source ? 'Back to updates' : 'Back to applets'}
+              {reviewing_download
+                ? 'Back to Store'
+                : state.installed_source
+                  ? 'Back to updates'
+                  : 'Back to applets'}
             </button>
             {state.installed && (
               <div className="store-download-panel">
@@ -145,8 +152,18 @@ export function Store({
             ) : (
               <div className="store-feedback" role="alert">
                 <h2>
-                  {state.installed ? 'Couldn’t load Store releases' : 'Couldn’t load this applet'}
+                  {reviewing_download
+                    ? 'Couldn’t review this download'
+                    : state.installed
+                      ? 'Couldn’t load Store releases'
+                      : 'Couldn’t load this applet'}
                 </h2>
+                {reviewing_download && (
+                  <p>
+                    {reviewing_download.name} · {reviewing_download.version} ·{' '}
+                    {storeChannelName(reviewing_download.channel)}
+                  </p>
+                )}
                 <p>{state.detail_error}</p>
                 <button onClick={state.retryDetail}>Try again</button>
               </div>
@@ -158,6 +175,7 @@ export function Store({
           catalog={state.catalog}
           store_url={state.config?.store_url}
           updates={state.updates}
+          pending_download={state.pending_download}
           loading={updates_only ? state.updates_loading : state.catalog_loading}
           error={updates_only ? state.updates_error : state.catalog_error || state.config_error}
           query={updates_only ? state.updates_query : query}
@@ -181,8 +199,58 @@ export function Store({
             rememberCatalogScroll();
             state.openUpdate(source);
           }}
+          onReviewDownload={() => {
+            rememberCatalogScroll();
+            state.reviewDownload();
+          }}
         />
       )}
+      {reviewing_download && (
+        <DiscardDownload
+          name={reviewing_download.name}
+          version={reviewing_download.version}
+          disabled={!!state.operation}
+          onDiscard={state.discardDownload}
+        />
+      )}
+    </div>
+  );
+}
+
+function DiscardDownload({
+  name,
+  version,
+  disabled,
+  onDiscard,
+}: {
+  name: string;
+  version: string;
+  disabled: boolean;
+  onDiscard: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="store-form-actions store-discard-actions">
+      <button disabled={disabled} onClick={() => setOpen(true)}>
+        Discard download
+      </button>
+      <Sheet title="Discard paused download?" open={open} onClose={() => setOpen(false)}>
+        <p>
+          Apell will clear the saved download progress for {name} {version}.
+        </p>
+        <div className="store-form-actions">
+          <button onClick={() => setOpen(false)}>Keep download</button>
+          <button
+            className="danger"
+            onClick={() => {
+              setOpen(false);
+              onDiscard();
+            }}
+          >
+            Discard download
+          </button>
+        </div>
+      </Sheet>
     </div>
   );
 }

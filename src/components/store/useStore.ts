@@ -1,8 +1,10 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
+  discardStoreDownload,
   getStoreCatalog,
   getStoreConfig,
   getStoreDetail,
+  getStorePendingDownload,
   getStoreUpdates,
   installStoreRelease,
   launchApplet,
@@ -20,6 +22,7 @@ import type {
   StoreChannel,
   StoreConfig,
   StoreDetail,
+  StorePendingDownload,
   StoreReleaseOption,
   StoreSource,
 } from '../../lib/types';
@@ -49,7 +52,7 @@ import {
   type StoreUpdateResults,
 } from './updatesState';
 
-type StoreOperation = 'save' | 'install' | 'open' | 'restart';
+type StoreOperation = 'save' | 'install' | 'open' | 'restart' | 'discard';
 interface DetailSelection extends StoreReleaseChoice {
   store_url: string;
   applet_id: string;
@@ -66,6 +69,7 @@ export function useStore(
   const [updates, setUpdates] = useState<StoreUpdateResults>();
   const [updates_query, setUpdatesQuery] = useState('');
   const [detail, setDetail] = useState<StoreDetail>();
+  const [pending_download, setPendingDownload] = useState<StorePendingDownload>();
   const [local_installation, setLocalInstallation] = useState<AppletInstallResult>();
   const [detail_selection, setDetailSelection] = useState<DetailSelection>();
   const [address_open, setAddressOpen] = useState(false);
@@ -88,6 +92,7 @@ export function useStore(
     catalog: 0,
     updates: 0,
     detail: 0,
+    pending: 0,
     operation: '',
   });
   const current_url = useRef<string | null>(null);
@@ -206,6 +211,18 @@ export function useStore(
     }
   };
 
+  const loadPendingDownload = async () => {
+    const request = ++scope.current.pending;
+    try {
+      const result = await getStorePendingDownload();
+      if (scope.current.alive && scope.current.pending === request) {
+        setPendingDownload(result ?? undefined);
+      }
+    } catch {
+      // A local checkpoint error does not prevent browsing the Store.
+    }
+  };
+
   const loadDetail = async (
     { store_url, applet_id, installed_source }: DetailSelection,
     just_installed?: AppletInstallResult,
@@ -238,7 +255,11 @@ export function useStore(
       if (isCurrent() && requested) {
         setDetail(result);
         markFresh(true);
-        if (!installed_source && cache.current?.store_url === store_url) {
+        if (
+          !installed_source &&
+          !requested.pending_download &&
+          cache.current?.store_url === store_url
+        ) {
           const remembered = requested.version ?? requested.remembered_version;
           const version = requested.channel
             ? reviewStoreRelease(result, requested).release?.version
@@ -297,10 +318,12 @@ export function useStore(
       scope.current.catalog++;
       scope.current.updates++;
       scope.current.detail++;
+      scope.current.pending++;
     };
   }, []);
   useEffect(() => {
     void loadConfig();
+    void loadPendingDownload();
   }, []);
   useEffect(() => {
     if (browse.updates_only) void loadUpdates();
@@ -328,7 +351,6 @@ export function useStore(
   };
 
   const closeDetail = () => {
-    if (scope.current.operation) return;
     scope.current.detail++;
     selectDetail();
     markFresh(false);
@@ -337,6 +359,35 @@ export function useStore(
     setDetailError('');
     setDetailLoading(false);
     setActionError('');
+    setStatus('');
+  };
+
+  const reviewDownload = () => {
+    if (scope.current.operation || !pending_download) return;
+    setActionError('');
+    setStatus('');
+    const requested = {
+      store_url: pending_download.origin,
+      applet_id: pending_download.applet_id,
+      installed_source: pending_download.origin !== current_url.current,
+      pending_download,
+    };
+    selectDetail(requested);
+    setDetail(undefined);
+    void loadDetail(requested);
+  };
+
+  const discardDownload = () => {
+    const pending = selection.current?.pending_download;
+    if (!pending) return;
+    void run('discard', async () => {
+      const discarded = await discardStoreDownload(pending);
+      if (discarded && scope.current.alive) setPendingDownload(undefined);
+      await loadPendingDownload();
+      if (!scope.current.alive) return;
+      closeDetail();
+      setStatus(discarded ? 'Download discarded.' : 'This paused download is no longer available.');
+    });
   };
 
   const saveAddress = (value: string) =>
@@ -353,12 +404,19 @@ export function useStore(
   const install = (release: StoreReleaseOption, confirmed_channel_switch = false) => {
     const requested = selection.current;
     if (!fresh.current || !detail?.releases.includes(release) || !requested) return;
-    if (requested.installed_source) {
-      if (release.action !== 'update' || storeReleaseChannel(release) !== detail.installed_channel)
-        return;
-    } else if (requested.store_url !== current_url.current) return;
+    const resume = !!requested.pending_download;
+    if (
+      resume &&
+      reviewStoreRelease(detail, requested, requested.installed_source).release !== release
+    )
+      return;
     const switching = release.action === 'switch_source';
     const switching_channel = release.action === 'switch_channel';
+    if (requested.installed_source) {
+      const same_channel_update =
+        release.action === 'update' && storeReleaseChannel(release) === detail.installed_channel;
+      if (!same_channel_update && !(resume && switching_channel)) return;
+    } else if (requested.store_url !== current_url.current) return;
     if (switching && !detail.switch_snapshot) return;
     if (switching_channel && (!confirmed_channel_switch || !detail.channel_snapshot)) return;
     if (!switching && !switching_channel && !['install', 'update'].includes(release.action)) return;
@@ -383,10 +441,18 @@ export function useStore(
           ...(switching ? { switch_snapshot: snapshot.switch_snapshot } : {}),
           ...(switching_channel ? { channel_snapshot: snapshot.channel_snapshot } : {}),
           ...(requested.installed_source ? { installed_source: true } : {}),
+          ...(resume ? { resume_download: true } : {}),
           operation_id,
         });
         if (!scope.current.alive) return;
         if (installed.status === 'paused') {
+          if (resume && installed.received_bytes === 0) {
+            closeDetail();
+            setStatus(
+              'The download stopped and no saved progress remains. Open the applet in the Store to start again.',
+            );
+            return;
+          }
           setDetail(
             (current) =>
               current && {
@@ -394,11 +460,19 @@ export function useStore(
                 releases: current.releases.map((option) => ({
                   ...option,
                   downloaded_bytes:
-                    option.sha256 === release.sha256 ? installed.received_bytes : undefined,
+                    option.version === release.version &&
+                    option.sha256 === release.sha256 &&
+                    installed.received_bytes > 0
+                      ? installed.received_bytes
+                      : undefined,
                 })),
               },
           );
-          setStatus('Download paused. Continue when you’re ready.');
+          setStatus(
+            installed.received_bytes > 0
+              ? 'Download paused. Continue when you’re ready.'
+              : 'Download interrupted. Try again when you’re ready.',
+          );
           return;
         }
         setStatus(
@@ -410,15 +484,20 @@ export function useStore(
         );
         const next_selection = {
           ...requested,
-          version: selection.current?.version,
+          pending_download: undefined,
+          version: requested.pending_download?.version ?? selection.current?.version,
           channel: requested.installed_source ? undefined : storeReleaseChannel(release),
         };
         selectDetail(next_selection);
         void loadDetail(next_selection, installed);
         if (snapshot.store_url === current_url.current) void loadCatalog(snapshot.store_url);
         if (requested.installed_source || updates) void loadUpdates();
+      } catch (error) {
+        if (resume && scope.current.alive) void loadDetail(requested);
+        throw error;
       } finally {
         stop();
+        if (scope.current.alive) await loadPendingDownload();
       }
     });
   };
@@ -441,7 +520,8 @@ export function useStore(
       : { ...detail, installed: installed ?? null, installed_channel: undefined });
   const chooseRelease = (choice: StoreReleaseChoice) => {
     const requested = selection.current;
-    if (!displayed_detail || !requested || requested.installed_source) return;
+    if (!displayed_detail || !requested || requested.installed_source || requested.pending_download)
+      return;
     const next = { ...requested, ...choice, remembered_version: undefined };
     selectDetail(next);
     const record = cache.current?.details.find(
@@ -462,6 +542,10 @@ export function useStore(
     updates_query,
     setUpdatesQuery,
     detail: displayed_detail,
+    pending_download,
+    reviewing_download: detail_selection?.pending_download,
+    reviewDownload,
+    discardDownload,
     installed,
     restart_required,
     selected_id: detail_selection?.applet_id,
@@ -490,7 +574,9 @@ export function useStore(
     progress,
     loadConfig,
     saveAddress,
-    closeDetail,
+    closeDetail: () => {
+      if (!scope.current.operation) closeDetail();
+    },
     install,
     installed_source: detail_selection?.installed_source === true,
     openDetail: (applet_id: string) => {
@@ -521,11 +607,14 @@ export function useStore(
     },
     refreshCatalog: () => {
       if (scope.current.operation) return;
+      void loadPendingDownload();
       if (current_url.current) void loadCatalog(current_url.current);
       else if (!config) void loadConfig();
     },
     refreshUpdates: () => {
-      if (!scope.current.operation) void loadUpdates();
+      if (scope.current.operation) return;
+      void loadPendingDownload();
+      void loadUpdates();
     },
     retryDetail: () => {
       if (selection.current && !scope.current.operation) void loadDetail(selection.current);
