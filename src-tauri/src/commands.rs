@@ -179,6 +179,7 @@ pub async fn shell_command(
       crate::permissions::installed_info(app, string(&params, "applet_id")?.to_owned()).await
     }
     "applets.install" => crate::install::install(app, &host, params).await,
+    "applets.restore_package" => crate::install::restore_package(&host, params).await,
     "applets.update" => crate::install::update(app, &host, string(&params, "applet_id")?).await,
     "applets.remove" => {
       host

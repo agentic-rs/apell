@@ -7,6 +7,7 @@ use zip::{write::SimpleFileOptions, CompressionMethod, ZipWriter};
 
 mod icons;
 mod removal;
+mod restore;
 
 fn manifest(id: &str, version: &str) -> Vec<u8> {
   serde_json::to_vec(&serde_json::json!({"schema_version":1,"api_version":2,"applet_id":id,"name":"Sample","version":version,"permissions":["sqlite"]})).unwrap()

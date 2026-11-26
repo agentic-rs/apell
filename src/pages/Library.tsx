@@ -7,6 +7,7 @@ import {
   message,
   onInstallProgress,
   removeApplet,
+  restoreAppletPackage,
   restartApplet,
 } from '../lib/tauri';
 import type {
@@ -14,18 +15,30 @@ import type {
   AppletListReport,
   AppletSession,
   InstalledApplet,
+  StoreSwitchSnapshot,
   UnavailableApplet,
 } from '../lib/types';
+import { AppletPackagePicker } from '../components/AppletPackagePicker';
 import { InstallSheet } from '../components/InstallSheet';
 import { AppletTile } from '../components/AppletTile';
 import { AppletInfoSheet } from '../components/AppletInfoSheet';
 import { Icon } from '../components/Icon';
 import { Sheet } from '../components/Sheet';
 
-interface AppletAction {
+type AppletAction = {
   applet_id: string;
   name: string;
-  panel: 'actions' | 'info' | 'remove';
+} & (
+  { panel: 'actions' | 'info' | 'remove' } | { panel: 'restore'; expected: StoreSwitchSnapshot }
+);
+
+async function readPackageFile(file: File) {
+  if (file.size > 24 * 1024 * 1024) throw new Error('Bundle exceeds 24 MiB.');
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  let binary = '';
+  for (let offset = 0; offset < bytes.length; offset += 32768)
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 32768));
+  return btoa(binary);
 }
 
 interface LibraryProps {
@@ -57,7 +70,7 @@ export function Library({
   const pending = useRef(false);
   const list_revision = useRef(0);
   const library = useRef<HTMLElement>(null);
-  const restore_library_focus = useRef(false);
+  const library_focus = useRef<{ applet_id?: string }>(undefined);
   const restart_offer = applets.find(
     (applet) =>
       applet.applet_id === restart_offer_id && restart_required.includes(applet.applet_id),
@@ -72,9 +85,11 @@ export function Library({
   };
 
   useEffect(() => {
-    if (busy || !restore_library_focus.current) return;
-    restore_library_focus.current = false;
-    library.current?.querySelector('button')?.focus({ preventScroll: true });
+    if (busy || !library_focus.current) return;
+    const { applet_id } = library_focus.current;
+    library_focus.current = undefined;
+    const tile = applet_id ? document.getElementById(`library-open-${applet_id}`) : null;
+    (tile ?? library.current?.querySelector('button'))?.focus({ preventScroll: true });
   }, [busy, action]);
 
   useEffect(() => {
@@ -138,12 +153,27 @@ export function Library({
     const revision = ++list_revision.current;
     try {
       const report = await listApplets();
-      if (revision === list_revision.current) applyReport(report);
+      if (revision === list_revision.current) {
+        applyReport(report);
+        return report;
+      }
     } catch (error) {
       if (revision === list_revision.current) throw error;
     }
   };
-  const installed = async ({ applet, restart_required: needs_restart }: AppletInstallResult) => {
+  const reloadLibrary = () =>
+    void run(async () => {
+      try {
+        await refresh();
+      } catch (error) {
+        setLoadError(message(error));
+      }
+      setStatus('');
+    }, 'Refreshing library…');
+  const installed = async (
+    { applet, restart_required: needs_restart }: AppletInstallResult,
+    action: 'installed' | 'restored' = 'installed',
+  ) => {
     const { applet_id, name, version } = applet;
     setApplets((current) =>
       current.some((item) => item.applet_id === applet_id)
@@ -156,11 +186,8 @@ export function Library({
       return needs_restart ? [...other_applets, applet_id] : other_applets;
     });
     setRestartOfferId(needs_restart ? applet_id : undefined);
-    setStatus(
-      needs_restart
-        ? `${name} ${version} installed. Restart to use it.`
-        : `${name} ${version} installed.`,
-    );
+    const summary = `${name} ${version} ${action}.`;
+    setStatus(needs_restart ? `${summary} Restart to use it.` : summary);
     if (installOpen) onInstallClose();
     try {
       await refresh();
@@ -175,7 +202,17 @@ export function Library({
     void run(
       async () => {
         const open = restart ? restartApplet : launchApplet;
-        const session = await open(applet.applet_id);
+        let session: AppletSession;
+        try {
+          session = await open(applet.applet_id);
+        } catch (error) {
+          const report = await refresh().catch(() => undefined);
+          if (report?.unavailable.some(({ applet_id }) => applet_id === applet.applet_id)) {
+            setStatus('');
+            return;
+          }
+          throw error;
+        }
         if (restart) {
           setRestartRequired((current) => current.filter((id) => id !== applet.applet_id));
           setRestartOfferId((current) => (current === applet.applet_id ? undefined : current));
@@ -192,6 +229,17 @@ export function Library({
     setFailed(false);
     setAction(target);
   };
+  const restore = (target: Extract<AppletAction, { panel: 'restore' }>, file: File) =>
+    void run(async () => {
+      const result = await restoreAppletPackage(
+        target.applet_id,
+        target.expected,
+        await readPackageFile(file),
+      );
+      library_focus.current = { applet_id: result.applet.applet_id };
+      setAction(undefined);
+      await installed(result, 'restored');
+    }, 'Restoring package…');
   const remove = (target: AppletAction) =>
     void run(async () => {
       await removeApplet(target.applet_id);
@@ -199,7 +247,7 @@ export function Library({
       setUnavailable((current) => current.filter((item) => item.applet_id !== target.applet_id));
       setRestartRequired((current) => current.filter((id) => id !== target.applet_id));
       setRestartOfferId((current) => (current === target.applet_id ? undefined : current));
-      restore_library_focus.current = true;
+      library_focus.current = {};
       setAction(undefined);
       try {
         await refresh();
@@ -237,33 +285,61 @@ export function Library({
       </div>
       {unavailable.length > 0 && (
         <aside aria-label="Unavailable applets">
-          <h2>Unavailable applets</h2>
-          {unavailable.map((applet) => (
-            <div className="unavailable-applet" key={applet.applet_id}>
-              <p className="status error">
-                <strong>{applet.applet_id}</strong>: {applet.error}
-              </p>
-              <button
-                className="danger"
-                disabled={busy}
-                aria-label={`Remove ${applet.applet_id}`}
-                onClick={(event) => {
-                  event.currentTarget.focus({ preventScroll: true });
-                  showAction({
-                    applet_id: applet.applet_id,
-                    name: applet.applet_id,
-                    panel: 'remove',
-                  });
-                }}
-              >
-                Remove
-              </button>
+          <div className="unavailable-applets-heading">
+            <h2>Unavailable applets</h2>
+            <button
+              type="button"
+              className="icon-button"
+              aria-label="Refresh library"
+              title="Refresh library"
+              disabled={loading || busy}
+              onClick={reloadLibrary}
+            >
+              <Icon name="reload" />
+            </button>
+          </div>
+          {unavailable.map(({ applet_id, error, can_remove, restore_snapshot }) => (
+            <div className="unavailable-applet" key={applet_id}>
+              <strong>{applet_id}</strong>
+              <p>{error}</p>
+              {(restore_snapshot || can_remove) && (
+                <div className="button-row">
+                  {restore_snapshot && (
+                    <button
+                      disabled={busy}
+                      aria-label={`Restore package for ${applet_id}`}
+                      aria-haspopup="dialog"
+                      onClick={(event) => {
+                        event.currentTarget.focus({ preventScroll: true });
+                        showAction({
+                          applet_id,
+                          name: applet_id,
+                          panel: 'restore',
+                          expected: restore_snapshot,
+                        });
+                      }}
+                    >
+                      Restore package
+                    </button>
+                  )}
+                  {can_remove && (
+                    <button
+                      className="danger"
+                      disabled={busy}
+                      aria-label={`Remove ${applet_id}`}
+                      aria-haspopup="dialog"
+                      onClick={(event) => {
+                        event.currentTarget.focus({ preventScroll: true });
+                        showAction({ applet_id, name: applet_id, panel: 'remove' });
+                      }}
+                    >
+                      Remove
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
           ))}
-          <p className="status">
-            These applets cannot run in this version of Apell. Their packages and saved data are
-            kept.
-          </p>
         </aside>
       )}
       {!loading && !load_error && !applets.length && (
@@ -275,9 +351,14 @@ export function Library({
         </div>
       )}
       {!installOpen && !action && load_error && (
-        <p className="status library-status error" role="alert">
-          {load_error}
-        </p>
+        <div>
+          <p className="status library-status error" role="alert">
+            {load_error}
+          </p>
+          <button type="button" disabled={loading || busy} onClick={reloadLibrary}>
+            Try again
+          </button>
+        </div>
       )}
       {!installOpen && !action && status && (
         <p
@@ -311,11 +392,44 @@ export function Library({
           <Sheet
             key={action.panel}
             open
-            title={action.panel === 'remove' ? `Remove ${action.name}?` : action.name}
+            title={
+              action.panel === 'remove'
+                ? `Remove ${action.name}?`
+                : action.panel === 'restore'
+                  ? 'Restore package'
+                  : action.name
+            }
             dismissible={!busy}
-            onClose={() => setAction(undefined)}
+            onClose={() => {
+              if (action.panel === 'restore') {
+                setStatus('');
+                setFailed(false);
+              }
+              setAction(undefined);
+            }}
           >
-            {action.panel === 'remove' ? (
+            {action.panel === 'restore' ? (
+              <>
+                <p>
+                  Choose the original package for <strong>{action.name}</strong>. Apell checks that
+                  it matches the installed version and keeps your saved data and permissions.
+                </p>
+                <AppletPackagePicker
+                  title="Choose original .apel file"
+                  label="Choose original .apel file"
+                  disabled={busy}
+                  onFile={(file) => restore(action, file)}
+                />
+                {status && (
+                  <p
+                    className={`status${failed ? ' error' : ''}`}
+                    role={failed ? 'alert' : 'status'}
+                  >
+                    {status}
+                  </p>
+                )}
+              </>
+            ) : action.panel === 'remove' ? (
               <>
                 <p>
                   Its saved data stays on this device. Reinstall from the same source to use it
@@ -383,12 +497,7 @@ export function Library({
         }
         onFile={(file) =>
           void run(async () => {
-            if (file.size > 24 * 1024 * 1024) throw new Error('Bundle exceeds 24 MiB.');
-            const bytes = new Uint8Array(await file.arrayBuffer());
-            let binary = '';
-            for (let offset = 0; offset < bytes.length; offset += 32768)
-              binary += String.fromCharCode(...bytes.subarray(offset, offset + 32768));
-            await installed(await installBundle({ bundle_base64: btoa(binary) }));
+            await installed(await installBundle({ bundle_base64: await readPackageFile(file) }));
           }, 'Installing applet…')
         }
         onGitHub={(release, asset_name) =>

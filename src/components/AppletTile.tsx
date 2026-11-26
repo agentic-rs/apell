@@ -65,6 +65,7 @@ export function AppletTile({
     <div className="applet-tile">
       <button
         className="applet-icon-button"
+        id={`library-open-${applet.applet_id}`}
         disabled={disabled}
         aria-label={`Open ${applet.name}`}
         aria-describedby={restart_required ? restart_description : undefined}

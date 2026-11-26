@@ -112,6 +112,12 @@ For file installations, the user selects another local package with the same
 applet ID. GitHub and Store reinstalls follow the saved source by default; a
 confirmed Store source switch can also reinstall an applet with retained data.
 
+If an installed `.apel` is missing or damaged, the Library offers **Restore
+package** when it can verify the installation record. Select the original
+file. Apell checks its applet ID, checksum, and compatibility before restoring
+the archive. The installation source, channel, saved data, and permission
+choices stay with the applet.
+
 ## Applet isolation and bridge
 
 The host serves verified package bytes through a custom `apel` protocol at a view-specific entry URL. Android and Windows use Tauri's local HTTP mapping for the protocol. Requests must name the attached view. The handler serves public package files and refuses `manifest.json`, `lib/`, and unsafe paths. It supplies MIME types, a restrictive content policy, `nosniff`, and disables caching. Images may use package, data, and locally created blob URLs; direct network connections remain restricted to package assets. The iframe uses `sandbox="allow-scripts"` and has an opaque origin. The host bootstrap credential stays outside applet content.

@@ -311,7 +311,7 @@ describe('store catalog filtering', () => {
         },
         { ...nightly_install, applet_id: 'different-id' },
       ],
-      unavailable: [{ applet_id: 'broken', error: 'fixture package read error' }],
+      unavailable: [{ applet_id: 'broken', error: 'fixture package read error', can_remove: true }],
     };
     const reviewed = reviewSavedCatalog(catalog, report);
     expect(

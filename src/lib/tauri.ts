@@ -47,6 +47,7 @@ import type {
   StoreInstallRequest,
   StoreInstallResult,
   StorePendingDownload,
+  StoreSwitchSnapshot,
   StoreUpdatesReport,
 } from './types';
 
@@ -139,6 +140,12 @@ export const githubRelease = (repository: string) =>
 export const updateApplet = (applet_id: string) =>
   shellCall<AppletInstallResult>('applets.update', { applet_id });
 export const removeApplet = (applet_id: string) => shellCall<void>('applets.remove', { applet_id });
+export const restoreAppletPackage = (
+  applet_id: string,
+  expected: StoreSwitchSnapshot,
+  bundle_base64: string,
+) =>
+  shellCall<AppletInstallResult>('applets.restore_package', { applet_id, expected, bundle_base64 });
 export const launchApplet = (applet_id: string) =>
   shellCall<AppletSession>('applets.launch', { applet_id });
 export const restartApplet = (applet_id: string) =>

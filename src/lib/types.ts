@@ -38,6 +38,8 @@ export type PackageSource =
 export interface UnavailableApplet {
   applet_id: string;
   error: string;
+  can_remove: boolean;
+  restore_snapshot?: StoreSwitchSnapshot;
 }
 export interface AppletListReport {
   applets: InstalledApplet[];

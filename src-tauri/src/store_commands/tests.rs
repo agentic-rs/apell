@@ -131,6 +131,8 @@ async fn updates_fetch_only_distinct_canonical_installed_origins() {
   report.unavailable.push(UnavailableApplet {
     applet_id: "broken".into(),
     error: "Broken package".into(),
+    can_remove: false,
+    restore_snapshot: None,
   });
   report.applets = vec![
     stable("bravo", bravo),
@@ -396,6 +398,8 @@ fn source_switch_requires_the_reviewed_active_package_and_cannot_replace_a_broke
   report.unavailable.push(UnavailableApplet {
     applet_id: "sample".into(),
     error: "Broken package".into(),
+    can_remove: true,
+    restore_snapshot: None,
   });
   let broken = review_install(&report, "https://store.example", "sample");
   assert_eq!(

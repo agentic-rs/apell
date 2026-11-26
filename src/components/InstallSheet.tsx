@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { GitHubRelease, InstalledApplet } from '../lib/types';
 import { githubRelease, message } from '../lib/tauri';
 import { Icon } from './Icon';
+import { AppletPackagePicker } from './AppletPackagePicker';
 import { Sheet } from './Sheet';
 import companion_icon from '../../assets/companion.svg';
 
@@ -51,26 +52,13 @@ export function InstallSheet(props: InstallSheetProps) {
         </span>
         <Icon name="add" />
       </button>
-      <label className={`install-option file-option${disabled ? ' disabled' : ''}`}>
-        <span className="option-icon">
-          <Icon name="file" />
-        </span>
-        <span>
-          <strong>Install an .apel file</strong>
-          <small>Choose a package from this device</small>
-        </span>
-        <input
-          type="file"
-          accept=".apel"
-          aria-label="Choose an .apel file"
-          disabled={disabled}
-          onChange={(event) => {
-            const file = event.target.files?.[0];
-            event.target.value = '';
-            if (file) props.onFile(file);
-          }}
-        />
-      </label>
+      <AppletPackagePicker
+        title="Install an .apel file"
+        description="Choose a package from this device"
+        label="Choose an .apel file"
+        disabled={disabled}
+        onFile={props.onFile}
+      />
       <details className="url-install">
         <summary>Install from GitHub</summary>
         <form

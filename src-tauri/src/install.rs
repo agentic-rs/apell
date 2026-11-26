@@ -1,11 +1,23 @@
-use crate::host::{string, Host};
+use crate::{
+  commands::blocking,
+  host::{string, Host},
+};
 use apell_core::{
-  bundles::{GitHubSource, InstalledApplet, PackageSource, MAX_BUNDLE_BYTES},
+  bundles::{GitHubSource, InstalledApplet, PackageSource, StoreSwitchSnapshot, MAX_BUNDLE_BYTES},
   github::{GitHubClient, GitHubTarget},
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
+use serde::Deserialize;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter};
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RestorePackageRequest {
+  applet_id: String,
+  expected: StoreSwitchSnapshot,
+  bundle_base64: String,
+}
 
 pub async fn release(repository: &str) -> Result<Value, String> {
   let release = GitHubClient::new()?.resolve(repository).await?;
@@ -29,6 +41,10 @@ fn file_bytes(params: &Value) -> Result<Option<Vec<u8>>, String> {
     return Err("Choose a file or a GitHub repository.".into());
   }
   let encoded = encoded.as_str().ok_or("Invalid package bytes.")?;
+  decode_file_bytes(encoded).map(Some)
+}
+
+fn decode_file_bytes(encoded: &str) -> Result<Vec<u8>, String> {
   if encoded.len() > MAX_BUNDLE_BYTES.div_ceil(3) * 4 {
     return Err("Package exceeds 24 MiB.".into());
   }
@@ -38,7 +54,7 @@ fn file_bytes(params: &Value) -> Result<Option<Vec<u8>>, String> {
   if bytes.len() > MAX_BUNDLE_BYTES {
     return Err("Package exceeds 24 MiB.".into());
   }
-  Ok(Some(bytes))
+  Ok(bytes)
 }
 
 fn github_target(params: &Value) -> Result<GitHubTarget, String> {
@@ -72,6 +88,19 @@ fn check_release_snapshot(params: &Value, release_id: u64, asset_id: u64) -> Res
 pub async fn install(app: AppHandle, host: &Host, params: Value) -> Result<Value, String> {
   let _gate = host.store_gate.lock().await;
   install_inner(app, host, params, None).await
+}
+
+pub async fn restore_package(host: &Host, params: Value) -> Result<Value, String> {
+  let _gate = host.store_gate.lock().await;
+  let store = host.bundles.clone();
+  let installed = blocking(move || {
+    let request: RestorePackageRequest =
+      serde_json::from_value(params).map_err(|_| "Invalid package restore request.")?;
+    let bytes = decode_file_bytes(&request.bundle_base64)?;
+    store.restore_package(&request.applet_id, &request.expected, &bytes)
+  })
+  .await?;
+  Ok(install_result(host, installed))
 }
 
 pub async fn update(app: AppHandle, host: &Host, applet_id: &str) -> Result<Value, String> {
@@ -160,10 +189,14 @@ async fn install_inner(
   })
   .await
   .map_err(|_| "Package installation was interrupted.")??;
-  Ok(json!({
+  Ok(install_result(host, installed))
+}
+
+fn install_result(host: &Host, installed: InstalledApplet) -> Value {
+  json!({
     "restart_required": host.needs_applet_restart(&installed),
     "applet": installed,
-  }))
+  })
 }
 
 #[cfg(test)]

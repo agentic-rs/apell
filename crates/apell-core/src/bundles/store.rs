@@ -1,6 +1,6 @@
 use super::{
-  atomic_write, digest, parse, read_version, valid_hash, validate_manifest, write_version, Bundle,
-  Manifest, PackageSource, StoreSource, MAX_BUNDLE_BYTES,
+  atomic_write, digest, parse, read_version, valid_hash, validate_manifest, write_version,
+  ArchiveError, Bundle, Manifest, PackageSource, StoreChannel, StoreSource, MAX_BUNDLE_BYTES,
 };
 use crate::valid_name;
 use serde::{Deserialize, Serialize};
@@ -26,6 +26,9 @@ pub struct InstalledApplet {
 pub struct UnavailableApplet {
   pub applet_id: String,
   pub error: String,
+  pub can_remove: bool,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub restore_snapshot: Option<StoreSwitchSnapshot>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -91,6 +94,20 @@ impl PackageRecord {
       icon_data_url: bundle
         .read_asset("icon.png")
         .and_then(|bytes| crate::icons::png_data_url(bytes).ok()),
+    }
+  }
+}
+
+enum InstalledBundleError {
+  Archive(ArchiveError),
+  Package(String),
+}
+
+impl InstalledBundleError {
+  fn into_message(self) -> String {
+    match self {
+      Self::Archive(error) => error.message().into(),
+      Self::Package(error) => error,
     }
   }
 }
@@ -238,6 +255,57 @@ impl BundleStore {
       Some(source.into()),
       InstallGuard::StoreChannelSwitch(expected),
     )
+  }
+
+  /// Restore the exact active archive without changing its installation record.
+  pub fn restore_package(
+    &self,
+    applet_id: &str,
+    expected: &StoreSwitchSnapshot,
+    bytes: &[u8],
+  ) -> Result<InstalledApplet, String> {
+    if !valid_name(applet_id) || !valid_hash(&expected.sha256) || expected.removed {
+      return Err("Invalid installed package snapshot.".into());
+    }
+    if bytes.len() > MAX_BUNDLE_BYTES {
+      return Err("Package exceeds the 24 MiB archive limit.".into());
+    }
+    if digest(bytes) != expected.sha256 {
+      return Err(
+        "Choose the original .apel file. This file does not match the installed package.".into(),
+      );
+    }
+    let bundle = parse(bytes)?;
+    if bundle.manifest.applet_id != applet_id {
+      return Err("The file has a different applet ID.".into());
+    }
+    let _lock = self.lock_storage()?;
+    let active = self
+      .active(applet_id)?
+      .filter(|active| !active.legacy && active.switch_snapshot() == *expected)
+      .ok_or("The installed applet changed. Refresh the library before restoring.")?;
+    if let Some(PackageSource::Store(source)) = &active.source {
+      let version =
+        semver::Version::parse(&bundle.manifest.version).map_err(|_| "Invalid package version.")?;
+      if source.channel != StoreChannel::from_prerelease(!version.pre.is_empty()) {
+        return Err("The package version does not belong to the installed Store channel.".into());
+      }
+    }
+
+    let path = self.archive_path(&active);
+    let publication = match read_version(&path, &active.sha256) {
+      Ok(_) => Ok(()),
+      Err(ArchiveError::Missing) => write_version(&path, bytes, &active.sha256),
+      Err(ArchiveError::Damaged) => atomic_write(&path, bytes),
+      Err(error) => return Err(error.message().into()),
+    };
+    if let Err(error) = publication {
+      // A directory sync can fail after the exact bytes were published.
+      if read_version(&path, &active.sha256).is_err() {
+        return Err(error);
+      }
+    }
+    Ok(active.installed(&bundle))
   }
 
   fn publish(
@@ -471,24 +539,33 @@ impl BundleStore {
       retained: BTreeMap::new(),
     };
     for id in self.ids()? {
-      let result = self.record(&id).and_then(|record| match record {
-        Some(active) if !active.removed => self
-          .read_active(&active)
-          .map(|bundle| Some(active.installed(&bundle))),
-        Some(retained) => {
-          report
-            .retained
-            .insert(id.clone(), retained.switch_snapshot());
-          Ok(None)
+      match self.record(&id) {
+        Ok(Some(record)) if record.removed => {
+          report.retained.insert(id, record.switch_snapshot());
         }
-        None => Ok(None),
-      });
-      match result {
-        Ok(Some(applet)) => report.applets.push(applet),
+        Ok(Some(active)) => match self.read_active_bundle(&active) {
+          Ok(bundle) => report.applets.push(active.installed(&bundle)),
+          Err(error) => {
+            let restore_snapshot = (!active.legacy
+              && matches!(
+                &error,
+                InstalledBundleError::Archive(ArchiveError::Missing | ArchiveError::Damaged)
+              ))
+            .then(|| active.switch_snapshot());
+            report.unavailable.push(UnavailableApplet {
+              applet_id: id,
+              error: error.into_message(),
+              can_remove: true,
+              restore_snapshot,
+            });
+          }
+        },
         Ok(None) => {}
         Err(error) => report.unavailable.push(UnavailableApplet {
           applet_id: id,
           error,
+          can_remove: false,
+          restore_snapshot: None,
         }),
       }
     }
@@ -578,22 +655,35 @@ impl BundleStore {
     Ok(Some(record))
   }
 
-  fn read_active(&self, active: &PackageRecord) -> Result<Bundle, String> {
+  fn archive_path(&self, active: &PackageRecord) -> PathBuf {
     let extension = if active.legacy { "json" } else { "apel" };
-    let path = self
+    self
       .root
       .join(&active.applet_id)
-      .join(format!("{}.{}", active.sha256, extension));
-    let bytes = read_version(&path, &active.sha256)?;
+      .join(format!("{}.{}", active.sha256, extension))
+  }
+
+  fn read_active_bundle(&self, active: &PackageRecord) -> Result<Bundle, InstalledBundleError> {
+    let bytes = read_version(&self.archive_path(active), &active.sha256)
+      .map_err(InstalledBundleError::Archive)?;
     let bundle = if active.legacy {
-      legacy_bundle(&bytes)?
+      legacy_bundle(&bytes)
     } else {
-      parse(&bytes)?
-    };
+      parse(&bytes)
+    }
+    .map_err(InstalledBundleError::Package)?;
     if bundle.manifest.applet_id != active.applet_id {
-      return Err("Installed package identity mismatch.".into());
+      return Err(InstalledBundleError::Package(
+        "Installed package identity mismatch.".into(),
+      ));
     }
     Ok(bundle)
+  }
+
+  fn read_active(&self, active: &PackageRecord) -> Result<Bundle, String> {
+    self
+      .read_active_bundle(active)
+      .map_err(InstalledBundleError::into_message)
   }
 }
 

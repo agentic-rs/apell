@@ -270,12 +270,33 @@ svg {
   border-radius: inherit;
   pointer-events: none;
 }
-.unavailable-applet {
+.unavailable-applets-heading {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  margin: 8px 0 12px;
+}
+.unavailable-applets-heading h2 {
+  margin: 0;
+  font-size: 1.25rem;
+}
+.unavailable-applet {
+  display: grid;
+  gap: 8px;
   margin-bottom: 12px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+.unavailable-applet p {
+  margin: 0;
+  color: var(--muted);
+}
+.unavailable-applet .button-row button {
+  flex: 0 1 auto;
+  padding-inline: 12px;
+  font-size: 0.875rem;
 }
 .applet-initial {
   font-size: 30px;
