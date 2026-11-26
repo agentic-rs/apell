@@ -192,7 +192,7 @@ async fn install_inner(
   Ok(install_result(host, installed))
 }
 
-fn install_result(host: &Host, installed: InstalledApplet) -> Value {
+pub(crate) fn install_result(host: &Host, installed: InstalledApplet) -> Value {
   json!({
     "restart_required": host.needs_applet_restart(&installed),
     "applet": installed,

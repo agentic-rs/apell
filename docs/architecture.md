@@ -113,10 +113,11 @@ applet ID. GitHub and Store reinstalls follow the saved source by default; a
 confirmed Store source switch can also reinstall an applet with retained data.
 
 If an installed `.apel` is missing or damaged, the Library offers **Restore
-package** when it can verify the installation record. Select the original
-file. Apell checks its applet ID, checksum, and compatibility before restoring
-the archive. The installation source, channel, saved data, and permission
-choices stay with the applet.
+package** when it can verify the installation record. For Store applets,
+download the exact archived release from the recorded Store and channel, or
+choose the original `.apel` file. Apell checks the applet ID, checksum, and
+compatibility before restoring the archive. The recorded source, channel, saved
+data, and permission choices stay with the applet.
 
 ## Applet isolation and bridge
 

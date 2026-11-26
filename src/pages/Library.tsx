@@ -8,16 +8,19 @@ import {
   onInstallProgress,
   removeApplet,
   restoreAppletPackage,
+  restoreStorePackage,
   restartApplet,
 } from '../lib/tauri';
 import type {
   AppletInstallResult,
   AppletListReport,
   AppletSession,
+  InstallProgress,
   InstalledApplet,
   StoreSwitchSnapshot,
   UnavailableApplet,
 } from '../lib/types';
+import { storeChannelName } from '../lib/storeState';
 import { AppletPackagePicker } from '../components/AppletPackagePicker';
 import { InstallSheet } from '../components/InstallSheet';
 import { AppletTile } from '../components/AppletTile';
@@ -68,6 +71,7 @@ export function Library({
   const [restart_offer_id, setRestartOfferId] = useState<string>();
   const [action, setAction] = useState<AppletAction>();
   const pending = useRef(false);
+  const progress_filter = useRef<Pick<InstallProgress, 'operation_id'>>(undefined);
   const list_revision = useRef(0);
   const library = useRef<HTMLElement>(null);
   const library_focus = useRef<{ applet_id?: string }>(undefined);
@@ -76,6 +80,7 @@ export function Library({
       applet.applet_id === restart_offer_id && restart_required.includes(applet.applet_id),
   );
   const action_applet = applets.find((applet) => applet.applet_id === action?.applet_id);
+  const restore_source = action?.panel === 'restore' ? action.expected.source : undefined;
 
   const applyReport = (report: AppletListReport) => {
     setApplets(report.applets);
@@ -114,7 +119,8 @@ export function Library({
     let stop: (() => void) | undefined;
     let disposed = false;
     onInstallProgress((event) => {
-      if (!disposed && pending.current)
+      const filter = progress_filter.current;
+      if (!disposed && filter && event.operation_id === filter.operation_id)
         setStatus(
           `Downloading… ${Math.round(event.received_bytes / 1024)} KiB${event.total_bytes ? ` of ${Math.round(event.total_bytes / 1024)} KiB` : ''}`,
         );
@@ -130,9 +136,14 @@ export function Library({
     };
   }, []);
 
-  const run = async (action: () => Promise<void>, label: string) => {
+  const run = async (
+    action: () => Promise<void>,
+    label: string,
+    progress?: Pick<InstallProgress, 'operation_id'>,
+  ) => {
     if (pending.current) return;
     pending.current = true;
+    progress_filter.current = progress;
     onBusyChange(true);
     setBusy(true);
     setFailed(false);
@@ -144,6 +155,7 @@ export function Library({
       setFailed(true);
     } finally {
       pending.current = false;
+      progress_filter.current = undefined;
       onBusyChange(false);
       setBusy(false);
       setLaunchingId('');
@@ -229,17 +241,28 @@ export function Library({
     setFailed(false);
     setAction(target);
   };
-  const restore = (target: Extract<AppletAction, { panel: 'restore' }>, file: File) =>
+  const restored = async (result: AppletInstallResult) => {
+    progress_filter.current = undefined;
+    library_focus.current = { applet_id: result.applet.applet_id };
+    setAction(undefined);
+    await installed(result, 'restored');
+  };
+  const restoreFromFile = (target: Extract<AppletAction, { panel: 'restore' }>, file: File) =>
     void run(async () => {
-      const result = await restoreAppletPackage(
-        target.applet_id,
-        target.expected,
-        await readPackageFile(file),
+      await restored(
+        await restoreAppletPackage(target.applet_id, target.expected, await readPackageFile(file)),
       );
-      library_focus.current = { applet_id: result.applet.applet_id };
-      setAction(undefined);
-      await installed(result, 'restored');
     }, 'Restoring package…');
+  const restoreFromStore = (target: Extract<AppletAction, { panel: 'restore' }>) => {
+    const operation_id = crypto.randomUUID();
+    void run(
+      async () => {
+        await restored(await restoreStorePackage(target.applet_id, target.expected, operation_id));
+      },
+      'Checking the original Store…',
+      { operation_id },
+    );
+  };
   const remove = (target: AppletAction) =>
     void run(async () => {
       await removeApplet(target.applet_id);
@@ -411,14 +434,35 @@ export function Library({
             {action.panel === 'restore' ? (
               <>
                 <p>
-                  Choose the original package for <strong>{action.name}</strong>. Apell checks that
-                  it matches the installed version and keeps your saved data and permissions.
+                  Restore the original package for <strong>{action.name}</strong> and keep its saved
+                  data and permissions.
                 </p>
+                {restore_source?.kind === 'store' && (
+                  <button
+                    type="button"
+                    className="install-option"
+                    aria-labelledby="library-restore-store-title"
+                    aria-describedby="library-restore-store-source"
+                    disabled={busy}
+                    onClick={() => restoreFromStore(action)}
+                  >
+                    <span className="option-icon" aria-hidden="true">
+                      <Icon name="download" />
+                    </span>
+                    <span>
+                      <strong id="library-restore-store-title">Download from original Store</strong>
+                      <small id="library-restore-store-source">
+                        <bdi>{restore_source.store_url}</bdi> ·{' '}
+                        {storeChannelName(restore_source.channel)}
+                      </small>
+                    </span>
+                  </button>
+                )}
                 <AppletPackagePicker
                   title="Choose original .apel file"
                   label="Choose original .apel file"
                   disabled={busy}
-                  onFile={(file) => restore(action, file)}
+                  onFile={(file) => restoreFromFile(action, file)}
                 />
                 {status && (
                   <p
@@ -501,22 +545,30 @@ export function Library({
           }, 'Installing applet…')
         }
         onGitHub={(release, asset_name) =>
-          void run(async () => {
-            await installed(
-              await installBundle({
-                repository: release.repository,
-                release_tag: release.release_tag,
-                release_id: release.release_id,
-                asset_id: release.assets.find((asset) => asset.name === asset_name)!.asset_id,
-                asset_name,
-              }),
-            );
-          }, 'Downloading applet…')
+          void run(
+            async () => {
+              await installed(
+                await installBundle({
+                  repository: release.repository,
+                  release_tag: release.release_tag,
+                  release_id: release.release_id,
+                  asset_id: release.assets.find((asset) => asset.name === asset_name)!.asset_id,
+                  asset_name,
+                }),
+              );
+            },
+            'Downloading applet…',
+            {},
+          )
         }
         onUpdate={(applet_id) =>
-          void run(async () => {
-            await installed(await updateApplet(applet_id));
-          }, 'Checking GitHub release…')
+          void run(
+            async () => {
+              await installed(await updateApplet(applet_id));
+            },
+            'Checking GitHub release…',
+            {},
+          )
         }
       />
     </section>

@@ -424,6 +424,7 @@ svg {
   color: var(--muted);
   font-weight: 400;
   margin-top: 4px;
+  overflow-wrap: anywhere;
 }
 .option-icon {
   display: grid;

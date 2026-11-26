@@ -160,6 +160,11 @@ export const restoreAppletPackage = (
   bundle_base64: string,
 ) =>
   shellCall<AppletInstallResult>('applets.restore_package', { applet_id, expected, bundle_base64 });
+export const restoreStorePackage = (
+  applet_id: string,
+  expected: StoreSwitchSnapshot,
+  operation_id: string,
+) => shellCall<AppletInstallResult>('store.restore_package', { applet_id, expected, operation_id });
 export const launchApplet = (applet_id: string) =>
   shellCall<AppletSession>('applets.launch', { applet_id });
 export const restartApplet = (applet_id: string) =>

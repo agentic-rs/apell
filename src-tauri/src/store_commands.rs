@@ -1,4 +1,5 @@
 mod browse_cache;
+mod restore;
 mod state;
 #[cfg(test)]
 mod tests;
@@ -471,6 +472,7 @@ pub async fn dispatch(
       publish_download_change(&app);
       result
     }
+    "store.restore_package" => restore::restore_package(app, host, input(params)?).await,
     _ => Err("Unknown store command.".into()),
   }
 }

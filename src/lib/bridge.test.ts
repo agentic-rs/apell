@@ -85,6 +85,7 @@ describe('applet bridge boundary', () => {
       'store.pending_downloads',
       'store.discard_download',
       'store.install',
+      'store.restore_package',
       'applets.restore_package',
       'permissions.list',
       'permissions.open_system_settings',

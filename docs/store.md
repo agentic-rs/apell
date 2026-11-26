@@ -84,6 +84,13 @@ review. A source switch checks the previous source and whether the applet had
 been removed, including when it will restore retained data. Failed or stale
 operations leave the previous installation intact.
 
+If a Store applet’s package is missing or damaged, choose **Restore package →
+Download from original Store** in the Library. Apell restores only the release
+that matches the recorded checksum and channel, even when Discover points to
+another Store. If the repair download is interrupted, retry to download the
+archive again. You can also choose the original `.apel` file. Restore keeps the
+applet’s saved data, permissions, and update source.
+
 ## Accounts and package ownership
 
 Sign in with Apell Account on the website, then choose **My packages → Register package**. A signed-in Store user can register an available applet ID. The creator owns the package, and its catalog listing appears after the first release. Owners and maintainers can publish files, connect GitHub Actions, and manage maintainers. See [accounts and publishing access](store-accounts.md) for first sign-in, ownership transfers, and maintainer invitations.
