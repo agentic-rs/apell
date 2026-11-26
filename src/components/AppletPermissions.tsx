@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react';
 import {
   appletPermissionRows,
   device_access_note,
@@ -6,6 +14,7 @@ import {
   isPermissionMode,
   managedPermissionDeclaration,
   managed_permission_labels,
+  matchingPermissionApplets,
   permission_mode_labels,
   permission_unavailable,
   systemPermissionLabel,
@@ -25,6 +34,7 @@ import type {
   PermissionMode,
 } from '../lib/types';
 import { SystemPermissionAccess } from './SystemPermissionAccess';
+import { Icon } from './Icon';
 import { OperationScope } from './providers/state';
 import './AppletPermissions.css';
 
@@ -386,6 +396,11 @@ export function useAppletPermissionState<T>(read: () => Promise<T>, applet_id?: 
 
 export function AppletPermissions() {
   const [view, setView] = useState<'applet' | 'permission'>('applet');
+  const [query, setQuery] = useState('');
+  const search = useRef<HTMLInputElement>(null);
+  const empty_result = useRef<HTMLParagraphElement>(null);
+  const focused_row = useRef<HTMLElement>(undefined);
+  const search_id = useId();
   const {
     value: applets,
     busy,
@@ -394,6 +409,24 @@ export function AppletPermissions() {
     edit_error,
     load,
   } = useAppletPermissionState(listAppletPermissions);
+  const matches = matchingPermissionApplets(applets ?? [], query);
+  const filtered = query.trim().length > 0;
+  const permissions = view === 'permission' ? groupDevicePermissions(matches) : [];
+  const groups = filtered ? permissions.filter(({ entries }) => entries.length > 0) : permissions;
+  let empty_message = '';
+  if (!applets && busy) empty_message = 'Loading permissions…';
+  else if (applets && !matches.length) {
+    empty_message = filtered ? 'No matching applets.' : 'No applet permissions to show.';
+  } else if (filtered && view === 'permission' && !groups.length) {
+    empty_message = 'Matching applets have no microphone, camera, or location settings.';
+  }
+  useLayoutEffect(() => {
+    if (focused_row.current?.isConnected !== false) return;
+    focused_row.current = undefined;
+    if (document.activeElement === document.body) {
+      (empty_result.current ?? search.current)?.focus();
+    }
+  });
   const names = new Map<string, number>();
   for (const { name } of applets ?? []) names.set(name, (names.get(name) ?? 0) + 1);
   const controls = (applet_id: string) => ({
@@ -407,11 +440,6 @@ export function AppletPermissions() {
       <h2 id="settings-permissions" className="settings-section-title" tabIndex={-1}>
         Applet permissions
       </h2>
-      <p>
-        {view === 'applet'
-          ? 'Manage device permissions and review each applet’s declared access.'
-          : 'Manage microphone, camera, and location access across applets.'}
-      </p>
       {error && (
         <div role="alert">
           <p className="status error">Couldn’t refresh permissions. {error}</p>
@@ -421,7 +449,7 @@ export function AppletPermissions() {
         </div>
       )}
       {edit_error &&
-        !applets?.some(
+        !matches.some(
           (applet) =>
             applet.applet_id === edit_error.applet_id &&
             applet.grants.some((grant) => grant.permission === edit_error.permission),
@@ -430,77 +458,127 @@ export function AppletPermissions() {
             {edit_error.text}
           </p>
         )}
-      {applets?.length ? (
-        <>
+      {applets && (
+        <div className="applet-permission-tools">
           <div className="applet-permission-switch" role="group" aria-label="Group permissions">
             <button
               type="button"
               aria-pressed={view === 'applet'}
-              onClick={() => setView('applet')}
+              onClick={(event) => {
+                event.currentTarget.focus({ preventScroll: true });
+                setView('applet');
+              }}
             >
               By applet
             </button>
             <button
               type="button"
               aria-pressed={view === 'permission'}
-              onClick={() => setView('permission')}
+              onClick={(event) => {
+                event.currentTarget.focus({ preventScroll: true });
+                setView('permission');
+              }}
             >
               By permission
             </button>
           </div>
-          {view === 'permission' && (
-            <p className="applet-permission-overview-note">{device_access_note}</p>
-          )}
-          <div className="applet-permission-groups" aria-busy={busy}>
-            {view === 'applet'
-              ? applets.map((applet) => (
-                  <AppletPermissionGroup
-                    key={applet.applet_id}
-                    applet={applet}
-                    show_id={(names.get(applet.name) ?? 0) > 1}
-                    open={applets.length === 1 || undefined}
-                    {...controls(applet.applet_id)}
-                  />
-                ))
-              : groupDevicePermissions(applets).map(({ permission, entries, allowed_count }) => {
-                  const name = managed_permission_labels[permission];
-                  return entries.length ? (
-                    <details key={permission} className="applet-permission-group">
-                      <summary>
-                        <span className="applet-permission-name">{name}</span>
-                        <span className="applet-permission-count">
-                          {allowed_count} allowed in Apell
-                        </span>
-                      </summary>
-                      <dl className="applet-permission-subjects">
-                        {entries.map(({ applet, grant }) => (
-                          <AppletDeviceGrant
-                            key={applet.applet_id}
-                            applet={applet}
-                            show_id={(names.get(applet.name) ?? 0) > 1}
-                            grant={grant}
-                            show_applet
-                            {...controls(applet.applet_id)}
-                          />
-                        ))}
-                      </dl>
-                    </details>
-                  ) : (
-                    <div key={permission} className="applet-permission-group">
-                      <div className="applet-permission-empty">
-                        <span className="applet-permission-name">{name}</span>
-                        <span className="applet-permission-count">No applets</span>
-                      </div>
-                    </div>
-                  );
-                })}
+          <div className="applet-permission-search">
+            <label htmlFor={search_id}>Find applets</label>
+            <div className="applet-permission-search-field">
+              <input
+                ref={search}
+                id={search_id}
+                type="search"
+                value={query}
+                maxLength={200}
+                placeholder="Name or applet ID"
+                autoCapitalize="none"
+                autoCorrect="off"
+                onChange={(event) => setQuery(event.currentTarget.value)}
+              />
+              {query && (
+                <button
+                  type="button"
+                  className="icon-button"
+                  aria-label="Clear applet search"
+                  title="Clear applet search"
+                  onClick={() => {
+                    setQuery('');
+                    search.current?.focus();
+                  }}
+                >
+                  <Icon name="close" />
+                </button>
+              )}
+            </div>
           </div>
-        </>
+        </div>
+      )}
+      {empty_message ? (
+        <p ref={empty_result} tabIndex={-1} className="status" role="status">
+          {empty_message}
+        </p>
       ) : (
-        (applets || busy) && (
-          <p className="status" role="status">
-            {applets ? 'No applet permissions to show.' : 'Loading permissions…'}
-          </p>
+        applets && (
+          <>
+            {view === 'permission' && (
+              <p className="applet-permission-overview-note">{device_access_note}</p>
+            )}
+            <div
+              className="applet-permission-groups"
+              aria-busy={busy}
+              onFocus={(event) => {
+                focused_row.current = event.target;
+              }}
+            >
+              {view === 'applet'
+                ? matches.map((applet) => (
+                    <AppletPermissionGroup
+                      key={applet.applet_id}
+                      applet={applet}
+                      show_id={(names.get(applet.name) ?? 0) > 1}
+                      open={matches.length === 1 || undefined}
+                      {...controls(applet.applet_id)}
+                    />
+                  ))
+                : groups.map(({ permission, entries, allowed_count }) => {
+                    const name = managed_permission_labels[permission];
+                    return entries.length ? (
+                      <details
+                        key={permission}
+                        className="applet-permission-group"
+                        open={filtered || undefined}
+                      >
+                        <summary>
+                          <span className="applet-permission-name">{name}</span>
+                          <span className="applet-permission-count">
+                            {allowed_count} allowed in Apell
+                          </span>
+                        </summary>
+                        <dl className="applet-permission-subjects">
+                          {entries.map(({ applet, grant }) => (
+                            <AppletDeviceGrant
+                              key={applet.applet_id}
+                              applet={applet}
+                              show_id={(names.get(applet.name) ?? 0) > 1}
+                              grant={grant}
+                              show_applet
+                              {...controls(applet.applet_id)}
+                            />
+                          ))}
+                        </dl>
+                      </details>
+                    ) : (
+                      <div key={permission} className="applet-permission-group">
+                        <div className="applet-permission-empty">
+                          <span className="applet-permission-name">{name}</span>
+                          <span className="applet-permission-count">No applets</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+            </div>
+          </>
         )
       )}
     </section>

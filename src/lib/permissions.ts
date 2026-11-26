@@ -103,6 +103,15 @@ export function managedPermissionDeclaration(
   }
 }
 
+export function matchingPermissionApplets(applets: readonly AppletPermission[], query: string) {
+  const normalize = (value: string) => value.normalize('NFKC').toLocaleLowerCase();
+  const search = normalize(query.trim());
+  return applets.filter(
+    ({ applet_id, name }) =>
+      !search || normalize(name).includes(search) || normalize(applet_id).includes(search),
+  );
+}
+
 export function groupDevicePermissions(applets: readonly AppletPermission[]) {
   return (Object.keys(managed_permission_labels) as ManagedPermission[]).map((permission) => {
     const entries: { applet: AppletPermission; grant: PermissionGrant }[] = [];

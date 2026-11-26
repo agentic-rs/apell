@@ -478,7 +478,7 @@ Use `photos.pick({ output_format: 'jpeg' })` to normalize the selected photo to 
 
 Camera and Location default to **Ask every time**. The Apell prompt names the applet and offers **Allow once**, **Always allow**, and **Cancel**. In **About this applet** or **Settings → Applet permissions**, choose **Ask every time**, **Always allow**, or **Don’t allow** for each available device permission. **Don’t allow** rejects later requests without opening a permission prompt. Saved choices apply to the applet and verified package source. OS permission and location accuracy still apply. Photo Library shows **Pick each time** because choosing an image authorizes only that selection.
 
-Choose **By permission** in **Settings → Applet permissions** to review microphone, camera, or location across applets. Each group counts the applets that Apell is set to always allow for that permission. Open a group to change an applet’s setting or review stale settings from earlier packages.
+In **Settings → Applet permissions**, use **Find applets** to filter either view by name or applet ID. Choose **By permission** to review microphone, camera, or location across the matching applets. Each group counts the applets that Apell is set to always allow for that permission. Open a group to change an applet’s setting or review stale settings from earlier packages.
 
 If a package is unavailable, open **Device permissions** on its Library entry
 to review and reset saved choices. This works without opening the applet. A

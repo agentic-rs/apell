@@ -1,12 +1,43 @@
+.applet-permission-tools {
+  display: grid;
+  gap: 12px;
+  margin-block: 12px;
+}
+
 .applet-permission-switch {
   display: inline-grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 4px;
   max-width: 100%;
+  justify-self: start;
   padding: 4px;
   border: 1px solid var(--line);
   border-radius: 14px;
   background: var(--subtle);
+}
+
+.applet-permission-search {
+  display: grid;
+  gap: 8px;
+}
+
+.applet-permission-search-field {
+  position: relative;
+}
+
+.applet-permission-search-field input {
+  padding-inline-end: 48px;
+  appearance: none;
+}
+
+.applet-permission-search-field input::-webkit-search-cancel-button {
+  display: none;
+}
+
+.applet-permission-search-field button {
+  position: absolute;
+  inset-block-start: 2px;
+  inset-inline-end: 2px;
 }
 
 .applet-permission-switch button {

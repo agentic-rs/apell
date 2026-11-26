@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { appletPermissionRows, groupDevicePermissions, systemPermissionLabel } from './permissions';
+import {
+  appletPermissionRows,
+  groupDevicePermissions,
+  matchingPermissionApplets,
+  systemPermissionLabel,
+} from './permissions';
 import type { AppletPermission, ManagedPermission, PermissionGrant } from './types';
 
 describe('applet permission summary', () => {
@@ -67,6 +72,19 @@ function fixtureApplet(
 }
 
 describe('permission groups', () => {
+  it('filters display names and IDs without excluding saved permissions for damaged packages', () => {
+    const first = { ...fixtureApplet('journal', ['fs'], []), name: 'Café Journal' };
+    const damaged = {
+      ...fixtureApplet('journal-offline', null, [deviceGrant('camera')]),
+      name: first.name,
+    };
+    const applets = [first, damaged, fixtureApplet('other', [], [])];
+    expect(matchingPermissionApplets(applets, '   ')).toEqual(applets);
+    expect(matchingPermissionApplets(applets, '  CAFE\u0301 ')).toEqual([first, damaged]);
+    expect(matchingPermissionApplets(applets, ' JOURNAL-OFFLINE ')).toEqual([damaged]);
+    expect(matchingPermissionApplets(applets, 'camera')).toEqual([]);
+  });
+
   it('includes every managed permission in display order and preserves applet order within it', () => {
     const camera = deviceGrant('camera');
     const location = deviceGrant('location');
