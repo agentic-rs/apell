@@ -1,5 +1,6 @@
 import { useLayoutEffect, useRef } from 'react';
 import type { AppletSession } from '../lib/types';
+import { storeChannelName } from '../lib/storeState';
 import { useBackAction } from '../lib/backNavigation';
 import { AppletIcon } from '../components/AppletIcon';
 import { StoreAddress } from '../components/store/StoreAddress';
@@ -18,6 +19,7 @@ export function Store({
   const state = useStore(onLaunch, onBusyChange);
   const { query, updates_only } = state.browse;
   const opening = state.operation === 'open' || state.operation === 'restart';
+  const installed_source = state.installed?.source;
   const page = state.address_open
     ? 'address'
     : state.selected_id
@@ -87,19 +89,19 @@ export function Store({
         </div>
       )}
       {state.selected_id ? (
-        state.detail ? (
+        state.detail && state.review ? (
           <StoreDetailView
             detail={state.detail}
-            installed={state.installed}
             installed_source={state.installed_source}
             restart_required={state.restart_required}
-            selected_version={state.selected_version}
+            review={state.review}
             fresh={state.detail_fresh}
             refreshing={state.detail_loading}
             busy={!!state.operation}
             installing={state.operation === 'install'}
             opening={opening}
             progress={state.progress}
+            onChannel={state.setChannel}
             onVersion={state.setSelectedVersion}
             onInstall={state.install}
             onOpen={state.openApplet}
@@ -119,7 +121,11 @@ export function Store({
                   </span>
                   <div>
                     <h2>{state.installed.name}</h2>
-                    <p>Installed · {state.installed.version}</p>
+                    <p>
+                      Installed · {state.installed.version}
+                      {installed_source?.kind === 'store' &&
+                        ` · ${storeChannelName(installed_source.channel)}`}
+                    </p>
                   </div>
                 </div>
                 <div className="store-install-actions">

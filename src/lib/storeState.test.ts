@@ -3,7 +3,7 @@ import {
   matchingStoreApplets,
   newStoreAccess,
   recommendedStoreRelease,
-  rememberedStoreRelease,
+  reviewStoreRelease,
   storeChannelRelease,
 } from './storeState';
 import type { InstalledApplet, StoreCatalogEntry, StoreDetail, StoreRelease } from './types';
@@ -100,19 +100,76 @@ describe('store release review', () => {
   });
 
   it('restores viewed releases only in the applet’s default channel', () => {
-    const stable_detail = { ...detail, installed_channel: 'stable' as const };
-    expect(rememberedStoreRelease(stable_detail, stable.version)?.version).toBe(stable.version);
-    expect(rememberedStoreRelease(stable_detail, nightly.version)).toBeUndefined();
+    const older_stable = { ...stable, version: '0.9.0', action: 'older' as const };
+    const older_nightly = { ...nightly, version: '1.0.0-nightly.0', action: 'older' as const };
+    const stable_detail = {
+      ...detail,
+      releases: [...detail.releases, older_stable, older_nightly],
+    };
+    expect(
+      reviewStoreRelease(stable_detail, { remembered_version: older_stable.version }).release,
+    ).toBe(older_stable);
+    expect(
+      reviewStoreRelease(stable_detail, { remembered_version: older_nightly.version }).release
+        ?.version,
+    ).toBe(stable.version);
 
     const retained_nightly = {
-      ...detail,
+      ...stable_detail,
       installed: null,
       installed_channel: 'nightly' as const,
     };
-    expect(rememberedStoreRelease(retained_nightly, nightly.version)?.version).toBe(
+    expect(
+      reviewStoreRelease(retained_nightly, { remembered_version: older_nightly.version }).release,
+    ).toBe(older_nightly);
+    expect(
+      reviewStoreRelease(retained_nightly, { remembered_version: older_stable.version }).release
+        ?.version,
+    ).toBe(nightly.version);
+  });
+
+  it('keeps an explicit preview while following the matching installation channel by default', () => {
+    const cached = {
+      ...detail,
+      installed: {
+        ...installed,
+        source: {
+          kind: 'store' as const,
+          store_url,
+          applet_id: 'chat',
+          channel: 'nightly' as const,
+        },
+      },
+    };
+    expect(reviewStoreRelease(cached, { remembered_version: stable.version })).toMatchObject({
+      channel: 'nightly',
+      release: { version: nightly.version },
+    });
+    expect(reviewStoreRelease(cached, { channel: 'stable' })).toMatchObject({
+      channel: 'stable',
+      release: { version: stable.version },
+    });
+    expect(reviewStoreRelease(cached, { version: stable.version }, true).release?.version).toBe(
       nightly.version,
     );
-    expect(rememberedStoreRelease(retained_nightly, stable.version)).toBeUndefined();
+    expect(
+      reviewStoreRelease({ ...cached, store_url: 'https://other.example.invalid' }).channel,
+    ).toBe('stable');
+  });
+
+  it('keeps a channel selected when its releases are missing from the cached details', () => {
+    const nightly_detail = {
+      ...detail,
+      installed_channel: 'nightly' as const,
+      releases: [detail.releases[0]],
+    };
+    expect(reviewStoreRelease(nightly_detail)).toEqual({
+      channel: 'nightly',
+      installed_channel: 'nightly',
+      versions: [],
+      recommended: undefined,
+      release: undefined,
+    });
   });
 
   it('calls out only added permissions and newly enabled network access', () => {

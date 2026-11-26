@@ -100,12 +100,44 @@ export function recommendedStoreRelease(
   );
 }
 
-export function rememberedStoreRelease(detail: StoreDetail, version: string | undefined) {
-  if (!version) return undefined;
-  const recommended = recommendedStoreRelease(detail);
-  return detail.releases.find(
-    (release) => release.version === version && release.prerelease === recommended.prerelease,
-  );
+export interface StoreReleaseChoice {
+  version?: string;
+  channel?: StoreChannel;
+  remembered_version?: string;
+}
+
+export function reviewStoreRelease(
+  detail: StoreDetail,
+  choice: StoreReleaseChoice = {},
+  installed_source = false,
+) {
+  const installed_channel =
+    detail.installed_channel ??
+    installedStoreChannel(detail.store_url, detail.applet.applet_id, detail.installed);
+  const explicit = installed_source
+    ? undefined
+    : detail.releases.find((release) => release.version === choice.version);
+  const channel = explicit
+    ? storeReleaseChannel(explicit)
+    : ((installed_source ? undefined : choice.channel) ??
+      installed_channel ??
+      storeReleaseChannel(recommendedStoreRelease(detail)));
+  const versions = detail.releases.filter((release) => storeReleaseChannel(release) === channel);
+  const latest = recommendedStoreRelease(detail, channel);
+  const recommended = versions.find((release) => release.version === latest.version);
+  const remembered = installed_source
+    ? undefined
+    : versions.find((release) => release.version === choice.remembered_version);
+  return {
+    channel,
+    installed_channel,
+    versions,
+    recommended,
+    release:
+      installed_source && !installed_channel
+        ? undefined
+        : (explicit ?? remembered ?? recommended ?? versions[0]),
+  };
 }
 
 export function newStoreAccess(release: StoreRelease, installed: InstalledApplet | null): string[] {

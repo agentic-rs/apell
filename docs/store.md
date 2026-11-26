@@ -19,6 +19,9 @@ release notes, and declared access before choosing **Install**.
 Apell saves the catalog, recently viewed applet details, and browsing preferences
 on this device. Returning to the Store restores the view while Apell checks for
 changes. Saved listings can still be browsed if the Store is unreachable.
+Saved applet details default to the installed channel when the installation
+comes from that Store. If no releases for that channel are saved, you can still
+open the applet or browse another channel.
 Installation and updates require a fresh review of the selected release.
 The Store website also saves public listings in the browser.
 

@@ -1,16 +1,14 @@
 import { useEffect, useState } from 'react';
 import type {
-  InstalledApplet,
   InstallProgress,
   StoreChannel,
   StoreDetail,
   StoreReleaseOption,
 } from '../../lib/types';
 import {
-  installedStoreChannel,
   newStoreAccess,
   permissionName,
-  recommendedStoreRelease,
+  reviewStoreRelease,
   storeChannelName,
   storeReleaseChannel,
   storeDate,
@@ -50,16 +48,16 @@ export function StoreOpenButton({
 
 export function StoreDetailView({
   detail,
-  installed,
   installed_source,
   restart_required,
-  selected_version,
+  review,
   fresh,
   refreshing,
   busy,
   installing,
   opening,
   progress,
+  onChannel,
   onVersion,
   onInstall,
   onOpen,
@@ -67,16 +65,16 @@ export function StoreDetailView({
   onBack,
 }: {
   detail: StoreDetail;
-  installed?: InstalledApplet | null;
   installed_source: boolean;
   restart_required: boolean;
-  selected_version: string;
+  review: ReturnType<typeof reviewStoreRelease>;
   fresh: boolean;
   refreshing: boolean;
   busy: boolean;
   installing: boolean;
   opening: boolean;
   progress?: InstallProgress;
+  onChannel: (channel: StoreChannel) => void;
   onVersion: (version: string) => void;
   onInstall: (release: StoreReleaseOption, confirmed_channel_switch?: boolean) => void;
   onOpen: () => void;
@@ -87,26 +85,24 @@ export function StoreDetailView({
   useEffect(() => {
     if (!fresh) setConfirmSwitch(false);
   }, [fresh]);
-  const release = detail.releases.find((item) => item.version === selected_version);
-  const recommended = recommendedStoreRelease(detail, release && storeReleaseChannel(release));
-  const channel = storeReleaseChannel(release ?? recommended);
+  const { installed } = detail;
+  const { release, recommended, channel, installed_channel: default_channel, versions } = review;
   const channel_name = storeChannelName(channel);
-  const versions = detail.releases.filter((item) => storeReleaseChannel(item) === channel);
-  const changeChannel = (next: StoreChannel) => {
-    const latest = recommendedStoreRelease(detail, next);
-    if (storeReleaseChannel(latest) === next) onVersion(latest.version);
-  };
+  const channelAvailable = (channel: StoreChannel) =>
+    channel === default_channel ||
+    detail.releases.some((item) => storeReleaseChannel(item) === channel);
   const new_access = release ? newStoreAccess(release, detail.installed) : [];
-  const installed_channel = fresh
-    ? detail.installed_channel
-    : installedStoreChannel(detail.store_url, detail.applet.applet_id, installed ?? null);
-  const previous = detail.switch_snapshot;
+  const installed_channel = installed?.source?.kind === 'store' && installed.source.channel;
+  const previous = fresh ? detail.switch_snapshot : undefined;
   const previous_source = previous ? storeSourceLabel(previous.source) : null;
+  const installed_origin =
+    installed && !default_channel ? storeSourceLabel(installed.source ?? null) : null;
   const can_switch_source = !installed_source && release?.action === 'switch_source' && !!previous;
   const can_switch_channel =
     !installed_source && release?.action === 'switch_channel' && !!detail.channel_snapshot;
   const confirm_required = can_switch_source || can_switch_channel;
   const can_install =
+    fresh &&
     release &&
     (release.action === 'update' ||
       (!installed_source && (release.action === 'install' || confirm_required)));
@@ -143,7 +139,7 @@ export function StoreDetailView({
           <h2>{detail.applet.name}</h2>
           <p>
             {installed
-              ? `Installed · ${installed.version}${installed_channel ? ` · ${storeChannelName(installed_channel)}` : ''}${previous_source && fresh ? ` · From ${previous_source}` : ''}`
+              ? `Installed · ${installed.version}${installed_channel ? ` · ${storeChannelName(installed_channel)}` : ''}${installed_origin ? ` · From ${installed_origin}` : ''}`
               : previous_source
                 ? `Saved data from ${previous_source}`
                 : 'An applet for Apell'}
@@ -152,7 +148,7 @@ export function StoreDetailView({
         </div>
       </div>
       <p className="store-description">{detail.applet.description}</p>
-      {installed && !fresh && (
+      {installed && (!fresh || !release) && (
         <div className="store-form-actions store-description">
           <StoreOpenButton
             restart_required={restart_required}
@@ -168,21 +164,9 @@ export function StoreDetailView({
             release ? (
               <strong>Release {release.version}</strong>
             ) : (
-              <>
-                <p className="store-action-reason">
-                  No release is available on the installed channel.
-                </p>
-                {installed && fresh && (
-                  <div className="store-install-actions">
-                    <StoreOpenButton
-                      restart_required={restart_required}
-                      busy={busy}
-                      opening={opening}
-                      onOpen={onOpen}
-                    />
-                  </div>
-                )}
-              </>
+              <p className="store-action-reason">
+                No release is available on the installed channel.
+              </p>
             )
           ) : (
             <>
@@ -192,38 +176,40 @@ export function StoreDetailView({
                   value={channel}
                   disabled={busy}
                   onChange={(event) =>
-                    changeChannel(event.target.value === 'nightly' ? 'nightly' : 'stable')
+                    onChannel(event.target.value === 'nightly' ? 'nightly' : 'stable')
                   }
                 >
-                  <option
-                    value="stable"
-                    disabled={!detail.releases.some((item) => !item.prerelease)}
-                  >
+                  <option value="stable" disabled={!channelAvailable('stable')}>
                     Stable
                   </option>
-                  <option
-                    value="nightly"
-                    disabled={!detail.releases.some((item) => item.prerelease)}
-                  >
+                  <option value="nightly" disabled={!channelAvailable('nightly')}>
                     Nightly
                   </option>
                 </select>
               </label>
-              <label>
-                Version
-                <select
-                  value={selected_version}
-                  disabled={busy}
-                  onChange={(event) => onVersion(event.target.value)}
-                >
-                  {versions.map((item) => (
-                    <option key={item.version} value={item.version}>
-                      {item.version}
-                      {item.version === recommended.version ? ' · Recommended' : ''}
-                    </option>
-                  ))}
-                </select>
-              </label>
+              {release ? (
+                <label>
+                  Version
+                  <select
+                    value={release.version}
+                    disabled={busy}
+                    onChange={(event) => onVersion(event.target.value)}
+                  >
+                    {versions.map((item) => (
+                      <option key={item.version} value={item.version}>
+                        {item.version}
+                        {item.version === recommended?.version ? ' · Recommended' : ''}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : (
+                <p className="store-action-reason">
+                  {fresh
+                    ? `No ${channel_name} releases are available.`
+                    : `No ${channel_name} releases in the saved details.`}
+                </p>
+              )}
             </>
           )}
           {release && (
@@ -256,7 +242,7 @@ export function StoreDetailView({
                 {can_install && (
                   <button
                     className="store-primary"
-                    disabled={busy || !fresh}
+                    disabled={busy}
                     onClick={() => (confirm_required ? setConfirmSwitch(true) : onInstall(release))}
                   >
                     {installing
@@ -287,13 +273,6 @@ export function StoreDetailView({
                   </button>
                 )}
               </div>
-              {!fresh && (
-                <p className="store-action-reason" role="status">
-                  {refreshing
-                    ? 'Checking this applet’s current releases…'
-                    : 'Refresh these details to check what can be installed.'}
-                </p>
-              )}
               {!installing && !!release.downloaded_bytes && can_install && (
                 <p className="store-action-reason">
                   {storeSize(release.downloaded_bytes)} of {storeSize(release.size_bytes)}{' '}
@@ -314,7 +293,7 @@ export function StoreDetailView({
                   </span>
                 </div>
               )}
-              {release.action_reason && (
+              {fresh && release.action_reason && (
                 <p className="store-action-reason">{release.action_reason}</p>
               )}
               {fresh && release.action === 'installed' && (
@@ -325,6 +304,13 @@ export function StoreDetailView({
                 </p>
               )}
             </>
+          )}
+          {!fresh && (
+            <p className="store-action-reason" role="status">
+              {refreshing
+                ? 'Checking this applet’s current releases…'
+                : 'Showing saved details. Refresh to check what can be installed.'}
+            </p>
           )}
         </div>
         {release && (
