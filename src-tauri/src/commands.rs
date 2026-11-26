@@ -1,5 +1,5 @@
 use crate::host::{public_config, string, Host, NETWORK_DISABLED};
-use crate::permissions::ManagedPermission;
+use crate::permissions::{self, ManagedPermission, PermissionMode};
 use crate::provider_commands::{snapshot, ModelRoute, ModelSnapshot};
 use crate::settings::Settings;
 use apell_core::bundles::AppletListReport;
@@ -24,6 +24,15 @@ struct ShellAppletList {
   #[serde(flatten)]
   packages: AppletListReport,
   restart_required: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InstalledPermissionChange {
+  applet_id: String,
+  installed_revision: String,
+  permission: ManagedPermission,
+  mode: PermissionMode,
 }
 
 fn failed_generation(
@@ -201,7 +210,7 @@ pub async fn shell_command(
       let view_id = string(&params, "view_id")?.to_owned();
       let permission: ManagedPermission = serde_json::from_value(params["permission"].clone())
         .map_err(|_| "Choose an applet permission.")?;
-      let update = if method == "permissions.set_mode" {
+      let update: Option<PermissionMode> = if method == "permissions.set_mode" {
         Some(
           serde_json::from_value(params["mode"].clone())
             .map_err(|_| "Choose an applet permission mode.")?,
@@ -209,7 +218,12 @@ pub async fn shell_command(
       } else {
         None
       };
+      let install_gate = update
+        .map(|_| host.store_gate.clone().try_lock_owned())
+        .transpose()
+        .map_err(|_| "Wait for the applet installation to finish before changing permissions.")?;
       blocking(move || {
+        let _install = install_gate;
         let host = app.state::<Host>();
         if !permission.available() {
           host.view_permission(&session_id, &view_id, permission, None)?;
@@ -222,9 +236,39 @@ pub async fn shell_command(
           }));
         }
         let mode = host.view_permission(&session_id, &view_id, permission, update)?;
+        if update.is_some() {
+          permissions::publish_device_change(&app);
+        }
         Ok(json!({
           "mode": mode,
           "system_authorization": permission.system_authorization(&app),
+        }))
+      })
+      .await
+    }
+    "permissions.set_installed_mode" => {
+      let change: InstalledPermissionChange =
+        serde_json::from_value(params).map_err(|_| "Choose a valid applet permission and mode.")?;
+      if !change.permission.available() {
+        return Err("This permission is unavailable on this platform.".into());
+      }
+      let install_gate = host
+        .store_gate
+        .clone()
+        .try_lock_owned()
+        .map_err(|_| "Wait for the applet installation to finish before changing permissions.")?;
+      blocking(move || {
+        let _install = install_gate;
+        let mode = app.state::<Host>().set_installed_permission(
+          &change.applet_id,
+          &change.installed_revision,
+          change.permission,
+          change.mode,
+        )?;
+        permissions::publish_device_change(&app);
+        Ok(json!({
+          "mode": mode,
+          "system_authorization": change.permission.system_authorization(&app),
         }))
       })
       .await
@@ -237,6 +281,7 @@ pub async fn shell_command(
         app
           .state::<Host>()
           .forget_permission(&applet_id, permission)?;
+        permissions::publish_device_change(&app);
         Ok(Value::Null)
       })
       .await

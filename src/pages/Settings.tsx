@@ -12,6 +12,7 @@ import { SettingsMenu, type SettingsSection } from '../components/SettingsMenu';
 
 export function Settings() {
   const [section, setSection] = useState<SettingsSection | null>(null);
+  const [visited_permissions, setVisitedPermissions] = useState(false);
   const [settings, setSettings] = useState<LlmSettings>();
   const [editor, setEditor] = useState<{ connection?: LlmConnection }>();
   const [loading, setLoading] = useState(true);
@@ -283,6 +284,7 @@ export function Settings() {
           loading={loading}
           onOpen={(next) => {
             menu_scroll.current = window.scrollY;
+            if (next === 'permissions') setVisitedPermissions(true);
             setSection(next);
           }}
         />
@@ -304,7 +306,11 @@ export function Settings() {
           onImported={() => void load()}
         />
       )}
-      {section === 'permissions' && <AppletPermissions />}
+      {visited_permissions && (
+        <Activity mode={section === 'permissions' ? 'visible' : 'hidden'}>
+          <AppletPermissions />
+        </Activity>
+      )}
     </>
   );
 }

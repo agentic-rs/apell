@@ -12,7 +12,7 @@ use std::{
   io::Read,
   path::{Path, PathBuf},
 };
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 use tauri_plugin_apell_sensors::Command;
 use tokio::sync::Mutex;
 use uuid::Uuid;
@@ -253,18 +253,19 @@ pub async fn dispatch(
   let source = permission
     .map(|_| host.view_grant_source(view_id))
     .transpose()?;
-  let grants = host.grants.clone();
   let applet_id = session.manifest.applet_id.clone();
   let staging_root = host.sensors.staging.clone();
   let (remembered, staging) = blocking({
     let applet_id = applet_id.clone();
     let source = source.clone();
-    let grants = grants.clone();
+    let grants = host.grants.clone();
     let session = session.clone();
     move || {
       session.run_local(|| {
         let remembered = match (permission, &source) {
-          (Some(permission), Some(source)) => grants.remembered(permission, &applet_id, source)?,
+          (Some(permission), Some(source)) => {
+            grants.authorize_request(permission, &applet_id, source)?
+          }
           _ => false,
         };
         let staging = kind
@@ -293,14 +294,16 @@ pub async fn dispatch(
   if let Some(path) = &staged {
     args["staging_path"] = json!(path);
   }
-  let outcome = run_native(app, &session, identity, args).await?;
+  let outcome = run_native(app.clone(), &session, identity, args).await?;
   let files = host.files.clone();
   blocking(move || {
     let _staging = staging;
     session.run_local(|| {
       let save = |remember| {
         if let (true, Some(permission), Some(source)) = (remember, permission, &source) {
-          grants.remember(permission, &applet_id, source)?;
+          app
+            .state::<Host>()
+            .remember_installed_permission(permission, &applet_id, source)?;
         }
         Ok::<(), String>(())
       };

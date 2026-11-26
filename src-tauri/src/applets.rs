@@ -1,5 +1,5 @@
 use crate::host::{Host, Session};
-use crate::permissions::{GrantSource, ManagedPermission, PermissionMode};
+use crate::permissions::{installed_revision, GrantSource, ManagedPermission, PermissionMode};
 use apell_core::bundles::{Bundle, InstalledApplet, Manifest, PackageSource, StoreSource};
 use apell_runtime::{HostError, HostEvents, HostServices, RuntimeHandle, ServiceFuture};
 use serde::Serialize;
@@ -28,6 +28,22 @@ impl RunningApplet {
 }
 
 const BACKEND_STOPPED: &str = "apell:stopped";
+
+fn require_declared_permission(
+  manifest: &Manifest,
+  permission: ManagedPermission,
+) -> Result<(), String> {
+  let group = permission.manifest_group();
+  if !manifest.permissions.iter().any(|item| item == group) {
+    return Err(format!("This applet did not declare {group} access."));
+  }
+  if permission == ManagedPermission::Camera
+    && !manifest.permissions.iter().any(|item| item == "fs")
+  {
+    return Err("This applet must declare app files to use the camera.".into());
+  }
+  Ok(())
+}
 
 #[derive(Default)]
 pub struct RunningApplets {
@@ -344,14 +360,14 @@ impl Host {
         .and_then(|(run, _)| running.runs.get(run))
         .ok_or("This applet view was detached. Reopen the applet.")?;
       let manifest = &run.bundle.manifest;
-      let group = permission.manifest_group();
-      if !manifest.permissions.iter().any(|item| item == group) {
-        return Err(format!("This applet did not declare {group} access."));
-      }
+      require_declared_permission(manifest, permission)?;
       (manifest.applet_id.clone(), run.grant_source.clone())
     };
     match update {
       Some(mode) => {
+        if !self.is_installed_permission_target(&applet_id, &source, permission) {
+          return Err("Restart the applet before changing its device permissions.".into());
+        }
         let edit = || self.grants.set_mode(permission, &applet_id, &source, mode);
         match permission {
           ManagedPermission::Microphone => self.audio.edit_microphone_grant(view_id, edit),
@@ -362,11 +378,70 @@ impl Host {
     }
   }
 
+  pub fn remember_installed_permission(
+    &self,
+    permission: ManagedPermission,
+    applet_id: &str,
+    source: &GrantSource,
+  ) -> Result<(), String> {
+    // An approval still authorizes the current request. Only persist it if
+    // the installed source can be checked without waiting for an install.
+    let Ok(_install) = self.store_gate.try_lock() else {
+      return Ok(());
+    };
+    if self.is_installed_permission_target(applet_id, source, permission) {
+      self.grants.remember(permission, applet_id, source)?;
+    }
+    Ok(())
+  }
+
+  fn is_installed_permission_target(
+    &self,
+    applet_id: &str,
+    source: &GrantSource,
+    permission: ManagedPermission,
+  ) -> bool {
+    self.bundles.installed(applet_id).is_ok_and(|installed| {
+      GrantSource::from(&installed) == *source
+        && require_declared_permission(&installed.manifest, permission).is_ok()
+    })
+  }
+
   pub fn forget_permission(
     &self,
     applet_id: &str,
     permission: ManagedPermission,
   ) -> Result<(), String> {
+    self.edit_detached_permission(applet_id, permission, || {
+      self.grants.forget(permission, applet_id)
+    })
+  }
+
+  /// The caller holds the Store gate through the read and edit.
+  pub fn set_installed_permission(
+    &self,
+    applet_id: &str,
+    expected_revision: &str,
+    permission: ManagedPermission,
+    mode: PermissionMode,
+  ) -> Result<PermissionMode, String> {
+    let applet = self.bundles.installed(applet_id)?;
+    if installed_revision(&applet)? != expected_revision {
+      return Err("This applet changed. Review its current permissions and try again.".into());
+    }
+    require_declared_permission(&applet.manifest, permission)?;
+    let source = GrantSource::from(&applet);
+    self.edit_detached_permission(applet_id, permission, || {
+      self.grants.set_mode(permission, applet_id, &source, mode)
+    })
+  }
+
+  fn edit_detached_permission<T>(
+    &self,
+    applet_id: &str,
+    permission: ManagedPermission,
+    edit: impl FnOnce() -> Result<T, String>,
+  ) -> Result<T, String> {
     let _gate = self
       .view_gate
       .lock()
@@ -382,12 +457,12 @@ impl Host {
       .is_some_and(|run| run.bundle.manifest.applet_id == applet_id)
     {
       return Err(format!(
-        "Close the applet before resetting its {} permission.",
+        "Close the applet before changing its {} permission.",
         permission.label()
       ));
     }
     drop(running);
-    self.grants.forget(permission, applet_id)
+    edit()
   }
 
   pub async fn invoke_backend(
@@ -744,10 +819,86 @@ mod tests {
   }
 
   #[test]
+  fn settings_changes_apply_only_to_the_reviewed_detached_installation() {
+    let (_directory, host) = fixture();
+    let id = "permission-fixture";
+    install_with_permissions(&host, id, "1.0.0", &["audio", "camera"]);
+    let installed = host.bundles.installed(id).unwrap();
+    let revision = installed_revision(&installed).unwrap();
+    let source = GrantSource::from(&installed);
+
+    assert!(host
+      .set_installed_permission(id, &revision, Camera, PermissionMode::Remembered)
+      .is_err());
+    assert_eq!(
+      host
+        .set_installed_permission(id, &revision, Microphone, PermissionMode::Blocked)
+        .unwrap(),
+      PermissionMode::Blocked
+    );
+    assert_eq!(
+      host.grants.mode(Microphone, id, &source).unwrap(),
+      PermissionMode::Blocked
+    );
+
+    seed_run(&host, "permission-fixture-run", id);
+    let current = host.attach_run("permission-fixture-run").unwrap();
+    assert!(host
+      .set_installed_permission(id, &revision, Microphone, PermissionMode::Remembered)
+      .is_err());
+    host
+      .detach_view("permission-fixture-run", &current.view_id)
+      .unwrap();
+
+    install_with_permissions(&host, id, "2.0.0", &["audio", "camera", "fs"]);
+    assert!(host
+      .set_installed_permission(id, &revision, Microphone, PermissionMode::Remembered)
+      .is_err());
+    let updated = host.bundles.installed(id).unwrap();
+    let new_revision = installed_revision(&updated).unwrap();
+    assert_eq!(
+      host
+        .grants
+        .mode(Microphone, id, &GrantSource::from(&updated))
+        .unwrap(),
+      PermissionMode::Ask
+    );
+    let new_source = GrantSource::from(&updated);
+    host
+      .set_installed_permission(id, &new_revision, Microphone, PermissionMode::Blocked)
+      .unwrap();
+    let old_view = host.attach_run("permission-fixture-run").unwrap();
+    assert!(host
+      .view_permission(
+        "permission-fixture-run",
+        &old_view.view_id,
+        Microphone,
+        Some(PermissionMode::Remembered)
+      )
+      .is_err());
+    host
+      .remember_installed_permission(Microphone, id, &source)
+      .unwrap();
+    assert_eq!(
+      host.grants.mode(Microphone, id, &new_source).unwrap(),
+      PermissionMode::Blocked
+    );
+    host
+      .detach_view("permission-fixture-run", &old_view.view_id)
+      .unwrap();
+    assert_eq!(
+      host
+        .set_installed_permission(id, &new_revision, Camera, PermissionMode::Remembered)
+        .unwrap(),
+      PermissionMode::Remembered
+    );
+  }
+
+  #[test]
   fn about_permission_uses_the_attached_package_and_rejects_stale_views() {
     let dir = tempfile::tempdir().unwrap();
     let host = Host::new(dir.path().into()).unwrap();
-    install_with_permissions(&host, APPLET, "1.0.0", &["camera"]);
+    install_with_permissions(&host, APPLET, "1.0.0", &["camera", "fs"]);
     seed_run(&host, RUN, APPLET);
     let first = host.attach_run(RUN).unwrap();
     let first_source = host.view_grant_source(&first.view_id).unwrap();
@@ -780,7 +931,7 @@ mod tests {
       PermissionMode::Remembered
     );
 
-    install_with_permissions(&host, APPLET, "2.0.0", &["camera"]);
+    install_with_permissions(&host, APPLET, "2.0.0", &["camera", "fs"]);
     assert_eq!(
       host
         .view_permission(RUN, &reloaded.view_id, Camera, None)

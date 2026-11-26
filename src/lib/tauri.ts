@@ -133,6 +133,18 @@ export const onPermissionsChanged = (handler: () => void) =>
   listen('apell-permissions-changed', handler);
 export const forgetPermission = (applet_id: string, permission: ManagedPermission) =>
   shellCall<void>('permissions.forget', { applet_id, permission });
+export const setInstalledPermissionMode = (
+  applet_id: string,
+  installed_revision: string,
+  permission: ManagedPermission,
+  mode: PermissionMode,
+) =>
+  shellCall<PermissionStatus>('permissions.set_installed_mode', {
+    applet_id,
+    installed_revision,
+    permission,
+    mode,
+  });
 export const getPermissionMode = (
   session_id: string,
   view_id: string,

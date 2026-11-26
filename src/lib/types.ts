@@ -47,6 +47,7 @@ export interface AppletListReport {
 export interface AppletPermission {
   applet_id: string;
   name: string;
+  installed_revision?: string | null;
   manifest: AppletPermissionManifest | null;
   grants: PermissionGrant[];
   restart_required: boolean;
@@ -55,7 +56,7 @@ export interface AppletPermissionManifest extends Pick<Manifest, 'network' | 'pe
   has_lib: boolean;
 }
 export type ManagedPermission = 'microphone' | 'camera' | 'location';
-export type PermissionMode = 'ask' | 'remembered';
+export type PermissionMode = 'ask' | 'remembered' | 'blocked';
 export type SystemAuthorization =
   'allowed' | 'blocked' | 'not_determined' | 'not_granted' | 'unknown';
 export interface PermissionStatus {
@@ -65,6 +66,7 @@ export interface PermissionStatus {
 export interface PermissionGrant {
   permission: ManagedPermission;
   access: PermissionMode | 'previous_package' | 'undeclared' | 'unverified_package';
+  mode?: PermissionMode;
   available: boolean;
   system_authorization: SystemAuthorization;
 }

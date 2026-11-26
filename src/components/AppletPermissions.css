@@ -106,10 +106,25 @@
   display: grid;
   gap: 2px;
   min-width: 0;
+  max-width: 100%;
   color: var(--muted);
   overflow-wrap: anywhere;
 }
 
+.applet-permission-mode {
+  min-height: 44px;
+  padding: 6px 8px;
+  background-color: var(--surface);
+  color: var(--text);
+  text-align: start;
+}
+
 .applet-permission-reset {
   min-height: 44px;
+}
+
+.applet-permission-row .applet-permission-error {
+  flex-basis: 100%;
+  margin: 2px 0 6px;
+  font-size: 0.8125rem;
 }

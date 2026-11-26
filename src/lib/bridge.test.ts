@@ -83,6 +83,7 @@ describe('applet bridge boundary', () => {
       'store.install',
       'permissions.list',
       'permissions.forget',
+      'permissions.set_installed_mode',
       'permissions.mode',
       'permissions.set_mode',
       'settings_transfer.capabilities',

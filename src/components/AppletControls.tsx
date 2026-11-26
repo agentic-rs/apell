@@ -2,6 +2,7 @@ import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import {
   appletPermissionRows,
   device_access_note,
+  isPermissionMode,
   managed_permission_labels,
   permission_mode_labels,
   permission_unavailable,
@@ -36,11 +37,12 @@ function PermissionAccess({
   const [status, setStatus] = useState<PermissionStatus>();
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState('');
+  const [refresh_requested, setRefreshRequested] = useState(false);
   const scope = useRef(new OperationScope());
 
   const update = useCallback(
     async (next?: PermissionMode) => {
-      if (read_only) return;
+      if (read_only || unavailable_reason) return;
       const operation = scope.current.start();
       if (!operation) return;
       setBusy(true);
@@ -60,23 +62,31 @@ function PermissionAccess({
         }
       }
     },
-    [read_only, session_id, view_id, permission],
+    [read_only, session_id, view_id, permission, unavailable_reason],
   );
 
   useEffect(() => {
-    if (read_only) return;
+    if (read_only || unavailable_reason) return;
     const operations = scope.current;
     let open = true;
     const unsubscribe = onPermissionsChanged(() => {
-      if (open) void update();
+      if (open) setRefreshRequested(true);
     }).catch(() => undefined);
-    void update();
+    void unsubscribe.then(() => {
+      if (open) void update();
+    });
     return () => {
       open = false;
       operations.cancel();
       void unsubscribe.then((unlisten) => unlisten?.());
     };
-  }, [read_only, update]);
+  }, [read_only, unavailable_reason, update]);
+
+  useEffect(() => {
+    if (!refresh_requested || busy || read_only || unavailable_reason) return;
+    setRefreshRequested(false);
+    void update();
+  }, [refresh_requested, busy, read_only, unavailable_reason, update]);
 
   const mode = status?.mode;
   const system_label =
@@ -88,10 +98,10 @@ function PermissionAccess({
     <div>
       <dt id={label_id}>{managed_permission_labels[permission]}</dt>
       <dd>
-        {mode === 'unavailable' ? (
-          permission_unavailable
-        ) : unavailable_reason && (mode || read_only) ? (
+        {unavailable_reason ? (
           unavailable_reason
+        ) : mode === 'unavailable' ? (
+          permission_unavailable
         ) : read_only ? (
           mode ? (
             permission_mode_labels[mode]
@@ -106,11 +116,14 @@ function PermissionAccess({
             disabled={busy}
             onChange={(event) => {
               const value = event.currentTarget.value;
-              if (value === 'ask' || value === 'remembered') void update(value);
+              if (isPermissionMode(value)) void update(value);
             }}
           >
-            <option value="ask">{permission_mode_labels.ask}</option>
-            <option value="remembered">{permission_mode_labels.remembered}</option>
+            {Object.entries(permission_mode_labels).map(([value, label]) => (
+              <option key={value} value={value}>
+                {label}
+              </option>
+            ))}
           </select>
         ) : busy ? (
           <span role="status">Loading…</span>

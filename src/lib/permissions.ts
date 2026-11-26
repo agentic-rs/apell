@@ -14,7 +14,12 @@ export const managed_permission_labels: Record<ManagedPermission, string> = {
 export const permission_mode_labels: Record<PermissionMode, string> = {
   ask: 'Ask every time',
   remembered: 'Always allow',
+  blocked: 'Don’t allow',
 };
+
+export function isPermissionMode(value: string): value is PermissionMode {
+  return Object.hasOwn(permission_mode_labels, value);
+}
 
 export const device_access_note = 'Apell’s approvals still depend on your system permissions.';
 export const permission_unavailable = 'Unavailable on this platform';

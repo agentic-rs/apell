@@ -1,6 +1,6 @@
 use crate::host::Host;
 use apell_core::{
-  bundles::{AppletListReport, InstalledApplet, PackageSource},
+  bundles::{digest, AppletListReport, InstalledApplet, PackageSource},
   config::ConfigStore,
 };
 use serde::{Deserialize, Serialize};
@@ -97,6 +97,7 @@ impl SystemAuthorization {
 enum PermissionAccess {
   Ask,
   Remembered,
+  Blocked,
   PreviousPackage,
   Undeclared,
   UnverifiedPackage,
@@ -107,6 +108,17 @@ enum PermissionAccess {
 pub enum PermissionMode {
   Ask,
   Remembered,
+  Blocked,
+}
+
+impl PermissionAccess {
+  fn mode(self) -> PermissionMode {
+    match self {
+      Self::Remembered => PermissionMode::Remembered,
+      Self::Blocked => PermissionMode::Blocked,
+      _ => PermissionMode::Ask,
+    }
+  }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -145,6 +157,16 @@ impl From<&InstalledApplet> for GrantSource {
   }
 }
 
+pub(crate) fn installed_revision(applet: &InstalledApplet) -> Result<String, String> {
+  let snapshot = serde_json::to_vec(&(&applet.sha256, &applet.source))
+    .map_err(|_| "Could not encode the installed applet identity.")?;
+  Ok(digest(&snapshot))
+}
+
+fn blocked_value(source: &GrantSource) -> Value {
+  json!({"mode": PermissionMode::Blocked, "source": source})
+}
+
 /// Separate host storage. The applet config bridge cannot access grants.
 pub struct PermissionGrants(ConfigStore);
 
@@ -153,13 +175,14 @@ impl PermissionGrants {
     Self(ConfigStore::new(root))
   }
 
+  #[cfg(test)]
   pub fn remembered(
     &self,
     permission: ManagedPermission,
     applet_id: &str,
     source: &GrantSource,
   ) -> Result<bool, String> {
-    Ok(self.access(permission, applet_id, Some(source))? == PermissionAccess::Remembered)
+    Ok(self.mode(permission, applet_id, source)? == PermissionMode::Remembered)
   }
 
   pub fn mode(
@@ -168,11 +191,28 @@ impl PermissionGrants {
     applet_id: &str,
     source: &GrantSource,
   ) -> Result<PermissionMode, String> {
-    Ok(if self.remembered(permission, applet_id, source)? {
-      PermissionMode::Remembered
-    } else {
-      PermissionMode::Ask
-    })
+    Ok(self.access(permission, applet_id, Some(source))?.mode())
+  }
+
+  /// Check the applet's policy before device access. True skips Apell's prompt.
+  pub fn authorize_request(
+    &self,
+    permission: ManagedPermission,
+    applet_id: &str,
+    source: &GrantSource,
+  ) -> Result<bool, String> {
+    match self.mode(permission, applet_id, source)? {
+      PermissionMode::Remembered => Ok(true),
+      PermissionMode::Ask => Ok(false),
+      PermissionMode::Blocked => Err(format!(
+        "{} access is blocked for this applet in Apell. Change it in Applet permissions.",
+        match permission {
+          ManagedPermission::Microphone => "Microphone",
+          ManagedPermission::Camera => "Camera",
+          ManagedPermission::Location => "Location",
+        }
+      )),
+    }
   }
 
   pub fn set_mode(
@@ -184,7 +224,8 @@ impl PermissionGrants {
   ) -> Result<PermissionMode, String> {
     match mode {
       PermissionMode::Remembered => self.remember(permission, applet_id, source)?,
-      PermissionMode::Ask if self.remembered(permission, applet_id, source)? => {
+      PermissionMode::Blocked => self.store(permission, applet_id, blocked_value(source))?,
+      PermissionMode::Ask if self.mode(permission, applet_id, source)? != PermissionMode::Ask => {
         self.forget(permission, applet_id)?;
       }
       PermissionMode::Ask => {}
@@ -206,6 +247,9 @@ impl PermissionGrants {
       Some(value) if source.is_some_and(|source| *value == json!(source)) => {
         PermissionAccess::Remembered
       }
+      Some(value) if source.is_some_and(|source| *value == blocked_value(source)) => {
+        PermissionAccess::Blocked
+      }
       Some(_) => PermissionAccess::PreviousPackage,
     })
   }
@@ -216,10 +260,19 @@ impl PermissionGrants {
     applet_id: &str,
     source: &GrantSource,
   ) -> Result<(), String> {
+    self.store(permission, applet_id, json!(source))
+  }
+
+  fn store(
+    &self,
+    permission: ManagedPermission,
+    applet_id: &str,
+    value: Value,
+  ) -> Result<(), String> {
     self.0.dispatch(
       applet_id,
       "config.set",
-      json!({"key": permission.label(), "value": source}),
+      json!({"key": permission.label(), "value": value}),
     )?;
     Ok(())
   }
@@ -252,12 +305,15 @@ impl PermissionGrants {
       let access = match access {
         PermissionAccess::Ask if !declared => continue,
         _ if source.is_none() => PermissionAccess::UnverifiedPackage,
-        PermissionAccess::Remembered if !declared => PermissionAccess::Undeclared,
+        PermissionAccess::Remembered | PermissionAccess::Blocked if !declared => {
+          PermissionAccess::Undeclared
+        }
         access => access,
       };
       grants.push(GrantSummary {
         permission,
         access,
+        mode: (declared && source.is_some()).then_some(access.mode()),
         available: permission.available(),
         system_authorization: SystemAuthorization::Unknown,
       });
@@ -270,12 +326,14 @@ impl PermissionGrants {
     applet: InstalledApplet,
     restart_required: bool,
   ) -> Result<AppletPermissionSummary, String> {
+    let revision = installed_revision(&applet)?;
     let source = GrantSource::from(&applet);
     let manifest = applet.manifest;
     let grants = self.summary(&manifest.applet_id, Some(&source), &manifest.permissions)?;
     Ok(AppletPermissionSummary {
       applet_id: manifest.applet_id,
       name: manifest.name,
+      installed_revision: Some(revision),
       manifest: Some(PermissionManifest {
         network: manifest.network,
         permissions: manifest.permissions,
@@ -302,6 +360,7 @@ impl PermissionGrants {
         entries.push(AppletPermissionSummary {
           applet_id: applet.applet_id.clone(),
           name: applet.applet_id,
+          installed_revision: None,
           manifest: None,
           grants,
           restart_required: false,
@@ -316,6 +375,8 @@ impl PermissionGrants {
 struct GrantSummary {
   permission: ManagedPermission,
   access: PermissionAccess,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  mode: Option<PermissionMode>,
   available: bool,
   system_authorization: SystemAuthorization,
 }
@@ -331,6 +392,8 @@ struct PermissionManifest {
 struct AppletPermissionSummary {
   applet_id: String,
   name: String,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  installed_revision: Option<String>,
   manifest: Option<PermissionManifest>,
   grants: Vec<GrantSummary>,
   restart_required: bool,
@@ -420,6 +483,7 @@ mod tests {
     applet.manifest.network = false;
     applet.manifest.permissions = vec!["secrets".into(), "fs".into(), "photos".into()];
     applet.manifest.lib = Some("lib/app.wasm".into());
+    let revision = installed_revision(&applet).unwrap();
     let summary = grants
       .summaries(
         AppletListReport {
@@ -435,6 +499,7 @@ mod tests {
       json!([{
         "applet_id":"recorder",
         "name":"Recorder",
+        "installed_revision":revision,
         "manifest":{
           "network":false,
           "permissions":["secrets","fs","photos"],
@@ -451,6 +516,7 @@ mod tests {
     let entry = |id: &str, access: PermissionAccess, declared: bool| AppletPermissionSummary {
       applet_id: id.into(),
       name: id.into(),
+      installed_revision: None,
       manifest: Some(PermissionManifest {
         permissions: if declared {
           vec!["audio".into()]
@@ -463,6 +529,7 @@ mod tests {
       grants: vec![GrantSummary {
         permission: ManagedPermission::Microphone,
         access,
+        mode: declared.then_some(access.mode()),
         available: true,
         system_authorization: SystemAuthorization::Unknown,
       }],
@@ -693,14 +760,14 @@ mod tests {
         .unwrap()),
       json!([
         {"permission":"camera","access":"previous_package","available":sensors_available,"system_authorization":"unknown"},
-        {"permission":"location","access":"ask","available":sensors_available,"system_authorization":"unknown"},
+        {"permission":"location","access":"ask","mode":"ask","available":sensors_available,"system_authorization":"unknown"},
       ]),
     );
     assert_eq!(
       json!(grants
         .summary(applet_id, Some(&source), &["camera".into()])
         .unwrap()),
-      json!([{"permission":"camera","access":"remembered","available":sensors_available,"system_authorization":"unknown"}]),
+      json!([{"permission":"camera","access":"remembered","mode":"remembered","available":sensors_available,"system_authorization":"unknown"}]),
     );
     assert_eq!(
       json!(grants.summary(applet_id, Some(&source), &[]).unwrap()),
@@ -719,5 +786,87 @@ mod tests {
       .all(|grant| grant.permission != Camera));
     assert!(!grants.remembered(Camera, applet_id, &source).unwrap());
     assert!(grants.remembered(Location, applet_id, &updated).unwrap());
+  }
+
+  #[test]
+  fn blocked_access_persists_and_rejects_every_managed_device_request() {
+    let dir = tempfile::tempdir().unwrap();
+    let grants = PermissionGrants::new(dir.path().into());
+    let source = GrantSource::File {
+      sha256: "a".repeat(64),
+    };
+    let replacement = GrantSource::File {
+      sha256: "b".repeat(64),
+    };
+    let applet_id = "fixture";
+    let declared = vec!["audio".into(), "camera".into(), "location".into()];
+    for permission in ManagedPermission::ALL {
+      grants.remember(permission, applet_id, &source).unwrap();
+      assert!(grants
+        .authorize_request(permission, applet_id, &source)
+        .unwrap());
+      assert_eq!(
+        grants
+          .set_mode(permission, applet_id, &source, PermissionMode::Blocked)
+          .unwrap(),
+        PermissionMode::Blocked,
+      );
+    }
+
+    let reopened = PermissionGrants::new(dir.path().into());
+    let summary = reopened
+      .summary(applet_id, Some(&source), &declared)
+      .unwrap();
+    let replacement_summary = reopened
+      .summary(applet_id, Some(&replacement), &declared)
+      .unwrap();
+    for ((permission, active), previous) in ManagedPermission::ALL
+      .into_iter()
+      .zip(summary)
+      .zip(replacement_summary)
+    {
+      assert!(reopened
+        .authorize_request(permission, applet_id, &source)
+        .unwrap_err()
+        .contains("blocked for this applet"));
+      assert!(!reopened
+        .authorize_request(permission, applet_id, &replacement)
+        .unwrap());
+      assert!(active.access == PermissionAccess::Blocked);
+      assert_eq!(active.mode, Some(PermissionMode::Blocked));
+      assert!(previous.access == PermissionAccess::PreviousPackage);
+      assert_eq!(previous.mode, Some(PermissionMode::Ask));
+
+      reopened
+        .set_mode(permission, applet_id, &source, PermissionMode::Ask)
+        .unwrap();
+      assert!(!reopened
+        .authorize_request(permission, applet_id, &source)
+        .unwrap());
+    }
+  }
+
+  #[test]
+  fn installed_permission_revision_includes_package_hash_and_full_source() {
+    let source = StoreSource {
+      store_url: "https://store.example".into(),
+      applet_id: "recorder".into(),
+      channel: StoreChannel::Stable,
+    };
+    let mut applet = installed(source.clone().into());
+    let original = installed_revision(&applet).unwrap();
+    let grant = GrantSource::from(&applet);
+    applet.source = Some(
+      StoreSource {
+        channel: StoreChannel::Nightly,
+        ..source
+      }
+      .into(),
+    );
+    let nightly = installed_revision(&applet).unwrap();
+    assert_ne!(original, nightly);
+    assert_eq!(GrantSource::from(&applet), grant);
+    applet.sha256 = "b".repeat(64);
+    assert_ne!(installed_revision(&applet).unwrap(), nightly);
   }
 }

@@ -3,7 +3,7 @@ use crate::host::{string, Host, Session};
 use crate::permissions::ManagedPermission::Microphone;
 use serde_json::{json, Value};
 use std::sync::{atomic::Ordering, Arc};
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
@@ -186,21 +186,24 @@ pub async fn dispatch(
       let target_directory = directory.clone();
       let target = relative.clone();
       let applet = applet_id.clone();
-      let path = tauri::async_runtime::spawn_blocking(move || {
-        files.dispatch(&applet, "fs.mkdir", json!({"path":target_directory}))?;
-        files.native_path(
-          &applet,
-          if importing {
-            &target_directory
-          } else {
-            &target
-          },
-          !importing,
-        )
-      })
-      .await
-      .map_err(|_| "Could not prepare audio storage.")??;
+      let prepare_path = async move {
+        tauri::async_runtime::spawn_blocking(move || {
+          files.dispatch(&applet, "fs.mkdir", json!({"path":target_directory}))?;
+          files.native_path(
+            &applet,
+            if importing {
+              &target_directory
+            } else {
+              &target
+            },
+            !importing,
+          )
+        })
+        .await
+        .map_err(|_| "Could not prepare audio storage.")?
+      };
       if importing {
+        let path = prepare_path.await?;
         let imported =
           checked_native(app, owner, &session, "import", json!({"directory":path})).await?;
         if imported.is_null() {
@@ -236,9 +239,10 @@ pub async fn dispatch(
         let remembered = crate::commands::blocking({
           let applet_id = applet_id.clone();
           let source = source.clone();
-          move || grants.remembered(Microphone, &applet_id, &source)
+          move || grants.authorize_request(Microphone, &applet_id, &source)
         })
         .await?;
+        let path = prepare_path.await?;
         let started = checked_native(
           app.clone(),
           owner,
@@ -249,10 +253,14 @@ pub async fn dispatch(
         .await?;
         state.recording_path = Some(relative.clone());
         if started.get("remember").and_then(Value::as_bool) == Some(true) {
-          let grants = host.grants.clone();
+          let grant_app = app.clone();
           let grant_session = session.clone();
           let saved = crate::commands::blocking(move || {
-            grant_session.run_local(|| grants.remember(Microphone, &applet_id, &source))
+            grant_session.run_local(|| {
+              grant_app
+                .state::<Host>()
+                .remember_installed_permission(Microphone, &applet_id, &source)
+            })
           })
           .await;
           if saved.is_err() {
