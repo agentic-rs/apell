@@ -18,13 +18,14 @@ import type {
 } from '../lib/types';
 import { InstallSheet } from '../components/InstallSheet';
 import { AppletTile } from '../components/AppletTile';
+import { AppletInfoSheet } from '../components/AppletInfoSheet';
 import { Icon } from '../components/Icon';
 import { Sheet } from '../components/Sheet';
 
-interface Removal {
+interface AppletAction {
   applet_id: string;
   name: string;
-  confirm: boolean;
+  panel: 'actions' | 'info' | 'remove';
 }
 
 interface LibraryProps {
@@ -52,7 +53,7 @@ export function Library({
   const [launching_id, setLaunchingId] = useState('');
   const [restart_required, setRestartRequired] = useState<string[]>([]);
   const [restart_offer_id, setRestartOfferId] = useState<string>();
-  const [removal, setRemoval] = useState<Removal>();
+  const [action, setAction] = useState<AppletAction>();
   const pending = useRef(false);
   const list_revision = useRef(0);
   const library = useRef<HTMLElement>(null);
@@ -61,7 +62,7 @@ export function Library({
     (applet) =>
       applet.applet_id === restart_offer_id && restart_required.includes(applet.applet_id),
   );
-  const action_applet = applets.find((applet) => applet.applet_id === removal?.applet_id);
+  const action_applet = applets.find((applet) => applet.applet_id === action?.applet_id);
 
   const applyReport = (report: AppletListReport) => {
     setApplets(report.applets);
@@ -74,7 +75,7 @@ export function Library({
     if (busy || !restore_library_focus.current) return;
     restore_library_focus.current = false;
     library.current?.querySelector('button')?.focus({ preventScroll: true });
-  }, [busy, removal]);
+  }, [busy, action]);
 
   useEffect(() => {
     let disposed = false;
@@ -134,8 +135,13 @@ export function Library({
     }
   };
   const refresh = async () => {
-    list_revision.current++;
-    applyReport(await listApplets());
+    const revision = ++list_revision.current;
+    try {
+      const report = await listApplets();
+      if (revision === list_revision.current) applyReport(report);
+    } catch (error) {
+      if (revision === list_revision.current) throw error;
+    }
   };
   const installed = async ({ applet, restart_required: needs_restart }: AppletInstallResult) => {
     const { applet_id, name, version } = applet;
@@ -155,7 +161,7 @@ export function Library({
         ? `${name} ${version} installed. Restart to use it.`
         : `${name} ${version} installed.`,
     );
-    onInstallClose();
+    if (installOpen) onInstallClose();
     try {
       await refresh();
     } catch (error) {
@@ -163,8 +169,8 @@ export function Library({
     }
   };
   const openApplet = (applet: InstalledApplet, restart = false) => {
-    if (installOpen || pending.current || (removal && !restart)) return;
-    if (restart) setRemoval(undefined);
+    if (installOpen || pending.current || (action && !restart)) return;
+    if (restart) setAction(undefined);
     else setLaunchingId(applet.applet_id);
     void run(
       async () => {
@@ -180,13 +186,13 @@ export function Library({
       `${restart ? 'Restarting' : 'Opening'} ${applet.name}…`,
     );
   };
-  const showRemoval = (target: Removal) => {
-    if (removal || installOpen || pending.current) return;
+  const showAction = (target: AppletAction) => {
+    if (action || installOpen || pending.current) return;
     setStatus('');
     setFailed(false);
-    setRemoval(target);
+    setAction(target);
   };
-  const remove = (target: Removal) =>
+  const remove = (target: AppletAction) =>
     void run(async () => {
       await removeApplet(target.applet_id);
       setApplets((current) => current.filter((item) => item.applet_id !== target.applet_id));
@@ -194,7 +200,7 @@ export function Library({
       setRestartRequired((current) => current.filter((id) => id !== target.applet_id));
       setRestartOfferId((current) => (current === target.applet_id ? undefined : current));
       restore_library_focus.current = true;
-      setRemoval(undefined);
+      setAction(undefined);
       try {
         await refresh();
       } catch (error) {
@@ -223,7 +229,7 @@ export function Library({
             disabled={busy}
             restart_required={restart_required.includes(applet.applet_id)}
             onActions={() =>
-              showRemoval({ applet_id: applet.applet_id, name: applet.name, confirm: false })
+              showAction({ applet_id: applet.applet_id, name: applet.name, panel: 'actions' })
             }
             onOpen={() => openApplet(applet)}
           />
@@ -243,10 +249,10 @@ export function Library({
                 aria-label={`Remove ${applet.applet_id}`}
                 onClick={(event) => {
                   event.currentTarget.focus({ preventScroll: true });
-                  showRemoval({
+                  showAction({
                     applet_id: applet.applet_id,
                     name: applet.applet_id,
-                    confirm: true,
+                    panel: 'remove',
                   });
                 }}
               >
@@ -268,12 +274,12 @@ export function Library({
           </button>
         </div>
       )}
-      {!installOpen && !removal && load_error && (
+      {!installOpen && !action && load_error && (
         <p className="status library-status error" role="alert">
           {load_error}
         </p>
       )}
-      {!installOpen && !removal && status && (
+      {!installOpen && !action && status && (
         <p
           className={`status library-status${failed ? ' error' : ''}`}
           role={failed ? 'alert' : 'status'}
@@ -281,7 +287,7 @@ export function Library({
           {status}
         </p>
       )}
-      {!installOpen && !removal && restart_offer && (
+      {!installOpen && !action && restart_offer && (
         <div className="button-row library-restart">
           <button
             className="primary"
@@ -292,54 +298,74 @@ export function Library({
           </button>
         </div>
       )}
-      {removal && (
-        <Sheet
-          key={removal.confirm ? 'confirm' : 'actions'}
-          open
-          title={removal.confirm ? `Remove ${removal.name}?` : removal.name}
-          dismissible={!busy}
-          onClose={() => setRemoval(undefined)}
-        >
-          {removal.confirm ? (
-            <>
-              <p>
-                Its saved data stays on this device. Reinstall from the same source to use it again.
-              </p>
-              <div className="button-row">
-                <button disabled={busy} onClick={() => setRemoval(undefined)}>
-                  Cancel
-                </button>
-                <button className="danger" disabled={busy} onClick={() => remove(removal)}>
-                  {busy ? 'Removing…' : 'Remove'}
+      {action?.panel === 'info' && action_applet ? (
+        <AppletInfoSheet
+          key={action_applet.applet_id}
+          applet={action_applet}
+          onClose={() => setAction(undefined)}
+          onInstalled={(result) => void installed(result)}
+          onRestart={(applet) => openApplet(applet, true)}
+        />
+      ) : (
+        action && (
+          <Sheet
+            key={action.panel}
+            open
+            title={action.panel === 'remove' ? `Remove ${action.name}?` : action.name}
+            dismissible={!busy}
+            onClose={() => setAction(undefined)}
+          >
+            {action.panel === 'remove' ? (
+              <>
+                <p>
+                  Its saved data stays on this device. Reinstall from the same source to use it
+                  again.
+                </p>
+                <div className="button-row">
+                  <button disabled={busy} onClick={() => setAction(undefined)}>
+                    Cancel
+                  </button>
+                  <button className="danger" disabled={busy} onClick={() => remove(action)}>
+                    {busy ? 'Removing…' : 'Remove'}
+                  </button>
+                </div>
+                {failed && (
+                  <p className="status error" role="alert">
+                    {status}
+                  </p>
+                )}
+              </>
+            ) : (
+              <div className="applet-menu-actions">
+                {action_applet && (
+                  <button
+                    className="applet-menu-action"
+                    onClick={() => setAction({ ...action, panel: 'info' })}
+                  >
+                    <Icon name="info" />
+                    Applet info
+                  </button>
+                )}
+                {action_applet && restart_required.includes(action_applet.applet_id) && (
+                  <button
+                    className="applet-menu-action"
+                    onClick={() => openApplet(action_applet, true)}
+                  >
+                    <Icon name="reload" />
+                    Restart applet
+                  </button>
+                )}
+                <button
+                  className="applet-menu-action danger"
+                  onClick={() => setAction({ ...action, panel: 'remove' })}
+                >
+                  <Icon name="trash" />
+                  Remove applet
                 </button>
               </div>
-              {failed && (
-                <p className="status error" role="alert">
-                  {status}
-                </p>
-              )}
-            </>
-          ) : (
-            <div className="applet-menu-actions">
-              {action_applet && restart_required.includes(action_applet.applet_id) && (
-                <button
-                  className="applet-menu-action"
-                  onClick={() => openApplet(action_applet, true)}
-                >
-                  <Icon name="reload" />
-                  Restart applet
-                </button>
-              )}
-              <button
-                className="applet-menu-action danger"
-                onClick={() => setRemoval({ ...removal, confirm: true })}
-              >
-                <Icon name="trash" />
-                Remove applet
-              </button>
-            </div>
-          )}
-        </Sheet>
+            )}
+          </Sheet>
+        )
       )}
       <InstallSheet
         open={installOpen}

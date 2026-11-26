@@ -1,11 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
-import {
-  getAppletInstallation,
-  getStoreDetail,
-  installStoreRelease,
-  message,
-  onInstallProgress,
-} from '../lib/tauri';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { getStoreDetail, installStoreRelease, message, onInstallProgress } from '../lib/tauri';
 import {
   newStoreAccess,
   recommendedStoreRelease,
@@ -14,12 +8,13 @@ import {
   storeSize,
 } from '../lib/storeState';
 import type {
+  AppletInstallResult,
   AppletInstallation,
-  AppletSession,
   InstallProgress,
   StoreChannel,
   StoreDetail,
   StoreReleaseOption,
+  StoreSource,
 } from '../lib/types';
 import { OperationScope, type Operation } from './providers/state';
 
@@ -29,24 +24,80 @@ interface Review {
 }
 
 type Phase = 'loading' | 'checking' | 'installing';
+const installation_changed = 'The installed applet changed. Check its releases again.';
+
+function sameStoreSource(first: StoreSource | null, second: StoreSource | null) {
+  return (
+    first?.applet_id === second?.applet_id &&
+    first?.store_url === second?.store_url &&
+    first?.channel === second?.channel
+  );
+}
+
+function sameInstallation(first: AppletInstallation | undefined, second: AppletInstallation) {
+  return (
+    first?.installed_version === second.installed_version &&
+    first.installed_sha256 === second.installed_sha256 &&
+    sameStoreSource(first.store_source, second.store_source)
+  );
+}
 
 export function AppletChannel({
-  session,
+  applet_id,
+  loadInstallation,
+  initial_installation,
+  disabled = false,
   onInstalling,
+  onInstalled,
   onRestart,
 }: {
-  session: AppletSession;
+  applet_id: string;
+  loadInstallation: () => Promise<AppletInstallation>;
+  initial_installation?: AppletInstallation;
+  disabled?: boolean;
   onInstalling: (installing: boolean) => void;
+  onInstalled?: (result: AppletInstallResult) => void;
   onRestart: () => void;
 }) {
-  const [installation, setInstallation] = useState<AppletInstallation>();
+  const [installation, setInstallation] = useState(initial_installation);
   const [review, setReview] = useState<Review>();
   const [phase, setPhase] = useState<Phase>();
   const [progress, setProgress] = useState<InstallProgress>();
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
   const scope = useRef(new OperationScope());
-  const { session_id, view_id } = session;
+  const last_initial = useRef(initial_installation);
+  const current_installation = useRef(initial_installation);
+  const load_installation = useRef(loadInstallation);
+  load_installation.current = loadInstallation;
+
+  const updateInstallation = (next: AppletInstallation) => {
+    current_installation.current = next;
+    setInstallation(next);
+  };
+
+  useLayoutEffect(() => {
+    if (!initial_installation || phase === 'installing') return;
+    const previous = last_initial.current;
+    last_initial.current = initial_installation;
+    if (sameInstallation(previous, initial_installation)) {
+      if (
+        sameInstallation(current_installation.current, initial_installation) &&
+        previous?.restart_required !== initial_installation.restart_required
+      ) {
+        updateInstallation(initial_installation);
+      }
+      return;
+    }
+    if (!sameInstallation(current_installation.current, initial_installation)) {
+      scope.current.cancel();
+      setPhase(undefined);
+      setReview(undefined);
+      setNotice('');
+      setError(phase === 'checking' || review ? installation_changed : '');
+    }
+    updateInstallation(initial_installation);
+  }, [initial_installation, phase]);
 
   const run = async (next: Phase, work: (operation: Operation) => Promise<void>) => {
     const operation = scope.current.start();
@@ -68,15 +119,22 @@ export function AppletChannel({
     }
   };
 
+  const reload = async (operation: Operation) => {
+    const installed = await load_installation.current();
+    if (installed.store_source && installed.store_source.applet_id !== applet_id) {
+      throw new Error('Could not verify this applet’s installation.');
+    }
+    if (operation.isCurrent()) updateInstallation(installed);
+    return installed;
+  };
   const load = () =>
     void run('loading', async (operation) => {
-      const installed = await getAppletInstallation(session_id, view_id);
-      if (operation.isCurrent()) setInstallation(installed);
+      await reload(operation);
     });
   useEffect(() => {
-    load();
+    if (!last_initial.current) load();
     return () => scope.current.cancel();
-  }, [session_id, view_id]);
+  }, [applet_id]);
 
   const source = installation?.store_source;
   if (!installation) {
@@ -91,33 +149,59 @@ export function AppletChannel({
   const restart = installation.restart_required && !review && (
     <>
       <p role="status">Version {installation.installed_version} is installed. Restart to use it.</p>
-      <button className="primary" disabled={!!phase} onClick={onRestart}>
+      <button className="primary" disabled={disabled || !!phase} onClick={onRestart}>
         Restart applet
       </button>
     </>
   );
-  if (!source) return restart ? <div className="applet-channel">{restart}</div> : null;
+  if (!source) {
+    return restart || error ? (
+      <div className="applet-channel">
+        {error && <p role="alert">{error}</p>}
+        {restart}
+      </div>
+    ) : null;
+  }
 
   const checkRelease = (channel: StoreChannel) =>
     void run('checking', async (operation) => {
       setReview(undefined);
-      const detail = await getStoreDetail(source.store_url, source.applet_id, true);
-      if (!operation.isCurrent()) return;
-      if (
-        detail.installed_channel !== source.channel ||
-        !detail.installed ||
-        !detail.channel_snapshot
-      ) {
-        const installed = await getAppletInstallation(session_id, view_id);
-        if (operation.isCurrent()) {
-          setInstallation(installed);
-          throw new Error('The installed applet changed. Check its releases again.');
+      let detail: StoreDetail;
+      try {
+        detail = await getStoreDetail(source.store_url, applet_id, true);
+      } catch (error) {
+        if (!operation.isCurrent()) return;
+        const installed = await reload(operation).catch(() => undefined);
+        if (installed && !sameInstallation(installation, installed)) {
+          throw new Error(installation_changed);
         }
-        return;
+        throw error;
       }
-      setInstallation({
+      if (!operation.isCurrent()) return;
+      const installed = detail.installed;
+      const snapshot = detail.channel_snapshot;
+      if (
+        detail.applet.applet_id !== applet_id ||
+        detail.store_url !== source.store_url ||
+        detail.installed_channel !== source.channel ||
+        installed?.applet_id !== applet_id ||
+        installed.version !== installation.installed_version ||
+        (installation.installed_sha256 && installed.sha256 !== installation.installed_sha256) ||
+        installed.source?.kind !== 'store' ||
+        !sameStoreSource(installed.source, source) ||
+        !snapshot ||
+        snapshot.removed ||
+        snapshot.sha256 !== installed.sha256 ||
+        snapshot.source?.kind !== 'store' ||
+        !sameStoreSource(snapshot.source, source)
+      ) {
+        await reload(operation).catch(() => undefined);
+        throw new Error(installation_changed);
+      }
+      updateInstallation({
         store_source: source,
-        installed_version: detail.installed.version,
+        installed_version: installed.version,
+        installed_sha256: installed.sha256,
         restart_required: detail.restart_required,
       });
       const recommended = recommendedStoreRelease(detail, channel);
@@ -154,28 +238,52 @@ export function AppletChannel({
             : {}),
           expected_installed_sha256: detail.installed?.sha256 ?? null,
           installed_source: true,
+          ...(release.downloaded_bytes ? { resume_download: true } : {}),
           operation_id,
         });
         if (!operation.isCurrent()) return;
         if (result.status === 'paused') {
           setReview({
             detail,
-            release: { ...release, downloaded_bytes: result.received_bytes },
+            release: { ...release, downloaded_bytes: result.received_bytes || undefined },
           });
-          setNotice('Download paused. Continue when you’re ready.');
+          setNotice(
+            result.received_bytes
+              ? 'Download paused. Continue when you’re ready.'
+              : 'Download interrupted. Try again when you’re ready.',
+          );
           return;
         }
+        const saved = result.applet;
+        if (
+          saved.applet_id !== applet_id ||
+          saved.sha256 !== release.sha256 ||
+          saved.version !== release.version ||
+          saved.source?.kind !== 'store' ||
+          !sameStoreSource(saved.source, {
+            applet_id,
+            store_url: detail.store_url,
+            channel: storeReleaseChannel(release),
+          })
+        ) {
+          throw new Error('Could not verify the installed release. Check its details again.');
+        }
         setReview(undefined);
-        setInstallation({
-          store_source: result.applet.source?.kind === 'store' ? result.applet.source : null,
-          installed_version: result.applet.version,
+        updateInstallation({
+          store_source: saved.source,
+          installed_version: saved.version,
+          installed_sha256: saved.sha256,
           restart_required: result.restart_required,
         });
+        onInstalled?.({ applet: saved, restart_required: result.restart_required });
         if (!result.restart_required && release.action === 'update') {
-          setNotice(`Version ${result.applet.version} is installed.`);
+          setNotice(`Version ${saved.version} is installed.`);
         }
       } catch (error) {
-        if (operation.isCurrent()) setReview(undefined);
+        if (operation.isCurrent()) {
+          setReview(undefined);
+          await reload(operation).catch(() => undefined);
+        }
         throw error;
       } finally {
         stop();
@@ -193,7 +301,7 @@ export function AppletChannel({
             <select
               aria-label="Installed channel"
               value={source.channel}
-              disabled={!!phase || !!review}
+              disabled={disabled || !!phase || !!review}
               onChange={(event) => {
                 const next = event.currentTarget.value;
                 if (next === 'stable' || next === 'nightly') checkRelease(next);
@@ -207,7 +315,7 @@ export function AppletChannel({
       </dl>
       <button
         type="button"
-        disabled={!!phase || !!review}
+        disabled={disabled || !!phase || !!review}
         onClick={() => checkRelease(source.channel)}
       >
         Check for updates
@@ -261,7 +369,7 @@ export function AppletChannel({
               >
                 Cancel
               </button>
-              <button className="primary" onClick={() => install(review)}>
+              <button className="primary" disabled={disabled} onClick={() => install(review)}>
                 {review.release.downloaded_bytes !== undefined
                   ? 'Continue download'
                   : reviewing_update

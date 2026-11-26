@@ -52,6 +52,10 @@ export interface AppletPermission {
   grants: PermissionGrant[];
   restart_required: boolean;
 }
+export interface AppletInfo {
+  applet: InstalledApplet;
+  permissions: AppletPermission;
+}
 export interface AppletPermissionManifest extends Pick<Manifest, 'network' | 'permissions'> {
   has_lib: boolean;
 }
@@ -82,6 +86,7 @@ export interface AppletSession {
 export interface AppletInstallation {
   store_source: StoreSource | null;
   installed_version: string;
+  installed_sha256: string;
   restart_required: boolean;
 }
 export interface GitHubRelease {

@@ -5,6 +5,7 @@ import type { LlmResult } from '../../packages/applet-sdk/src/types';
 import type {
   AccountStatus,
   AppletEvent,
+  AppletInfo,
   AppletInstallResult,
   AppletInstallation,
   AppletListReport,
@@ -75,6 +76,8 @@ export async function onNativeBack(handle: (platform: 'ios' | 'android') => void
 
 export const backgroundShell = () => shellCall<void>('navigation.background');
 export const listApplets = () => shellCall<AppletListReport>('applets.list');
+export const getAppletInfo = (applet_id: string) =>
+  shellCall<AppletInfo>('applets.info', { applet_id });
 export const getStoreConfig = () => shellCall<StoreConfig>('store.config');
 export const setStoreUrl = (store_url: string) =>
   shellCall<StoreConfig>('store.set_url', { store_url });

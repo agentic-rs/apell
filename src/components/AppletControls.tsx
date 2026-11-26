@@ -8,7 +8,13 @@ import {
   permission_unavailable,
   systemPermissionLabel,
 } from '../lib/permissions';
-import { getPermissionMode, message, onPermissionsChanged, setPermissionMode } from '../lib/tauri';
+import {
+  getAppletInstallation,
+  getPermissionMode,
+  message,
+  onPermissionsChanged,
+  setPermissionMode,
+} from '../lib/tauri';
 import type {
   AppletSession,
   ManagedPermission,
@@ -176,6 +182,11 @@ export function AppletControls({
   onRestart,
 }: AppletControlsProps) {
   const { manifest } = session;
+  const { session_id, view_id } = session;
+  const loadInstallation = useCallback(
+    () => getAppletInstallation(session_id, view_id),
+    [session_id, view_id],
+  );
   const [panel, setPanel] = useState<'menu' | 'about' | null>(null);
   const read_only = disabled || Boolean(stopped);
   const device_access_id = useId();
@@ -269,7 +280,9 @@ export function AppletControls({
                 </section>
               )}
               <AppletChannel
-                session={session}
+                key={view_id}
+                applet_id={manifest.applet_id}
+                loadInstallation={loadInstallation}
                 onInstalling={onInstallingChannel}
                 onRestart={() => {
                   setPanel(null);

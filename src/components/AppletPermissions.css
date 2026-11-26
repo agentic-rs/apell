@@ -73,13 +73,13 @@
   font-size: 0.8125rem;
 }
 
-.applet-permission-group dl {
+.applet-permission-details dl {
   margin: 0;
 }
 
 .applet-permission-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+  grid-template-columns: minmax(min-content, 1fr) minmax(0, 1.6fr);
   align-items: center;
   gap: 8px 12px;
   min-height: 48px;
@@ -99,7 +99,7 @@
 }
 
 .applet-permission-row dt {
-  overflow-wrap: anywhere;
+  overflow-wrap: normal;
 }
 
 .applet-permission-state {
@@ -127,4 +127,17 @@
   flex-basis: 100%;
   margin: 2px 0 6px;
   font-size: 0.8125rem;
+}
+
+@media (max-width: 360px) {
+  .applet-permission-section > h3,
+  .applet-permission-note,
+  .applet-permission-row {
+    padding-inline: 8px;
+  }
+
+  .applet-permission-row {
+    grid-template-columns: minmax(min-content, 1fr) minmax(0, 2fr);
+    column-gap: 8px;
+  }
 }

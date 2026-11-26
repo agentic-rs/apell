@@ -1,0 +1,52 @@
+.applet-info {
+  display: grid;
+  gap: 16px;
+}
+
+.applet-info-identity {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  overflow-wrap: anywhere;
+}
+
+.applet-info-identity .applet-icon {
+  width: 52px;
+  height: 52px;
+  border-radius: 14px;
+}
+
+.applet-info-identity h3 {
+  margin: 0 0 4px;
+  font-size: 1.125rem;
+}
+
+.applet-info-identity p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+.applet-info .applet-info-source > div {
+  grid-template-columns: minmax(min-content, 1fr) minmax(0, 1.6fr);
+}
+
+.applet-info-source dt {
+  overflow-wrap: normal;
+}
+
+.applet-info .applet-channel p {
+  margin: 0;
+  font-size: 0.875rem;
+}
+
+.applet-info .applet-permission-details {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.applet-info .applet-permission-section:first-child > h3 {
+  border-top: 0;
+}

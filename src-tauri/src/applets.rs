@@ -74,6 +74,7 @@ pub struct Attachment {
 #[derive(Serialize)]
 pub struct AppletInstallation {
   installed_version: String,
+  installed_sha256: String,
   store_source: Option<StoreSource>,
   restart_required: bool,
 }
@@ -328,6 +329,7 @@ impl Host {
     let restart_required = self.needs_applet_restart(&installed);
     Ok(AppletInstallation {
       installed_version: installed.manifest.version,
+      installed_sha256: installed.sha256,
       store_source: match installed.source {
         Some(PackageSource::Store(source)) => Some(source),
         _ => None,
@@ -1247,6 +1249,7 @@ mod tests {
     assert!(initial.store_source.is_none());
     assert!(!initial.restart_required);
     let installed = host.bundles.installed(APPLET).unwrap();
+    assert_eq!(initial.installed_sha256, installed.sha256);
     let bytes = fs::read(
       host
         .root
@@ -1276,6 +1279,7 @@ mod tests {
     assert!(host.needs_applet_restart(&updated));
     let installation = host.view_installation(RUN, &attachment.view_id).unwrap();
     assert_eq!(installation.installed_version, "1.0.0");
+    assert_eq!(installation.installed_sha256, updated.sha256);
     let source = installation.store_source.unwrap();
     assert_eq!(source.store_url, "https://store.example");
     assert_eq!(source.channel, StoreChannel::Stable);

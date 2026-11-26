@@ -40,10 +40,11 @@ running applet after Apell restarts. See [using the store](docs/store.md#browse-
 See [Apell Account](docs/account.md) for the standalone sign-in service and its
 Store client contract.
 
-To remove an applet, press and hold its library icon, choose **Remove applet**,
-and confirm. On desktop, right-click the icon to open the same menu. Removal
-stops the applet and keeps its local data. Reinstall it from the same source
-to use its saved files and settings again.
+Press and hold a Library icon or right-click it on desktop. Choose **Applet
+info** to check the installed version, change device permissions, and review
+Store updates or switch channels without opening the applet. Choose **Remove
+applet** and confirm to remove it. Removal keeps its local data for a later
+reinstall from the same source.
 
 `pnpm dev` serves the shell frontend for development. Launch the native Tauri application, `apell-app`, to install and run applets.
 

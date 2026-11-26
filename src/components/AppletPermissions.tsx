@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import {
   appletPermissionRows,
   device_access_note,
@@ -138,21 +138,38 @@ function PermissionRow({
   );
 }
 
-function AppletPermissionGroup({
-  applet,
-  busy,
-  open,
-  saving,
-  edit_error,
-  edit,
-}: {
+interface AppletPermissionDetailsProps {
   applet: AppletPermission;
   busy: boolean;
-  open?: boolean;
   saving?: ManagedPermission;
   edit_error?: PermissionChangeError;
   edit: (change: PermissionChange) => void;
-}) {
+}
+
+function AppletPermissionGroup({
+  open,
+  ...props
+}: AppletPermissionDetailsProps & { open?: boolean }) {
+  return (
+    <details className="applet-permission-group" open={open}>
+      <summary>
+        <span className="applet-permission-name">{props.applet.name}</span>
+        {props.applet.restart_required && (
+          <span className="applet-permission-restart">Restart required</span>
+        )}
+      </summary>
+      <AppletPermissionDetails {...props} />
+    </details>
+  );
+}
+
+export function AppletPermissionDetails({
+  applet,
+  busy,
+  saving,
+  edit_error,
+  edit,
+}: AppletPermissionDetailsProps) {
   const rows = applet.manifest ? appletPermissionRows(applet.manifest) : [];
   const managed = rows.filter((row) => row.kind === 'managed');
   const fixed = rows.filter((row) => row.kind === 'fixed');
@@ -160,13 +177,7 @@ function AppletPermissionGroup({
   const { applet_id, installed_revision } = applet;
   const configurable = applet.grants.some((grant) => grant.available && grant.mode);
   return (
-    <details className="applet-permission-group" open={open}>
-      <summary>
-        <span className="applet-permission-name">{applet.name}</span>
-        {applet.restart_required && (
-          <span className="applet-permission-restart">Restart required</span>
-        )}
-      </summary>
+    <div className="applet-permission-details">
       {(applet.grants.length > 0 || pickers.length > 0) && (
         <div className="applet-permission-section">
           <h3>Device access</h3>
@@ -227,12 +238,12 @@ function AppletPermissionGroup({
           </dl>
         </div>
       )}
-    </details>
+    </div>
   );
 }
 
-export function AppletPermissions() {
-  const [applets, setApplets] = useState<AppletPermission[]>();
+export function useAppletPermissionState<T>(read: () => Promise<T>) {
+  const [value, setValue] = useState<T>();
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState('');
   const [saving, setSaving] = useState<PermissionTarget>();
@@ -240,59 +251,65 @@ export function AppletPermissions() {
   const scope = useRef(new OperationScope());
   const refresh_pending = useRef(false);
 
-  const load = async (edit?: PermissionChange) => {
-    const operation = scope.current.start();
-    if (!operation) {
-      if (!edit) refresh_pending.current = true;
-      return;
-    }
-    setBusy(true);
-    try {
-      if (edit) {
-        setSaving(edit);
-        setEditError(undefined);
-        try {
-          if (edit.mode) {
-            await setInstalledPermissionMode(
-              edit.applet_id,
-              edit.installed_revision,
-              edit.permission,
-              edit.mode,
-            );
-          } else {
-            await forgetPermission(edit.applet_id, edit.permission);
-          }
-        } catch (cause) {
-          if (operation.isCurrent()) {
-            setEditError({
-              applet_id: edit.applet_id,
-              permission: edit.permission,
-              text: message(cause),
-            });
+  const load = useCallback(
+    async (edit?: PermissionChange) => {
+      const operation = scope.current.start();
+      if (!operation) {
+        if (!edit) refresh_pending.current = true;
+        return;
+      }
+      setBusy(true);
+      let latest: T | undefined;
+      try {
+        if (edit) {
+          setSaving(edit);
+          setEditError(undefined);
+          try {
+            if (edit.mode) {
+              await setInstalledPermissionMode(
+                edit.applet_id,
+                edit.installed_revision,
+                edit.permission,
+                edit.mode,
+              );
+            } else {
+              await forgetPermission(edit.applet_id, edit.permission);
+            }
+          } catch (cause) {
+            if (operation.isCurrent()) {
+              setEditError({
+                applet_id: edit.applet_id,
+                permission: edit.permission,
+                text: message(cause),
+              });
+            }
           }
         }
-      }
-      while (operation.isCurrent()) {
-        refresh_pending.current = false;
-        try {
-          const entries = await listAppletPermissions();
-          if (!operation.isCurrent()) return;
-          setApplets(entries);
-          setError('');
-        } catch (cause) {
-          if (!operation.isCurrent()) return;
-          setError(message(cause));
+        while (operation.isCurrent()) {
+          refresh_pending.current = false;
+          try {
+            latest = await read();
+            if (!operation.isCurrent()) return;
+            setValue(latest);
+            setError('');
+          } catch (cause) {
+            if (!operation.isCurrent()) return;
+            latest = undefined;
+            setError(message(cause));
+          }
+          if (!refresh_pending.current) break;
         }
-        if (!refresh_pending.current) break;
+        return latest;
+      } finally {
+        if (operation.isCurrent()) {
+          operation.finish();
+          setSaving(undefined);
+          setBusy(false);
+        }
       }
-    } finally {
-      if (operation.isCurrent()) {
-        operation.finish();
-        setSaving(undefined);
-        setBusy(false);
-      }
-    }
-  };
+    },
+    [read],
+  );
 
   useEffect(() => {
     let open = true;
@@ -310,8 +327,20 @@ export function AppletPermissions() {
       refresh_pending.current = false;
       void unsubscribe.then((unlisten) => unlisten?.());
     };
-  }, []);
+  }, [load]);
 
+  return { value, busy, error, saving, edit_error, load };
+}
+
+export function AppletPermissions() {
+  const {
+    value: applets,
+    busy,
+    error,
+    saving,
+    edit_error,
+    load,
+  } = useAppletPermissionState(listAppletPermissions);
   return (
     <section className="panel applet-permissions" aria-labelledby="settings-permissions">
       <h2 id="settings-permissions" className="settings-section-title" tabIndex={-1}>

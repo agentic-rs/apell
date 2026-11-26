@@ -6,7 +6,7 @@ use apell_core::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{collections::HashSet, path::PathBuf};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -351,25 +351,36 @@ impl PermissionGrants {
 
   fn installed_summary(
     &self,
-    applet: InstalledApplet,
+    applet: &InstalledApplet,
     restart_required: bool,
   ) -> Result<AppletPermissionSummary, String> {
-    let revision = installed_revision(&applet)?;
-    let source = GrantSource::from(&applet);
-    let manifest = applet.manifest;
+    let revision = installed_revision(applet)?;
+    let source = GrantSource::from(applet);
+    let manifest = &applet.manifest;
     let grants = self.summary(&manifest.applet_id, Some(&source), &manifest.permissions)?;
     Ok(AppletPermissionSummary {
-      applet_id: manifest.applet_id,
-      name: manifest.name,
+      applet_id: manifest.applet_id.clone(),
+      name: manifest.name.clone(),
       installed_revision: Some(revision),
       manifest: Some(PermissionManifest {
         network: manifest.network,
-        permissions: manifest.permissions,
+        permissions: manifest.permissions.clone(),
         has_lib: manifest.lib.is_some(),
       }),
       grants,
       restart_required,
     })
+  }
+
+  fn installed_info(
+    &self,
+    applet: InstalledApplet,
+    restart_required: bool,
+    read: impl FnMut(ManagedPermission) -> SystemAuthorization,
+  ) -> Result<Value, String> {
+    let mut permissions = self.installed_summary(&applet, restart_required)?;
+    attach_system_authorizations(std::slice::from_mut(&mut permissions), read);
+    Ok(json!({ "applet": applet, "permissions": permissions }))
   }
 
   fn summaries(
@@ -380,7 +391,7 @@ impl PermissionGrants {
     let mut entries = Vec::new();
     for applet in report.applets {
       let restart_required = pending_restarts.contains(&applet.manifest.applet_id);
-      entries.push(self.installed_summary(applet, restart_required)?);
+      entries.push(self.installed_summary(&applet, restart_required)?);
     }
     for applet in report.unavailable {
       let grants = self.summary(&applet.applet_id, None, &[])?;
@@ -477,6 +488,20 @@ pub async fn list(app: AppHandle, host: &Host) -> Result<Value, String> {
   .await
 }
 
+pub async fn installed_info(app: AppHandle, applet_id: String) -> Result<Value, String> {
+  crate::commands::blocking(move || {
+    let host = app.state::<Host>();
+    let applet = host.bundles.installed(&applet_id)?;
+    let restart_required = host.needs_applet_restart(&applet);
+    host
+      .grants
+      .installed_info(applet, restart_required, |permission| {
+        permission.system_authorization(&app)
+      })
+  })
+  .await
+}
+
 pub fn publish_device_change(app: &AppHandle) {
   let _ = app.emit_to("main", "apell-permissions-changed", ());
 }
@@ -497,6 +522,46 @@ mod tests {
       source: Some(source),
       icon_data_url: None,
     }
+  }
+
+  #[test]
+  fn installed_info_pairs_permissions_with_the_exact_store_installation() {
+    let dir = tempfile::tempdir().unwrap();
+    let grants = PermissionGrants::new(dir.path().into());
+    let mut applet = installed(
+      StoreSource {
+        store_url: "https://store.example".into(),
+        applet_id: "recorder".into(),
+        channel: StoreChannel::Nightly,
+      }
+      .into(),
+    );
+    applet.manifest.version = "1.1.0-nightly.1".into();
+    applet.manifest.network = false;
+    let revision = installed_revision(&applet).unwrap();
+    let source = GrantSource::from(&applet);
+    grants
+      .set_mode(
+        ManagedPermission::Microphone,
+        "recorder",
+        &source,
+        PermissionMode::Blocked,
+      )
+      .unwrap();
+
+    let info = grants
+      .installed_info(applet, true, |_| SystemAuthorization::Allowed)
+      .unwrap();
+    assert_eq!(
+      info["applet"]["applet_id"],
+      info["permissions"]["applet_id"]
+    );
+    assert_eq!(info["applet"]["version"], "1.1.0-nightly.1");
+    assert_eq!(info["applet"]["source"]["channel"], "nightly");
+    assert_eq!(info["permissions"]["installed_revision"], revision);
+    assert_eq!(info["permissions"]["restart_required"], true);
+    assert_eq!(info["permissions"]["manifest"]["network"], false);
+    assert_eq!(info["permissions"]["grants"][0]["mode"], "blocked");
   }
 
   #[test]
