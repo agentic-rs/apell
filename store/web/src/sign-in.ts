@@ -41,10 +41,14 @@ export function signInNotice(session: Session): HTMLElement | undefined {
 
   const notice = element('p', 'notice error');
   notice.setAttribute('role', 'alert');
-  if (error === 'github_link_required' && signInOption(session)?.provider === 'account') {
+  const account_sign_in = signInOption(session)?.provider === 'account';
+  if (error === 'github_link_required' && account_sign_in) {
     notice.textContent =
       'Link the GitHub account you use for publishing, then return here and sign in again. ';
     notice.append(accountSecurityLink());
+  } else if (error === 'account_unavailable' && account_sign_in) {
+    notice.textContent =
+      'Apell Account is temporarily unavailable. Try signing in again in a moment.';
   } else {
     notice.textContent = 'Sign-in could not be completed. Please try again.';
   }

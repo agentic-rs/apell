@@ -244,6 +244,39 @@ fn session_cookie(response: &Response) -> Option<&str> {
 }
 
 #[tokio::test]
+async fn unavailable_account_returns_to_the_sign_in_page_without_an_oauth_cookie() {
+  let (directory, store, _app, _secret) = fixture();
+  let mut account = MockAccount::new(json!({})).await;
+  account.issuer.push_str("/unavailable");
+  let app = account.router(directory.path());
+  let cli = store.start_cli_authorization(now()).unwrap();
+  let cases = [
+    (
+      String::new(),
+      "/account?auth_error=account_unavailable".into(),
+    ),
+    (
+      "?return_to=%2Faccount%2Fpackages%2Fsample%3Ftab%3Dpeople".into(),
+      "/account/packages/sample?tab=people&auth_error=account_unavailable".into(),
+    ),
+    (
+      format!("?cli_code={}", cli.user_code),
+      format!(
+        "/account/cli?code={}&auth_error=account_unavailable",
+        cli.user_code
+      ),
+    ),
+  ];
+  for (query, destination) in cases {
+    let response = get_page(&app, &format!("/api/v1/auth/account/login{query}")).await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(response.headers()[header::LOCATION], destination);
+    assert!(!response.headers().contains_key(header::SET_COOKIE));
+    assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+  }
+}
+
+#[tokio::test]
 async fn account_sign_in_preserves_existing_store_owner_and_disables_direct_github_login() {
   let (directory, store, github_app, old_secret) = fixture();
   store.register_package("sample", &super::user()).unwrap();

@@ -39,7 +39,8 @@ Chinese locale is at `/cn/`.
 - Store frontend and landing page edits reload through Vite.
 - Run `pnpm dev:local reload` after editing Rust or the test issuer. This
   refreshes the source snapshot and rebuilds the services with cached Cargo
-  dependencies. It keeps the local Store and relay databases.
+  dependencies. It keeps the local Store and relay databases and completed
+  native test sign-ins. Test sign-ins expire after 24 hours.
 - Run `pnpm dev:local stop` to stop the container. Stop the host Vite server
   with Control-C. Restart with `pnpm dev:local up` and `pnpm dev:local web`.
 

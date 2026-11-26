@@ -144,9 +144,17 @@ async fn login(state: &AppState, query: Login, provider: LoginProvider) -> Resul
     SignIn::Github(config) => (authorization_url(config, &state_secret, &verifier)?, None),
     SignIn::Account(account) => {
       let nonce = random_secret()?;
-      let url = account
+      let url = match account
         .authorization_url(&state_secret, &verifier, &nonce)
-        .await?;
+        .await
+      {
+        Ok(url) => url,
+        Err(error) if error.code == "account_unavailable" => {
+          let destination = callback_destination(&resume, Some(error.code));
+          return Ok(Redirect::to(&destination).into_response());
+        }
+        Err(error) => return Err(error),
+      };
       (url, Some(nonce))
     }
   };

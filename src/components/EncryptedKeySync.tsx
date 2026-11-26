@@ -406,13 +406,16 @@ export function EncryptedKeySync({ disabled, onApplied, onBusyChange }: Props) {
     });
   }
 
-  if (status?.state === 'unavailable' || status?.state === 'signed_out') return null;
+  if (status?.state === 'signed_out') return null;
   const button_disabled = disabled || busy;
 
   return (
     <section className="account-key-sync" aria-label="Encrypted API keys">
       <h3>Encrypted API keys</h3>
       {!status && !status_error && <p role="status">Checking device…</p>}
+      {status?.state === 'unavailable' && (
+        <p role="status">Encrypted API-key sync is unavailable in this build.</p>
+      )}
       {status?.state === 'verified' && (
         <>
           <p>

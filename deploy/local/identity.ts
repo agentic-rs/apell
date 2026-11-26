@@ -1,4 +1,5 @@
 // Synthetic identity provider for the loopback Docker stack. No real accounts.
+import { Database } from 'bun:sqlite';
 import {
   createHash,
   createPrivateKey,
@@ -21,11 +22,15 @@ const recovery_acr = 'urn:logto:acr:1fa';
 const subject = 'apell-local-user';
 const email = 'developer@example.invalid';
 const github_id = Number.MAX_SAFE_INTEGER;
+const max_grants = 256;
+const refresh_lifetime = 86_400;
 const now = () => Math.floor(Date.now() / 1000);
 const randomToken = () => randomBytes(32).toString('base64url');
+const tokenDigest = (value: string) => createHash('sha256').update(value).digest('hex');
 
 const config_dir = process.env.APELL_DEV_CONFIG_DIR ?? '/config';
 const tls_dir = process.env.APELL_DEV_TLS_DIR ?? '/config';
+const data_dir = process.env.APELL_DEV_DATA_DIR ?? '/data';
 
 async function readSigningKey() {
   try {
@@ -108,14 +113,57 @@ const web_requests = new Map<string, WebRequest>();
 const web_codes = new Map<string, AuthorizedWebRequest>();
 const web_tokens = new Map<string, Expiring>();
 const device_requests = new Map<string, DeviceRequest>();
-const refresh_tokens = new Map<string, DeviceAccess>();
+
+// Completed native sessions survive container reloads. Bearer secrets stay with the device.
+const sessions = new Database(join(data_dir, 'identity.sqlite3'));
+sessions.exec(`
+  CREATE TABLE IF NOT EXISTS refresh_sessions (
+    token_hash TEXT PRIMARY KEY,
+    store_scope TEXT NOT NULL,
+    relay_scope TEXT,
+    expires_at INTEGER NOT NULL
+  ) STRICT
+`);
+const prune_sessions = sessions.query('DELETE FROM refresh_sessions WHERE expires_at <= ?');
+const insert_session = sessions.query(`
+  INSERT INTO refresh_sessions (token_hash, store_scope, relay_scope, expires_at)
+  SELECT ?, ?, ?, ? WHERE (SELECT COUNT(*) FROM refresh_sessions) < ?
+`);
+const find_session = sessions.query<
+  { store_scope: string; relay_scope: string | null },
+  [string, number]
+>(`
+  SELECT store_scope, relay_scope FROM refresh_sessions
+  WHERE token_hash = ? AND expires_at > ?
+`);
+const revoke_session = sessions.query('DELETE FROM refresh_sessions WHERE token_hash = ?');
+const saveSession = sessions.transaction((refresh_token: string, scopes: Map<string, string>) => {
+  const time = now();
+  prune_sessions.run(time);
+  return (
+    insert_session.run(
+      tokenDigest(refresh_token),
+      scopes.get(store_resource) ?? '',
+      scopes.get(relay_resource) ?? null,
+      time + refresh_lifetime,
+      max_grants,
+    ).changes === 1
+  );
+});
+prune_sessions.run(now());
+
+function sessionScope(audience: string, refresh_token: string) {
+  const session = find_session.get(tokenDigest(refresh_token), now());
+  if (audience === store_resource) return session?.store_scope;
+  if (audience === relay_resource) return session?.relay_scope;
+}
 
 function remember<T extends Expiring>(entries: Map<string, T>, key: string, value: T) {
   const time = now();
   for (const [old_key, entry] of entries) {
     if (entry.expires_at <= time) entries.delete(old_key);
   }
-  if (entries.size >= 256) return false;
+  if (entries.size >= max_grants) return false;
   entries.set(key, value);
   return true;
 }
@@ -400,8 +448,8 @@ async function token(request: Request) {
   const audience = form.get('resource') ?? '';
   if (grant_type === 'refresh_token') {
     const refresh_token = form.get('refresh_token') ?? '';
-    const scope = active(refresh_tokens, refresh_token)?.scopes.get(audience);
-    return scope === undefined
+    const scope = sessionScope(audience, refresh_token);
+    return scope == null
       ? oauthError('invalid_grant')
       : shellTokens(audience, scope, refresh_token);
   }
@@ -415,9 +463,7 @@ async function token(request: Request) {
   device_requests.delete(device_code);
   if (!pending.approved) return oauthError('access_denied');
   const refresh_token = randomToken();
-  if (
-    !remember(refresh_tokens, refresh_token, { scopes: pending.scopes, expires_at: now() + 86_400 })
-  ) {
+  if (!saveSession(refresh_token, pending.scopes)) {
     return oauthError('temporarily_unavailable', 503);
   }
   return shellTokens(audience, scope, refresh_token);
@@ -426,7 +472,7 @@ async function token(request: Request) {
 async function revoke(request: Request) {
   const form = await readForm(request);
   if (form?.get('client_id') !== shell_client) return oauthError('invalid_client', 401);
-  refresh_tokens.delete(form.get('token') ?? '');
+  revoke_session.run(tokenDigest(form.get('token') ?? ''));
   return new Response(null, { headers: { 'cache-control': 'no-store' } });
 }
 
