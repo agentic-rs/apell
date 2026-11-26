@@ -134,9 +134,9 @@ impl ReviewState {
     stop: &BackgroundStop,
   ) -> Result<(Access, Self), String> {
     // Load a saved session on the first call after a shell restart.
-    let account = stop
-      .wait(host.account.account_key(app))
-      .await??
+    let (account, _) = stop
+      .session(app, host)
+      .await?
       .ok_or("Sign in to Apell Account to sync encrypted API keys.")?;
     let relay = stop.access(app, host, true, None).await?;
     if relay.account_key != account {

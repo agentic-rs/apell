@@ -190,42 +190,64 @@ export const getAccountStatus = () => shellCall<AccountStatus>('account.status')
 export const signInToAccount = () => shellCall<AccountStatus>('account.sign_in');
 export const openAccountSignIn = () => shellCall<void>('account.open_sign_in');
 export const cancelAccountSignIn = () => shellCall<AccountStatus>('account.cancel');
-export const signOutOfAccount = () => shellCall<AccountStatus>('account.sign_out');
+const accountCall = <T>(method: string, account_session_id: string, params: object = {}) =>
+  shellCall<T>(method, { ...params, account_session_id });
+export const signOutOfAccount = (account_session_id: string) =>
+  accountCall<AccountStatus>('account.sign_out', account_session_id);
 export const onAccountChanged = (handler: () => void) => listen('apell-account-changed', handler);
-export const getConfigSyncStatus = () => shellCall<ConfigSyncStatus>('sync.status');
+export const getConfigSyncStatus = (account_session_id: string) =>
+  accountCall<ConfigSyncStatus>('sync.status', account_session_id);
 export const onConfigSyncChanged = (handler: () => void) =>
   listen('apell-config-sync-changed', handler);
-export const setConfigSyncEnabled = (enabled: boolean) =>
-  shellCall<ConfigSyncStatus>('sync.set_enabled', { enabled });
-export const syncConfig = (resolution?: ConfigSyncResolution) =>
-  shellCall<ConfigSyncResult>('sync.run', resolution ?? {});
-export const reviewConfigSync = () => shellCall<ConfigSyncReviewResult>('sync.review');
-export const getKeySyncStatus = () => shellCall<KeySyncStatus>('key_sync.status');
-export const getLocalKeySyncStatus = () => shellCall<LocalKeySyncStatus>('key_sync.local_status');
-export const retryKeySync = () => shellCall<void>('key_sync.retry');
-export const reviewKeySyncConflicts = () => shellCall<KeySyncConflict[]>('key_sync.conflicts');
-export const resolveKeySyncConflict = (resolution: KeySyncConflictResolution) =>
-  shellCall<{ warning: string | null }>('key_sync.resolve_conflict', resolution);
+export const setConfigSyncEnabled = (account_session_id: string, enabled: boolean) =>
+  accountCall<ConfigSyncStatus>('sync.set_enabled', account_session_id, { enabled });
+export const syncConfig = (account_session_id: string, resolution?: ConfigSyncResolution) =>
+  accountCall<ConfigSyncResult>('sync.run', account_session_id, resolution);
+export const reviewConfigSync = (account_session_id: string) =>
+  accountCall<ConfigSyncReviewResult>('sync.review', account_session_id);
+export const getKeySyncStatus = (account_session_id: string) =>
+  accountCall<KeySyncStatus>('key_sync.status', account_session_id);
+export const getLocalKeySyncStatus = (account_session_id: string) =>
+  accountCall<LocalKeySyncStatus>('key_sync.local_status', account_session_id);
+export const retryKeySync = (account_session_id: string) =>
+  accountCall<void>('key_sync.retry', account_session_id);
+export const reviewKeySyncConflicts = (account_session_id: string) =>
+  accountCall<KeySyncConflict[]>('key_sync.conflicts', account_session_id);
+export const resolveKeySyncConflict = (
+  account_session_id: string,
+  resolution: KeySyncConflictResolution,
+) =>
+  accountCall<{ warning: string | null }>(
+    'key_sync.resolve_conflict',
+    account_session_id,
+    resolution,
+  );
 export const onKeySyncChanged = (handler: () => void) => listen('apell-key-sync-changed', handler);
 export const onLlmSettingsChanged = (handler: () => void) =>
   listen('apell-llm-settings-changed', handler);
-export const createKeySync = () => shellCall<void>('key_sync.create');
-export const startKeySyncPairing = () => shellCall<KeySyncPairing>('key_sync.pair_start');
-export const listKeySyncPairings = () =>
-  shellCall<{ pairs: KeySyncPairing[] }>('key_sync.pair_list');
-export const finishKeySyncPairing = (pair_id: string) =>
-  shellCall<boolean>('key_sync.pair_finish', { pair_id });
-export const cancelKeySyncPairing = (pair_id: string) =>
-  shellCall<void>('key_sync.pair_cancel', { pair_id });
-export const approveKeySyncPairing = (pair_id: string, approval_nonce: string) =>
-  shellCall<void>('key_sync.pair_approve', { pair_id, approval_nonce });
-export const startKeySyncRecovery = () => shellCall<KeySyncRecovery>('key_sync.recovery_start');
-export const openKeySyncRecovery = (request_id: string) =>
-  shellCall<void>('key_sync.recovery_open', { request_id });
-export const finishKeySyncRecovery = (request_id: string) =>
-  shellCall<boolean | 'rejected'>('key_sync.recovery_finish', { request_id });
-export const cancelKeySyncRecovery = (request_id: string) =>
-  shellCall<void>('key_sync.recovery_cancel', { request_id });
+export const createKeySync = (account_session_id: string) =>
+  accountCall<void>('key_sync.create', account_session_id);
+export const startKeySyncPairing = (account_session_id: string) =>
+  accountCall<KeySyncPairing>('key_sync.pair_start', account_session_id);
+export const listKeySyncPairings = (account_session_id: string) =>
+  accountCall<{ pairs: KeySyncPairing[] }>('key_sync.pair_list', account_session_id);
+export const finishKeySyncPairing = (account_session_id: string, pair_id: string) =>
+  accountCall<boolean>('key_sync.pair_finish', account_session_id, { pair_id });
+export const cancelKeySyncPairing = (account_session_id: string, pair_id: string) =>
+  accountCall<void>('key_sync.pair_cancel', account_session_id, { pair_id });
+export const approveKeySyncPairing = (
+  account_session_id: string,
+  pair_id: string,
+  approval_nonce: string,
+) => accountCall<void>('key_sync.pair_approve', account_session_id, { pair_id, approval_nonce });
+export const startKeySyncRecovery = (account_session_id: string) =>
+  accountCall<KeySyncRecovery>('key_sync.recovery_start', account_session_id);
+export const openKeySyncRecovery = (account_session_id: string, request_id: string) =>
+  accountCall<void>('key_sync.recovery_open', account_session_id, { request_id });
+export const finishKeySyncRecovery = (account_session_id: string, request_id: string) =>
+  accountCall<boolean | 'rejected'>('key_sync.recovery_finish', account_session_id, { request_id });
+export const cancelKeySyncRecovery = (account_session_id: string, request_id: string) =>
+  accountCall<void>('key_sync.recovery_cancel', account_session_id, { request_id });
 export const getSettingsTransferCapabilities = () =>
   shellCall<SettingsTransferCapabilities>('settings_transfer.capabilities');
 export const exportSettingsTransfer = (connection_ids: string[], passphrase: string) =>

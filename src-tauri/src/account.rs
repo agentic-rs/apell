@@ -38,6 +38,7 @@ enum SignInState {
 #[derive(Serialize)]
 struct Status {
   state: SignInState,
+  account_session_id: Option<Uuid>,
   email: Option<String>,
   error: Option<String>,
   device_code: Option<DeviceCode>,
@@ -108,6 +109,7 @@ impl AccessToken {
 }
 
 struct Session {
+  id: Uuid,
   stored: StoredSession,
   refresh_gate: Arc<Mutex<()>>,
   pending_vault_write: bool,
@@ -118,6 +120,7 @@ struct Session {
 impl Session {
   fn new(stored: StoredSession, access_token: Option<AccessToken>) -> Self {
     Self {
+      id: Uuid::new_v4(),
       stored,
       refresh_gate: Arc::new(Mutex::new(())),
       pending_vault_write: false,
@@ -153,9 +156,10 @@ struct State {
 
 impl State {
   fn status(&self, enabled: bool) -> Status {
+    let session = enabled.then_some(self.session.as_ref()).flatten();
     let state = if !enabled {
       SignInState::Unavailable
-    } else if self.session.is_some() {
+    } else if session.is_some() {
       SignInState::SignedIn
     } else if self.attempt.is_some() {
       SignInState::SigningIn
@@ -164,10 +168,8 @@ impl State {
     };
     Status {
       state,
-      email: self
-        .session
-        .as_ref()
-        .and_then(|session| session.stored.email.clone()),
+      account_session_id: session.map(|session| session.id),
+      email: session.and_then(|session| session.stored.email.clone()),
       error: self.error.clone(),
       device_code: self
         .attempt
@@ -176,6 +178,14 @@ impl State {
         .filter(|presentation| presentation.deadline > tokio::time::Instant::now())
         .map(|presentation| presentation.display.clone()),
     }
+  }
+
+  fn require_session(&self, id: Uuid) -> Result<&Session, String> {
+    self
+      .session
+      .as_ref()
+      .filter(|session| session.id == id)
+      .ok_or_else(|| SESSION_CHANGED.into())
   }
 
   async fn load(&mut self, app: &AppHandle, config: &Config) -> Result<(), String> {
@@ -199,6 +209,7 @@ impl State {
 
 pub(crate) struct Access {
   pub account_key: String,
+  pub session_id: Uuid,
   pub sync_url: Url,
   pub token: Zeroizing<String>,
   refresh_gate: Arc<Mutex<()>>,
@@ -254,17 +265,37 @@ impl Account {
   }
 
   pub async fn account_key(&self, app: &AppHandle) -> Result<Option<String>, String> {
-    let Some(config) = &self.config else {
-      return Ok(None);
-    };
+    Ok(self.session(app, None).await?.map(|(key, _)| key))
+  }
+
+  pub(crate) async fn session(
+    &self,
+    app: &AppHandle,
+    expected: Option<Uuid>,
+  ) -> Result<Option<(String, Uuid)>, String> {
     let mut state = self.state.lock().await;
-    state.load(app, config).await?;
-    Ok(
-      state
-        .session
-        .as_ref()
-        .map(|session| session.stored.account_key()),
-    )
+    if let Some(config) = &self.config {
+      state.load(app, config).await?;
+    }
+    let session = match expected {
+      Some(id) => Some(state.require_session(id)?),
+      None => state.session.as_ref(),
+    };
+    Ok(session.map(|session| (session.stored.account_key(), session.id)))
+  }
+
+  pub(crate) async fn with_current_session<T>(
+    &self,
+    app: &AppHandle,
+    expected: Uuid,
+    effect: impl FnOnce() -> T,
+  ) -> Result<T, String> {
+    let mut state = self.state.lock().await;
+    if let Some(config) = &self.config {
+      state.load(app, config).await?;
+    }
+    state.require_session(expected)?;
+    Ok(effect())
   }
 
   pub(crate) async fn require_current_access(&self, access: &Access) -> Result<(), String> {
@@ -292,10 +323,14 @@ impl Account {
     app: &AppHandle,
     key_exchange: bool,
     same_session_as: Option<&Access>,
+    expected: Option<Uuid>,
   ) -> Result<tauri::async_runtime::JoinHandle<Result<Access, String>>, String> {
     let refresh_gate = {
       let state = self.state.lock().await;
-      let session = state.session.as_ref().ok_or(SIGN_IN_REQUIRED)?;
+      let session = match expected {
+        Some(id) => state.require_session(id)?,
+        None => state.session.as_ref().ok_or(SIGN_IN_REQUIRED)?,
+      };
       if same_session_as
         .is_some_and(|access| !Arc::ptr_eq(&access.refresh_gate, &session.refresh_gate))
       {
@@ -513,15 +548,10 @@ impl Account {
     Ok(state.status(self.config.is_some()))
   }
 
-  async fn sign_out(&self, app: &AppHandle) -> Result<Status, String> {
-    let Some(config) = &self.config else {
-      return self.status(app).await;
-    };
+  pub(crate) async fn sign_out(&self, app: &AppHandle, expected: Uuid) -> Result<Value, String> {
     let mut state = self.state.lock().await;
-    state.load(app, config).await?;
-    if state.session.is_some() {
-      persist(app, None).await?;
-    }
+    state.require_session(expected)?;
+    persist(app, None).await?;
     state.attempt = None;
     state.error = None;
     if let Some(mut session) = state.session.take() {
@@ -529,7 +559,7 @@ impl Account {
       revoke_in_background(app, refresh_token);
     }
     changed(app);
-    Ok(state.status(true))
+    output_status(state.status(true))
   }
 
   async fn sign_in_with_device_code(
@@ -630,6 +660,7 @@ fn revoke_in_background(app: &AppHandle, token: Zeroizing<String>) {
 fn access(sync_url: Url, session: &Session, token: &AccessToken) -> Access {
   Access {
     account_key: session.stored.account_key(),
+    session_id: session.id,
     sync_url,
     token: token.value.clone(),
     refresh_gate: session.refresh_gate.clone(),
@@ -665,6 +696,18 @@ fn changed(app: &AppHandle) {
   let _ = app.emit_to("main", EVENT, ());
 }
 
+pub(crate) fn take_session_id(params: &mut Value) -> Result<Uuid, String> {
+  params
+    .as_object_mut()
+    .and_then(|params| params.remove("account_session_id"))
+    .and_then(|value| value.as_str().and_then(|id| Uuid::parse_str(id).ok()))
+    .ok_or_else(|| SESSION_CHANGED.into())
+}
+
+fn output_status(status: Status) -> Result<Value, String> {
+  serde_json::to_value(status).map_err(|_| "Could not read Apell Account status.".into())
+}
+
 pub(crate) async fn dispatch(
   app: AppHandle,
   account: &Account,
@@ -678,10 +721,9 @@ pub(crate) async fn dispatch(
     "account.status" => account.status(&app).await?,
     "account.sign_in" => account.sign_in(&app).await?,
     "account.cancel" => account.cancel(&app).await?,
-    "account.sign_out" => account.sign_out(&app).await?,
     _ => return Err("Unknown Apell Account operation.".into()),
   };
-  serde_json::to_value(status).map_err(|_| "Could not read Apell Account status.".into())
+  output_status(status)
 }
 
 #[cfg(test)]
@@ -742,6 +784,37 @@ mod tests {
 
   fn unexpected_event(_: RefreshEvent) {
     panic!("Unexpected Account event")
+  }
+
+  #[test]
+  fn shell_identity_distinguishes_sign_ins_without_persisting_the_session_id() {
+    let mut state = State::default();
+    assert!(output_status(state.status(true)).unwrap()["account_session_id"].is_null());
+    let first = session("first-token");
+    let original_id = first.id;
+    let original_account = first.stored.account_key();
+    let stored = encode_session(&first.stored).unwrap();
+    assert!(serde_json::from_str::<Value>(&stored)
+      .unwrap()
+      .get("account_session_id")
+      .is_none());
+    state.session = Some(first);
+    let status = output_status(state.status(true)).unwrap();
+    assert_eq!(status["account_session_id"], json!(original_id));
+    assert!(status["email"].is_null());
+    assert!(state.require_session(original_id).is_ok());
+
+    let restored = Session::new(serde_json::from_str(&stored).unwrap(), None);
+    assert_eq!(restored.stored.account_key(), original_account);
+    assert_ne!(restored.id, original_id);
+    state.session = Some(restored);
+    assert!(state.require_session(original_id).is_err());
+    assert!(output_status(state.status(false)).unwrap()["account_session_id"].is_null());
+
+    let mut params = json!({"account_session_id": original_id, "enabled": true});
+    assert_eq!(take_session_id(&mut params).unwrap(), original_id);
+    assert_eq!(params, json!({"enabled": true}));
+    assert_eq!(take_session_id(&mut params).unwrap_err(), SESSION_CHANGED);
   }
 
   #[tokio::test]
@@ -805,6 +878,7 @@ mod tests {
     let first = first.await.unwrap().unwrap();
     let second = second.await.unwrap().unwrap();
     assert_eq!(first.account_key, second.account_key);
+    assert_eq!(first.session_id, second.session_id);
   }
 
   #[tokio::test]

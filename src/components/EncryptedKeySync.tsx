@@ -101,6 +101,7 @@ function waitUntilComplete(
 }
 
 function Verification({
+  account_session_id,
   request,
   isCurrent,
   onComplete,
@@ -108,6 +109,7 @@ function Verification({
   onRestart,
   busy,
 }: {
+  account_session_id: string;
   request: VerificationRequest;
   isCurrent: (request: Flow) => boolean;
   onComplete: (request: VerificationRequest) => void;
@@ -121,8 +123,14 @@ function Verification({
   useEffect(() => {
     const [expires_at, finish] =
       request.kind === 'join'
-        ? [request.pairing.expires_at, () => finishKeySyncPairing(request.pairing.pair_id)]
-        : [request.challenge.expires_at, () => finishKeySyncRecovery(request.challenge.request_id)];
+        ? [
+            request.pairing.expires_at,
+            () => finishKeySyncPairing(account_session_id, request.pairing.pair_id),
+          ]
+        : [
+            request.challenge.expires_at,
+            () => finishKeySyncRecovery(account_session_id, request.challenge.request_id),
+          ];
     return waitUntilComplete(
       expires_at,
       finish,
@@ -130,7 +138,7 @@ function Verification({
       (progress) => setResult({ request, progress }),
       () => isCurrent(request),
     );
-  }, [request, isCurrent]);
+  }, [account_session_id, request, isCurrent]);
 
   const progress = result?.request === request ? result.progress : 'waiting';
   const pairing = request.kind === 'join' ? request.pairing : undefined;
@@ -183,10 +191,12 @@ function Verification({
 }
 
 function Approvals({
+  account_session_id,
   request,
   isCurrent,
   onBusyChange,
 }: {
+  account_session_id: string;
   request: Extract<Flow, { kind: 'approve' }>;
   isCurrent: (request: Flow) => boolean;
   onBusyChange: (busy: boolean) => void;
@@ -212,7 +222,7 @@ function Approvals({
             : previous,
         );
         try {
-          const result = await listKeySyncPairings();
+          const result = await listKeySyncPairings(account_session_id);
           if (active && isCurrent(request) && !pending.current) {
             setPairs(
               result.pairs.filter(
@@ -238,7 +248,7 @@ function Approvals({
       window.clearTimeout(timer);
       scope.current.cancel();
     };
-  }, [request, isCurrent]);
+  }, [account_session_id, request, isCurrent]);
 
   function dismissPair(pair_id: string) {
     dismissed.current.add(pair_id);
@@ -259,7 +269,7 @@ function Approvals({
     onBusyChange(true);
     setApprovalError('');
     try {
-      await approveKeySyncPairing(pair.pair_id, pair.approval_nonce);
+      await approveKeySyncPairing(account_session_id, pair.pair_id, pair.approval_nonce);
       if (!operation.isCurrent() || !isCurrent(request)) return;
       dismissPair(pair.pair_id);
       setApproved(true);
@@ -318,6 +328,7 @@ function Approvals({
 }
 
 interface Props {
+  account_session_id: string;
   providers: LlmProvider[];
   disabled: boolean;
   model_sync_enabled?: boolean;
@@ -370,15 +381,16 @@ function ModelSettingsRecovery({
   return <p>Check Model settings above to restore the connections for your backed-up keys.</p>;
 }
 
-async function cancelRequest(flow: Flow | undefined) {
+async function cancelRequest(account_session_id: string, flow: Flow | undefined) {
   if (flow?.kind === 'join') {
-    await cancelKeySyncPairing(flow.pairing.pair_id).catch(() => {});
+    await cancelKeySyncPairing(account_session_id, flow.pairing.pair_id).catch(() => {});
   } else if (flow?.kind === 'recover' || flow?.kind === 'upgrade') {
-    await cancelKeySyncRecovery(flow.challenge.request_id).catch(() => {});
+    await cancelKeySyncRecovery(account_session_id, flow.challenge.request_id).catch(() => {});
   }
 }
 
 export function EncryptedKeySync({
+  account_session_id,
   providers,
   disabled,
   model_sync_enabled,
@@ -401,6 +413,7 @@ export function EncryptedKeySync({
   const scope = useRef(new OperationScope());
   const retry_scope = useRef(new OperationScope());
   const read_version = useRef(0);
+  const visible = useRef(false);
   const isCurrentFlow = useCallback((request: Flow) => active_flow.current === request, []);
 
   function showFlow(next?: Flow) {
@@ -409,10 +422,11 @@ export function EncryptedKeySync({
   }
 
   async function refresh() {
+    if (!visible.current) return;
     const version = ++read_version.current;
     setChecking(true);
     try {
-      const current = await getKeySyncStatus();
+      const current = await getKeySyncStatus(account_session_id);
       if (read_version.current !== version) return;
       if (
         current.state === 'signed_out' ||
@@ -432,6 +446,7 @@ export function EncryptedKeySync({
   useEffect(() => {
     let active = true;
     let stop: (() => void) | undefined;
+    visible.current = true;
     setRetrying(false);
     const reload = () => {
       if (active) void refresh();
@@ -445,13 +460,14 @@ export function EncryptedKeySync({
     }, reload);
     return () => {
       active = false;
+      visible.current = false;
       window.removeEventListener('focus', reload);
       stop?.();
       read_version.current += 1;
       scope.current.cancel();
       retry_scope.current.cancel();
     };
-  }, []);
+  }, [account_session_id]);
 
   async function retry() {
     const operation = retry_scope.current.start();
@@ -459,7 +475,7 @@ export function EncryptedKeySync({
     setRetrying(true);
     setRetryError('');
     try {
-      await retryKeySync();
+      await retryKeySync(account_session_id);
       if (operation.isCurrent()) void refresh();
     } catch (cause) {
       if (operation.isCurrent()) setRetryError(message(cause));
@@ -506,30 +522,31 @@ export function EncryptedKeySync({
     const current = active_flow.current;
     showFlow();
     setError('');
-    void cancelRequest(current);
+    void cancelRequest(account_session_id, current);
   }
 
   function startRequest(kind: VerificationRequest['kind'], replacing?: VerificationRequest) {
     if (active_flow.current !== replacing) return;
     return perform(async (isCurrent) => {
-      if (replacing) await cancelRequest(replacing);
+      if (replacing) await cancelRequest(account_session_id, replacing);
       if (!isCurrent() || active_flow.current !== replacing) return;
       const next: VerificationRequest =
         kind === 'join'
-          ? { kind, pairing: await startKeySyncPairing() }
-          : { kind, challenge: await startKeySyncRecovery() };
+          ? { kind, pairing: await startKeySyncPairing(account_session_id) }
+          : { kind, challenge: await startKeySyncRecovery(account_session_id) };
       if (!isCurrent() || active_flow.current !== replacing) {
-        void cancelRequest(next);
+        void cancelRequest(account_session_id, next);
         return;
       }
       showFlow(next);
-      if (next.kind !== 'join') await openKeySyncRecovery(next.challenge.request_id);
+      if (next.kind !== 'join')
+        await openKeySyncRecovery(account_session_id, next.challenge.request_id);
     });
   }
 
   function openRecovery(request: VerificationRequest) {
     if (request.kind === 'join' || !isCurrentFlow(request)) return;
-    void perform(() => openKeySyncRecovery(request.challenge.request_id));
+    void perform(() => openKeySyncRecovery(account_session_id, request.challenge.request_id));
   }
 
   if (status?.state === 'signed_out') return null;
@@ -633,7 +650,7 @@ export function EncryptedKeySync({
                 disabled={button_disabled || checking}
                 onClick={() =>
                   void perform(async (isCurrent) => {
-                    await createKeySync();
+                    await createKeySync(account_session_id);
                     if (isCurrent()) deviceVerified();
                   })
                 }
@@ -714,6 +731,7 @@ export function EncryptedKeySync({
         >
           {flow.kind === 'review' ? (
             <KeySyncConflictReview
+              account_session_id={account_session_id}
               providers={providers}
               disabled={button_disabled || status?.state !== 'verified'}
               onMutationChange={(active) => {
@@ -730,6 +748,7 @@ export function EncryptedKeySync({
             <div className="transfer-form">
               {flow.kind === 'approve' ? (
                 <Approvals
+                  account_session_id={account_session_id}
                   request={flow}
                   isCurrent={isCurrentFlow}
                   onBusyChange={(active) => {
@@ -739,6 +758,7 @@ export function EncryptedKeySync({
                 />
               ) : (
                 <Verification
+                  account_session_id={account_session_id}
                   request={flow}
                   isCurrent={isCurrentFlow}
                   onComplete={deviceVerified}

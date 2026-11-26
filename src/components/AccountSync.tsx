@@ -80,9 +80,11 @@ export function AccountSync({
   const scope = useRef(new OperationScope());
   const read_version = useRef(0);
   const visible = useRef(false);
-  const sync_account = useRef<{ email: string | null } | undefined>(undefined);
+  const session = useRef<string | null>(null);
+  const account_session_id = account?.account_session_id ?? null;
   const onKeySyncBusyChange = useCallback(
-    (busy: boolean) => {
+    (account_session_id: string, busy: boolean) => {
+      if (session.current !== account_session_id) return;
       setKeysBusy(busy);
       onSyncBusyChange(busy);
     },
@@ -114,9 +116,12 @@ export function AccountSync({
       return;
     }
     if (read_version.current !== version) return;
-    const email = current.state === 'signed_in' ? current.email : undefined;
-    if (sync_account.current?.email !== email) {
-      sync_account.current = email === undefined ? undefined : { email };
+    if (session.current !== current.account_session_id) {
+      session.current = current.account_session_id;
+      scope.current.cancel();
+      setBusy(undefined);
+      setKeysBusy(false);
+      onSyncBusyChange(false);
       updateSync();
       setOutcome('');
       setActionError('');
@@ -127,7 +132,7 @@ export function AccountSync({
     setReadError('');
     if (current.state !== 'signed_in') return;
     try {
-      const synced = await getConfigSyncStatus();
+      const synced = await getConfigSyncStatus(current.account_session_id);
       if (read_version.current !== version) return;
       updateSync(synced);
       setModelReadError('');
@@ -179,7 +184,7 @@ export function AccountSync({
   }
 
   async function perform(action: Action, run: (isCurrent: () => boolean) => Promise<void>) {
-    if (keys_busy) return;
+    if (keys_busy || session.current !== account_session_id) return;
     const operation = scope.current.start();
     if (!operation) return;
     read_version.current += 1;
@@ -188,9 +193,7 @@ export function AccountSync({
     const sync_operation = action === 'sync' || action === 'toggle' || action === 'review';
     if (sync_operation) setModelActionError('');
     else setActionError('');
-    const started_account = sync_account.current;
-    const isCurrent = () =>
-      operation.isCurrent() && (!sync_operation || started_account === sync_account.current);
+    const isCurrent = () => operation.isCurrent() && account_session_id === session.current;
     if (sync_operation) onSyncBusyChange(true);
     try {
       await run(isCurrent);
@@ -199,12 +202,12 @@ export function AccountSync({
         const detail = message(error);
         if (sync_operation) {
           if (detail !== latest_sync.current?.sync_error) setModelActionError(detail);
-          if (action === 'sync') void refresh();
         } else setActionError(detail);
+        if (sync_operation || action === 'sign_out') void refresh();
       }
     } finally {
-      if (sync_operation) onSyncBusyChange(false);
-      if (operation.isCurrent()) {
+      if (isCurrent()) {
+        if (sync_operation) onSyncBusyChange(false);
         operation.finish();
         setBusy(undefined);
       }
@@ -222,8 +225,9 @@ export function AccountSync({
   }
 
   function toggleSync(enabled: boolean) {
+    if (!account_session_id) return;
     return perform('toggle', async (isCurrent) => {
-      const next = await setConfigSyncEnabled(enabled);
+      const next = await setConfigSyncEnabled(account_session_id, enabled);
       if (!isCurrent()) return;
       acceptActionStatus(next);
       if (enabled) void refresh();
@@ -231,13 +235,14 @@ export function AccountSync({
   }
 
   function runSync(resolution?: ConfigSyncResolution) {
+    if (!account_session_id) return;
     if (resolution && latest_sync.current?.pending_conflict_id !== resolution.conflict_id) {
       setReviewStale(true);
       return;
     }
     return perform('sync', async (isCurrent) => {
       try {
-        await syncSettings(isCurrent, resolution);
+        await syncSettings(account_session_id, isCurrent, resolution);
       } catch (error) {
         if (!isCurrent()) return;
         if (!resolution) {
@@ -252,10 +257,12 @@ export function AccountSync({
   }
 
   function refreshReview() {
+    if (!account_session_id) return;
     return perform('review', async (isCurrent) => {
-      const result = await reviewConfigSync();
+      const result = await reviewConfigSync(account_session_id);
       if (!isCurrent()) return;
-      if (result.state === 'conflict') await showFreshConflict(result, isCurrent);
+      if (result.state === 'conflict')
+        await showFreshConflict(account_session_id, result, isCurrent);
       else {
         acceptActionStatus(result.status);
         clearConflict();
@@ -265,13 +272,17 @@ export function AccountSync({
     });
   }
 
-  async function showFreshConflict(result: ConfigSyncConflict, isCurrent: () => boolean) {
+  async function showFreshConflict(
+    account_session_id: string,
+    result: ConfigSyncConflict,
+    isCurrent: () => boolean,
+  ) {
     // Check local status again before showing the comparison. A background pass
     // or a local edit may have replaced the conflict while the review loaded.
     const before = latest_sync.current;
     let fresh: ConfigSyncStatus;
     try {
-      fresh = await getConfigSyncStatus();
+      fresh = await getConfigSyncStatus(account_session_id);
     } catch (error) {
       if (isCurrent()) setReviewStale(true);
       throw error;
@@ -297,14 +308,18 @@ export function AccountSync({
     setReviewing(visible.current);
   }
 
-  async function syncSettings(isCurrent: () => boolean, resolution?: ConfigSyncResolution) {
-    const result = await syncConfig(resolution);
+  async function syncSettings(
+    account_session_id: string,
+    isCurrent: () => boolean,
+    resolution?: ConfigSyncResolution,
+  ) {
+    const result = await syncConfig(account_session_id, resolution);
+    if (!isCurrent()) return;
     // The native save can finish while Settings is hidden. Refresh the
     // connection list independently of the panel's transient feedback.
     if (result.state === 'downloaded') onApplied();
-    if (!isCurrent()) return;
     if (result.state === 'conflict') {
-      await showFreshConflict(result, isCurrent);
+      await showFreshConflict(account_session_id, result, isCurrent);
       return;
     }
     acceptActionStatus(result.status);
@@ -449,6 +464,8 @@ export function AccountSync({
               )}
           </section>
           <EncryptedKeySync
+            key={account.account_session_id}
+            account_session_id={account.account_session_id}
             providers={providers}
             model_review_needed={pending_conflict}
             model_sync_enabled={
@@ -457,14 +474,18 @@ export function AccountSync({
                 : sync && sync.state === 'ready'
             }
             disabled={disabled || !!busy || review_open}
-            onApplied={onApplied}
-            onBusyChange={onKeySyncBusyChange}
+            onApplied={() => {
+              if (session.current === account.account_session_id) onApplied();
+            }}
+            onBusyChange={(busy) => onKeySyncBusyChange(account.account_session_id, busy)}
           />
           <button
             className="account-sign-out"
             type="button"
             disabled={!!busy || keys_busy}
-            onClick={() => void changeAccount('sign_out', signOutOfAccount)}
+            onClick={() =>
+              void changeAccount('sign_out', () => signOutOfAccount(account.account_session_id))
+            }
           >
             {busy === 'sign_out' ? 'Signing out…' : 'Sign out'}
           </button>

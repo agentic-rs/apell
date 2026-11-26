@@ -52,11 +52,13 @@ export function keyConflictConfirmation({ conflict, resolution }: Choice) {
 }
 
 export function KeySyncConflictReview({
+  account_session_id,
   providers,
   disabled,
   onMutationChange,
   onApplied,
 }: {
+  account_session_id: string;
   providers: LlmProvider[];
   disabled: boolean;
   onMutationChange: (active: boolean) => void;
@@ -90,22 +92,28 @@ export function KeySyncConflictReview({
 
   useBackAction(110, !!choice, cancelChoice);
 
-  const loadReview = useCallback(async (updated = false) => {
-    const operation = scope.current.start();
-    if (!operation) return;
-    setChoice(undefined);
-    setReview({ state: 'loading' });
-    try {
-      const conflicts = await reviewKeySyncConflicts();
-      if (operation.isCurrent()) setReview({ state: 'ready', conflicts, updated });
-    } catch {
-      if (operation.isCurrent()) {
-        setReview({ state: 'stale', error: 'Couldn’t check key conflicts. Refresh to try again.' });
+  const loadReview = useCallback(
+    async (updated = false) => {
+      const operation = scope.current.start();
+      if (!operation) return;
+      setChoice(undefined);
+      setReview({ state: 'loading' });
+      try {
+        const conflicts = await reviewKeySyncConflicts(account_session_id);
+        if (operation.isCurrent()) setReview({ state: 'ready', conflicts, updated });
+      } catch {
+        if (operation.isCurrent()) {
+          setReview({
+            state: 'stale',
+            error: 'Couldn’t check key conflicts. Refresh to try again.',
+          });
+        }
+      } finally {
+        operation.finish();
       }
-    } finally {
-      operation.finish();
-    }
-  }, []);
+    },
+    [account_session_id],
+  );
 
   useEffect(() => {
     void loadReview();
@@ -121,7 +129,7 @@ export function KeySyncConflictReview({
     onMutationChange(true);
     let updated = false;
     try {
-      const { warning } = await resolveKeySyncConflict({
+      const { warning } = await resolveKeySyncConflict(account_session_id, {
         connection_id: choice.conflict.connection_id,
         review_id: choice.conflict.review_id,
         resolution: choice.resolution,

@@ -1,7 +1,7 @@
 use super::{
   acknowledged, automatic, automatic::SyncHealth, crypto, decode, decode_body, kick, local_vault,
-  response_error, save_vault, unlocked, verify_account, Access, AppHandle, BackgroundStop, Host,
-  LocalVault, Method, Secret, LOCKED,
+  response_error, save_vault, unlocked, Access, AppHandle, BackgroundStop, Host, LocalVault,
+  Method, Secret, LOCKED,
 };
 use apell_vault_keys::derive_pairing_proof_key;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
@@ -87,7 +87,7 @@ struct Joining {
 }
 
 struct Recovery {
-  account: String,
+  session_id: Uuid,
   request_id: Uuid,
   vault_id: Uuid,
   challenge: Challenge,
@@ -192,26 +192,25 @@ pub(super) fn is_verified(local: &LocalVault) -> bool {
 pub(super) async fn status(
   app: &AppHandle,
   host: &Host,
+  account: &str,
+  session_id: Uuid,
   local_only: bool,
+  stop: &BackgroundStop,
 ) -> Result<Value, String> {
   if !host.account.key_exchange_available() {
     return Ok(json!({ "state": "unavailable" }));
   }
-  let stop = BackgroundStop(host.key_sync.signing_out.subscribe());
-  let Some(account) = stop.wait(host.account.account_key(app)).await?? else {
-    return Ok(json!({ "state": "signed_out" }));
-  };
-  let local = stop.wait(local_vault(app, &account)).await??;
+  let local = stop.wait(local_vault(app, account)).await??;
   if local.as_ref().is_some_and(is_verified) {
     let health = match automatic::require_device_sync(&host.root).await {
-      Ok(()) => host.key_sync.automatic.health(&account).await,
+      Ok(()) => host.key_sync.automatic.health(session_id).await,
       Err(error) => SyncHealth::Paused(error),
     };
-    stop.wait(verify_account(app, host, &account)).await??;
+    stop.session(app, host).await?;
     return Ok(health.verified_status());
   }
   if local_only {
-    stop.wait(verify_account(app, host, &account)).await??;
+    stop.session(app, host).await?;
     return Ok(json!({ "state": "unverified" }));
   }
   let discovery = async {
@@ -222,7 +221,7 @@ pub(super) async fn status(
     stop.wait(remote(host, &access)).await?
   }
   .await;
-  stop.wait(verify_account(app, host, &account)).await??;
+  stop.session(app, host).await?;
   Ok(unverified_status(local.as_ref(), discovery))
 }
 
@@ -243,30 +242,34 @@ fn unverified_status(local: Option<&LocalVault>, remote: Result<RemoteVault, Str
   }
 }
 
-pub(super) async fn retry(app: &AppHandle, host: &Host) -> Result<Value, String> {
-  let stop = BackgroundStop(host.key_sync.signing_out.subscribe());
+pub(super) async fn retry(
+  app: &AppHandle,
+  host: &Host,
+  account: &str,
+  session_id: Uuid,
+  stop: &BackgroundStop,
+) -> Result<Value, String> {
   stop.check()?;
   if !host.account.key_exchange_available() {
     return Err(LOCKED.into());
   }
-  let account = host.account.account_key(app).await?.ok_or(LOCKED)?;
-  let vault = local_vault(app, &account)
-    .await?
+  let vault = stop
+    .wait(local_vault(app, account))
+    .await??
     .filter(is_verified)
     .ok_or(LOCKED)?;
   vault.key()?;
   automatic::require_device_sync(&host.root).await?;
-  verify_account(app, host, &account).await?;
+  stop.session(app, host).await?;
   host
     .key_sync
     .automatic
-    .queue_retry(app, account, &stop)
+    .queue_retry(app, session_id, stop)
     .await?;
   Ok(Value::Null)
 }
 
 async fn prepare_activation<'a>(
-  app: &AppHandle,
   host: &'a Host,
   access: &Access,
   stop: &BackgroundStop,
@@ -274,7 +277,7 @@ async fn prepare_activation<'a>(
   let credential = stop.wait(host.credential_gate.lock()).await?;
   let settings = stop.wait(host.settings.lock()).await?.clone();
   stop
-    .wait(verify_account(app, host, &access.account_key))
+    .wait(host.account.require_current_access(access))
     .await??;
   Ok((credential, settings))
 }
@@ -287,6 +290,7 @@ async fn activate(
   mut vault: LocalVault,
   settings: Settings,
 ) -> Result<(), String> {
+  host.account.require_current_access(access).await?;
   vault.managed = true;
   vault.pending_managed = true;
   vault.setup = None;
@@ -315,7 +319,7 @@ pub(super) async fn create(
   };
   vault.pending_managed = true;
   stop
-    .wait(verify_account(app, host, &access.account_key))
+    .wait(host.account.require_current_access(access))
     .await??;
   stop.check()?;
   save_vault(app, &access.account_key, &vault).await?;
@@ -330,7 +334,7 @@ pub(super) async fn create(
     ))
     .await??;
   acknowledged(response)?;
-  let (_credential, settings) = prepare_activation(app, host, access, stop).await?;
+  let (_credential, settings) = prepare_activation(host, access, stop).await?;
   stop.check()?;
   activate(app, host, access, vault, settings).await?;
   Ok(Value::Null)
@@ -372,6 +376,9 @@ pub(super) async fn start_pair(
 ) -> Result<Value, String> {
   let vault = stop.wait(remote(host, &access)).await??;
   let vault_id = vault.vault_id.filter(|_| vault.managed).ok_or(LOCKED)?;
+  stop
+    .wait(host.account.require_current_access(&access))
+    .await??;
   let pair_id = Uuid::new_v4();
   let secret = crypto::random()?;
   let response = stop
@@ -390,6 +397,9 @@ pub(super) async fn start_pair(
   }
   let display = serde_json::to_value(&pair).map_err(|_| "Could not show the pairing code.")?;
   let mut pending = stop.wait(host.key_sync.managed.joining.lock()).await?;
+  stop
+    .wait(host.account.require_current_access(&access))
+    .await??;
   stop.check()?;
   if let Some(previous) = pending.replace(Arc::new(Joining {
     access,
@@ -420,6 +430,9 @@ pub(super) async fn list_pairs(
     ))
     .await??;
   let pairs: PairList = stop.wait(decode(response)).await??;
+  stop
+    .wait(host.account.require_current_access(access))
+    .await??;
   if pairs.pairs.len() > 16 || pairs.pairs.iter().any(|pair| !pair.valid(now())) {
     return Err("Account returned an invalid pairing list.".into());
   }
@@ -435,6 +448,9 @@ pub(super) async fn approve_pair(
 ) -> Result<Value, String> {
   let vault = stop.wait(unlocked(app, host, access)).await??;
   let proof = encode_proof(&vault, Some(&input))?;
+  stop
+    .wait(host.account.require_current_access(access))
+    .await??;
   let response = stop
     .wait(host.key_sync.request(
       access,
@@ -444,18 +460,21 @@ pub(super) async fn approve_pair(
     ))
     .await??;
   acknowledged(response)?;
+  stop
+    .wait(host.account.require_current_access(access))
+    .await??;
   Ok(Value::Null)
 }
 
 fn joining<'a>(
   stored: &'a Option<Arc<Joining>>,
-  account: &str,
+  session_id: Uuid,
   pair_id: Uuid,
 ) -> Result<&'a Arc<Joining>, String> {
   stored
     .as_ref()
     .filter(|pending| {
-      pending.access.account_key == account
+      pending.access.session_id == session_id
         && pending.pair.pair_id == pair_id
         && pending.pair.valid(now())
     })
@@ -464,13 +483,13 @@ fn joining<'a>(
 
 pub(super) async fn pair_cancellation(
   host: &Host,
-  account: &str,
+  session_id: Uuid,
   input: &PairInput,
   stop: &BackgroundStop,
 ) -> Result<Cancellation, String> {
   let pending = stop.wait(host.key_sync.managed.joining.lock()).await?;
   stop.check()?;
-  Ok(joining(&pending, account, input.pair_id)?.cancel.clone())
+  Ok(joining(&pending, session_id, input.pair_id)?.cancel.clone())
 }
 
 fn require_current_request<T>(
@@ -516,7 +535,7 @@ pub(super) async fn finish_pair(
 ) -> Result<Value, String> {
   let request = {
     let pending = stop.wait(host.key_sync.managed.joining.lock()).await?;
-    joining(&pending, &access.account_key, input.pair_id)?.clone()
+    joining(&pending, access.session_id, input.pair_id)?.clone()
   };
   let result: PairResult = request
     .cancel
@@ -533,6 +552,9 @@ pub(super) async fn finish_pair(
       decode(response).await
     })
     .await?;
+  stop
+    .wait(host.account.require_current_access(access))
+    .await??;
   let Some(key) = result.vault_key.map(Zeroizing::new) else {
     return Ok(json!(false));
   };
@@ -540,7 +562,7 @@ pub(super) async fn finish_pair(
   let vault = LocalVault::new(request.vault_id, &key);
   let (_credential, settings) = request
     .cancel
-    .wait(stop, prepare_activation(app, host, access, stop))
+    .wait(stop, prepare_activation(host, access, stop))
     .await?;
   {
     let mut pending = stop.wait(host.key_sync.managed.joining.lock()).await?;
@@ -558,14 +580,14 @@ pub(super) async fn cancel_pair(
   input: PairInput,
   stop: &BackgroundStop,
 ) -> Result<Value, String> {
-  let Some(account) = stop.wait(host.account.account_key(app)).await?? else {
+  let Some((_, session_id)) = stop.session(app, host).await? else {
     return Ok(Value::Null);
   };
   let request = {
     let mut pending = stop.wait(host.key_sync.managed.joining.lock()).await?;
     stop.check()?;
     pending.take_if(|request| {
-      request.access.account_key == account && request.pair.pair_id == input.pair_id
+      request.access.session_id == session_id && request.pair.pair_id == input.pair_id
     })
   };
   if let Some(request) = request {
@@ -607,9 +629,12 @@ pub(super) async fn start_recovery(
   let request_id = Uuid::new_v4();
   let expires_at = challenge.expires_at;
   let mut pending = stop.wait(host.key_sync.managed.recovery.lock()).await?;
+  stop
+    .wait(host.account.require_current_access(access))
+    .await??;
   stop.check()?;
   if let Some(previous) = pending.replace(Arc::new(Recovery {
-    account: access.account_key.clone(),
+    session_id: access.session_id,
     request_id,
     vault_id,
     challenge,
@@ -633,13 +658,13 @@ fn valid_authorization_url(url: &Url, account: &Url) -> bool {
 
 fn recovery<'a>(
   stored: &'a Option<Arc<Recovery>>,
-  account: &str,
+  session_id: Uuid,
   request_id: Uuid,
 ) -> Result<&'a Arc<Recovery>, String> {
   stored
     .as_ref()
     .filter(|pending| {
-      pending.account == account
+      pending.session_id == session_id
         && pending.request_id == request_id
         && pending.challenge.expires_at > now()
     })
@@ -648,14 +673,14 @@ fn recovery<'a>(
 
 pub(super) async fn recovery_cancellation(
   host: &Host,
-  account: &str,
+  session_id: Uuid,
   input: &RecoveryInput,
   stop: &BackgroundStop,
 ) -> Result<Cancellation, String> {
   let pending = stop.wait(host.key_sync.managed.recovery.lock()).await?;
   stop.check()?;
   Ok(
-    recovery(&pending, account, input.request_id)?
+    recovery(&pending, session_id, input.request_id)?
       .cancel
       .clone(),
   )
@@ -667,24 +692,26 @@ pub(super) async fn open_recovery(
   input: RecoveryInput,
   stop: &BackgroundStop,
 ) -> Result<Value, String> {
-  let account = stop
-    .wait(host.account.account_key(app))
-    .await??
-    .ok_or(EXPIRED)?;
+  let (_, session_id) = stop.session(app, host).await?.ok_or(EXPIRED)?;
   let (url, cancellation) = {
     let pending = stop.wait(host.key_sync.managed.recovery.lock()).await?;
-    let request = recovery(&pending, &account, input.request_id)?;
+    let request = recovery(&pending, session_id, input.request_id)?;
     (
       request.challenge.authorization_url.clone(),
       request.cancel.clone(),
     )
   };
-  stop.check()?;
-  cancellation.check()?;
-  app
-    .opener()
-    .open_url(url.as_str(), None::<&str>)
-    .map_err(|_| "Could not open Account verification.")?;
+  host
+    .account
+    .with_current_session(app, session_id, || -> Result<(), String> {
+      stop.check()?;
+      cancellation.check()?;
+      app
+        .opener()
+        .open_url(url.as_str(), None::<&str>)
+        .map_err(|_| "Could not open Account verification.".into())
+    })
+    .await??;
   Ok(Value::Null)
 }
 
@@ -697,7 +724,7 @@ pub(super) async fn finish_recovery(
 ) -> Result<Value, String> {
   let request = {
     let pending = stop.wait(host.key_sync.managed.recovery.lock()).await?;
-    recovery(&pending, &access.account_key, input.request_id)?.clone()
+    recovery(&pending, access.session_id, input.request_id)?.clone()
   };
   let path = format!(
     "{MANAGED}/recovery/{}/finish",
@@ -719,6 +746,9 @@ pub(super) async fn finish_recovery(
       decode_recovery(response).await
     })
     .await?;
+  stop
+    .wait(host.account.require_current_access(access))
+    .await??;
   let vault = match result {
     RecoveryResult::Pending => return Ok(json!(false)),
     RecoveryResult::Rejected => {
@@ -766,7 +796,7 @@ pub(super) async fn finish_recovery(
   };
   let (_credential, settings) = request
     .cancel
-    .wait(stop, prepare_activation(app, host, access, stop))
+    .wait(stop, prepare_activation(host, access, stop))
     .await?;
   let mut pending = stop.wait(host.key_sync.managed.recovery.lock()).await?;
   require_current_request(&pending, &request, stop)?;
@@ -795,13 +825,13 @@ pub(super) async fn cancel_recovery(
   input: RecoveryInput,
   stop: &BackgroundStop,
 ) -> Result<Value, String> {
-  let Some(account) = stop.wait(host.account.account_key(app)).await?? else {
+  let Some((_, session_id)) = stop.session(app, host).await? else {
     return Ok(Value::Null);
   };
   let mut pending = stop.wait(host.key_sync.managed.recovery.lock()).await?;
   stop.check()?;
-  if let Some(request) =
-    pending.take_if(|request| request.account == account && request.request_id == input.request_id)
+  if let Some(request) = pending
+    .take_if(|request| request.session_id == session_id && request.request_id == input.request_id)
   {
     request.cancel.signal();
   }
@@ -820,7 +850,7 @@ mod tests {
   #[tokio::test]
   async fn cancelling_a_request_releases_its_pending_relay_wait() {
     let (_session, sign_out) = watch::channel(false);
-    let stop = BackgroundStop(sign_out);
+    let stop = BackgroundStop::new(sign_out);
     let cancel = Arc::new(Cancellation::new());
     let (started, entered) = tokio::sync::oneshot::channel();
     let work = tokio::spawn({
@@ -846,7 +876,7 @@ mod tests {
   #[test]
   fn replacement_cannot_commit_a_former_request_snapshot() {
     let (sign_out, stop) = watch::channel(false);
-    let stop = BackgroundStop(stop);
+    let stop = BackgroundStop::new(stop);
     let request = Arc::new("fixture");
     assert!(require_current_request(&Some(request.clone()), &request, &stop).is_ok());
     assert!(require_current_request(&Some(Arc::new("fixture")), &request, &stop).is_err());
@@ -857,10 +887,11 @@ mod tests {
   }
 
   #[test]
-  fn recovery_lookup_binds_the_local_request_id_to_its_account() {
+  fn recovery_lookup_binds_the_local_request_id_to_its_sign_in() {
+    let session_id = Uuid::new_v4();
     let request_id = Uuid::new_v4();
     let stored = Some(Arc::new(Recovery {
-      account: "fixture".into(),
+      session_id,
       request_id,
       vault_id: Uuid::new_v4(),
       challenge: Challenge {
@@ -872,9 +903,9 @@ mod tests {
       enrolling: false,
       cancel: Cancellation::new(),
     }));
-    assert!(recovery(&stored, "fixture", request_id).is_ok());
-    assert!(recovery(&stored, "another", request_id).is_err());
-    assert!(recovery(&stored, "fixture", Uuid::new_v4()).is_err());
+    assert!(recovery(&stored, session_id, request_id).is_ok());
+    assert!(recovery(&stored, Uuid::new_v4(), request_id).is_err());
+    assert!(recovery(&stored, session_id, Uuid::new_v4()).is_err());
   }
 
   #[tokio::test]

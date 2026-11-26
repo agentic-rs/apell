@@ -206,6 +206,8 @@ now** to check immediately. Apell shows changes on this device that are still
 waiting to sync. If a manual or background sync fails, **Model settings**
 shows the failure so you can retry there. The **Apell Account** row in
 Settings shows when model or encrypted API-key sync needs attention.
+If you sign in again, Apell closes reviews and verification sheets from the
+previous sign-in. Reopen the review or start a new verification to continue.
 Model settings sync includes connection labels, built-in provider and model
 selections, and the preferred active model. API keys can be synced separately
 through **Encrypted API keys**. **Settings → Default model** shows the

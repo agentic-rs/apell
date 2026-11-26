@@ -103,8 +103,8 @@ export function SettingsMenu({
       }
       setAccountSummary((current) => (current.detail === detail ? current : { detail }));
       const [model, keys] = await Promise.allSettled([
-        getConfigSyncStatus(),
-        getLocalKeySyncStatus(),
+        getConfigSyncStatus(account.account_session_id),
+        getLocalKeySyncStatus(account.account_session_id),
       ]);
       if (alive && request === sequence) {
         const attention = accountSyncAttention(

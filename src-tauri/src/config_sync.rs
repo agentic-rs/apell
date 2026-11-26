@@ -4,7 +4,7 @@ mod snapshot;
 pub(crate) use automatic::{clear_activity, kick, start};
 
 use crate::{
-  account::Access,
+  account::{self, Access},
   commands::blocking,
   host::Host,
   key_sync::BackgroundStop,
@@ -121,13 +121,14 @@ pub async fn dispatch(
   app: AppHandle,
   _host: &Host,
   method: &str,
-  params: Value,
+  mut params: Value,
 ) -> Result<Value, String> {
+  let session_id = account::take_session_id(&mut params)?;
   let method = method.to_owned();
   finish_snapshot(async move {
     let host = app.state::<Host>();
-    let stop = SyncStop::manual(host.key_sync.background_stop());
-    let account_key = stop.wait(host.account.account_key(&app)).await??;
+    let stop = SyncStop::manual(host.key_sync.background_stop().for_session(session_id));
+    let account_key = stop.session(&app, &host).await?.map(|(key, _)| key);
     match method.as_str() {
       "sync.status" => {
         let Some(key) = account_key else {
@@ -140,7 +141,7 @@ pub async fn dispatch(
           host
             .config_sync
             .automatic
-            .add_activity(&key, &mut result)
+            .add_activity(session_id, &mut result)
             .await;
         }
         require_identity(&app, &host, &key, &stop).await?;
@@ -149,7 +150,7 @@ pub async fn dispatch(
       "sync.set_enabled" => {
         let enabled = input::<Enable>(params)?.enabled;
         let key = account_key.ok_or("Sign in to Apell Account to enable sync.")?;
-        set_enabled(&app, &host, &key, enabled, &stop).await
+        set_enabled(&app, &host, &key, session_id, enabled, &stop).await
       }
       "sync.run" | "sync.review" => {
         let key = account_key.ok_or("Sign in to Apell Account to sync settings.")?;
@@ -180,11 +181,11 @@ pub async fn dispatch(
           host
             .config_sync
             .automatic
-            .add_activity(&key, &mut result["status"])
+            .add_activity(session_id, &mut result["status"])
             .await;
           return Ok(result);
         }
-        run_manually(&app, &host, &key, state, request, &stop).await
+        run_manually(&app, &host, &key, session_id, state, request, &stop).await
       }
       _ => Err("Unknown config sync operation.".into()),
     }
@@ -197,15 +198,16 @@ async fn run_manually(
   app: &AppHandle,
   host: &Host,
   account: &str,
+  session_id: Uuid,
   state: DeviceState,
   request: Run,
   stop: &SyncStop,
 ) -> Result<Value, String> {
   require_identity(app, host, account, stop).await?;
   let activity = &host.config_sync.automatic;
-  let prior = activity.activity(account).await;
+  let prior = activity.activity(session_id).await;
   activity
-    .publish(app, Some((account.to_owned(), Activity::running())))
+    .publish(app, Some((session_id, Activity::running())))
     .await;
   let result = async {
     let (access, compared) = compare_settings(app, host, account, &state, stop).await?;
@@ -230,7 +232,7 @@ async fn run_manually(
     None
   };
   activity
-    .publish(app, next.map(|next| (account.to_owned(), next)))
+    .publish(app, next.map(|next| (session_id, next)))
     .await;
   result.map_err(RunError::into_message)
 }
@@ -239,13 +241,24 @@ async fn set_enabled(
   app: &AppHandle,
   host: &Host,
   account: &str,
+  session_id: Uuid,
   enabled: bool,
   stop: &SyncStop,
 ) -> Result<Value, String> {
   let _toggle = stop.wait(host.config_sync.toggle.lock()).await?;
   // Signal first so opting out stops an automatic network wait without
   // interrupting local settings or cursor writes already in progress.
-  let pause = (!enabled).then(|| host.config_sync.automatic.pause());
+  let pause = if enabled {
+    None
+  } else {
+    stop.check()?;
+    Some(
+      host
+        .account
+        .with_current_session(app, session_id, || host.config_sync.automatic.pause())
+        .await?,
+    )
+  };
   let result = async {
     let _gate = stop.wait(host.config_sync.gate.lock()).await?;
     let mut state = stop.wait(load_state(host, account)).await??;
@@ -253,7 +266,7 @@ async fn set_enabled(
     let changed = state.enabled != enabled;
     state.enabled = enabled;
     let result = stop.wait(local_status(host, &state)).await??;
-    stop.check()?;
+    require_identity(app, host, account, stop).await?;
     save_state(host, account, state).await?;
     if changed {
       let _ = app.emit_to("main", "apell-llm-settings-changed", ());
@@ -386,14 +399,14 @@ pub(crate) async fn pending_preferred_connection_id(
   host: &Host,
   settings: &Settings,
 ) -> Option<String> {
-  let account = host.account.account_key(app).await.ok()??;
+  let (account, session_id) = host.account.session(app, None).await.ok()??;
   let state = load_state(host, &account).await.ok()?;
   let preferred = settings
     .connection(pending_preference(&state, settings)?)
     .ok()?;
   // Loading the optional cursor may overlap with an Account change.
-  let current = host.account.account_key(app).await.ok()??;
-  (account == current).then(|| preferred.connection_id.clone())
+  host.account.session(app, Some(session_id)).await.ok()??;
+  Some(preferred.connection_id.clone())
 }
 
 async fn compare_settings(
@@ -572,7 +585,7 @@ async fn synchronize(
   // A completed local apply includes its cursor write even if sign-out began
   // during credential storage. Other outcomes can still stop before a commit.
   if applied {
-    require_account(app, host, access).await?;
+    host.account.require_current_access(access).await?;
   } else {
     require_identity(app, host, &access.account_key, stop).await?;
   }
@@ -729,20 +742,17 @@ fn conflict_id(account_key: &str, remote: &Revision, local_hash: &str) -> String
   digest(format!("{account_key}:{}:{local_hash}", remote.revision_id).as_bytes())
 }
 
-async fn require_account(app: &AppHandle, host: &Host, access: &Access) -> Result<(), String> {
-  if host.account.account_key(app).await?.as_deref() != Some(access.account_key.as_str()) {
-    return Err("The signed-in Account changed. Try syncing again.".into());
-  }
-  Ok(())
-}
-
 async fn require_identity(
   app: &AppHandle,
   host: &Host,
   key: &str,
   stop: &SyncStop,
 ) -> Result<(), String> {
-  if stop.wait(host.account.account_key(app)).await??.as_deref() != Some(key) {
+  if !stop
+    .session(app, host)
+    .await?
+    .is_some_and(|(account, _)| account == key)
+  {
     return Err("The signed-in Account changed. Try syncing again.".into());
   }
   stop.check()
@@ -821,7 +831,6 @@ fn retain_usable_active(
 }
 
 pub(crate) async fn add_credential_connections(
-  app: &AppHandle,
   host: &Host,
   access: &Access,
   stop: &BackgroundStop,
@@ -851,7 +860,7 @@ pub(crate) async fn add_credential_connections(
   }
   let _credential_gate = stop.wait(host.credential_gate.lock()).await?;
   let mut current = stop.wait(host.settings.lock()).await?;
-  require_account(app, host, access).await?;
+  host.account.require_current_access(access).await?;
   stop.check()?;
   let root = host.root.clone();
   let mut next = current.clone();
@@ -875,7 +884,6 @@ pub(crate) async fn add_credential_connections(
 }
 
 pub(crate) async fn apply_key_restores<T: Send + 'static>(
-  app: &AppHandle,
   host: &Host,
   access: &Access,
   stop: &BackgroundStop,
@@ -887,7 +895,7 @@ pub(crate) async fn apply_key_restores<T: Send + 'static>(
   let state = load_state(host, &access.account_key).await.ok();
   let _credential_gate = stop.wait(host.credential_gate.lock()).await?;
   let mut current = stop.wait(host.settings.lock()).await?;
-  require_account(app, host, access).await?;
+  host.account.require_current_access(access).await?;
   stop.check()?;
   let mut next = current.clone();
   let (next, result) = blocking(move || {

@@ -44,7 +44,7 @@ const FINGERPRINT_V2_PREFIX: &str = "v2:";
 #[derive(Default)]
 pub(super) struct Automatic {
   wake: Notify,
-  health: Mutex<Option<(String, SyncHealth)>>,
+  health: Mutex<Option<(Uuid, SyncHealth)>>,
   reviews: Mutex<conflicts::Reviews>,
 }
 
@@ -80,18 +80,18 @@ impl Automatic {
     self.reviews.lock().await.clear();
   }
 
-  pub(super) async fn health(&self, account: &str) -> SyncHealth {
+  pub(super) async fn health(&self, session_id: Uuid) -> SyncHealth {
     self
       .health
       .lock()
       .await
       .as_ref()
-      .filter(|(owner, _)| owner == account)
+      .filter(|(owner, _)| *owner == session_id)
       .map(|(_, health)| health.clone())
       .unwrap_or_default()
   }
 
-  pub(super) async fn publish_health(&self, app: &AppHandle, health: Option<(String, SyncHealth)>) {
+  pub(super) async fn publish_health(&self, app: &AppHandle, health: Option<(Uuid, SyncHealth)>) {
     let mut current = self.health.lock().await;
     if *current != health {
       *current = health;
@@ -102,12 +102,12 @@ impl Automatic {
   pub(super) async fn queue_retry(
     &self,
     app: &AppHandle,
-    account: String,
+    session_id: Uuid,
     stop: &BackgroundStop,
   ) -> Result<(), String> {
     let mut current = self.health.lock().await;
     stop.check()?;
-    if mark_pending(&mut current, account) {
+    if mark_pending(&mut current, session_id) {
       let _ = app.emit_to("main", "apell-key-sync-changed", ());
     }
     self.wake.notify_one();
@@ -115,13 +115,13 @@ impl Automatic {
   }
 }
 
-fn mark_pending(current: &mut Option<(String, SyncHealth)>, account: String) -> bool {
+fn mark_pending(current: &mut Option<(Uuid, SyncHealth)>, session_id: Uuid) -> bool {
   if current.as_ref().is_some_and(|(owner, health)| {
-    owner == &account && matches!(health, SyncHealth::Pending | SyncHealth::Syncing)
+    *owner == session_id && matches!(health, SyncHealth::Pending | SyncHealth::Syncing)
   }) {
     return false;
   }
-  *current = Some((account, SyncHealth::Pending));
+  *current = Some((session_id, SyncHealth::Pending));
   true
 }
 
@@ -268,22 +268,23 @@ pub(crate) fn start(app: &AppHandle) {
         _ = host.key_sync.automatic.wake.notified() => (),
       }
       let _gate = host.key_sync.gate.lock().await;
-      let stop = BackgroundStop(host.key_sync.signing_out.subscribe());
+      let stop = host.key_sync.background_stop();
       if stop.requested() {
         continue;
       }
-      let Ok(Some(account)) = host.account.account_key(&app).await else {
+      let Ok(Some((account, session_id))) = stop.session(&app, &host).await else {
         host.key_sync.automatic.publish_health(&app, None).await;
         continue;
       };
-      let health = synchronize(&app, &host, &account, &stop)
+      let stop = stop.for_session(session_id);
+      let health = synchronize(&app, &host, &account, session_id, &stop)
         .await
         .unwrap_or_else(SyncHealth::Failed);
       if !stop.requested() {
         host
           .key_sync
           .automatic
-          .publish_health(&app, Some((account, health)))
+          .publish_health(&app, Some((session_id, health)))
           .await;
       }
     }
@@ -653,6 +654,7 @@ async fn synchronize(
   app: &AppHandle,
   host: &Host,
   account: &str,
+  session_id: Uuid,
   stop: &BackgroundStop,
 ) -> Result<SyncHealth, String> {
   if !host.account.key_exchange_available()
@@ -670,7 +672,7 @@ async fn synchronize(
   host
     .key_sync
     .automatic
-    .publish_health(app, Some((account.to_owned(), SyncHealth::Syncing)))
+    .publish_health(app, Some((session_id, SyncHealth::Syncing)))
     .await;
   let relay = stop.access(app, host, true, None).await?;
   if relay.account_key != account {
@@ -695,7 +697,7 @@ async fn synchronize(
   let root = host.root.clone();
   // A metadata retry cannot prevent synchronization of other complete entries.
   let added =
-    crate::config_sync::add_credential_connections(app, host, &access, stop, missing, move |ids| {
+    crate::config_sync::add_credential_connections(host, &access, stop, missing, move |ids| {
       retain_restorable(&root, &metadata_owner, ids)
     })
     .await;
@@ -706,7 +708,7 @@ async fn synchronize(
   let plan_app = app.clone();
   let root = host.root.clone();
   let plan =
-    crate::config_sync::apply_key_restores(app, host, &access, stop, move |settings, preferred| {
+    crate::config_sync::apply_key_restores(host, &access, stop, move |settings, preferred| {
       apply_plan(
         &plan_app,
         &root,
@@ -900,29 +902,32 @@ mod tests {
   use crate::settings::credential_ref;
 
   #[tokio::test]
-  async fn automatic_health_is_scoped_to_the_account() {
+  async fn automatic_health_is_scoped_to_the_sign_in() {
     let automatic = Automatic::default();
-    assert_eq!(automatic.health("first").await, SyncHealth::Pending);
-    *automatic.health.lock().await = Some(("first".into(), SyncHealth::Failed("Offline".into())));
+    let first = Uuid::new_v4();
+    assert_eq!(automatic.health(first).await, SyncHealth::Pending);
+    *automatic.health.lock().await = Some((first, SyncHealth::Failed("Offline".into())));
     assert_eq!(
-      automatic.health("first").await.verified_status(),
+      automatic.health(first).await.verified_status(),
       json!({"state":"verified", "sync_state":"failed", "sync_error":"Offline"}),
     );
-    assert_eq!(automatic.health("second").await, SyncHealth::Pending);
+    assert_eq!(automatic.health(Uuid::new_v4()).await, SyncHealth::Pending);
   }
 
   #[test]
-  fn retry_marks_pending_without_replacing_the_accounts_active_sync() {
-    let mut health = Some(("first".into(), SyncHealth::Failed("Offline".into())));
-    assert!(mark_pending(&mut health, "first".into()));
-    assert_eq!(health, Some(("first".into(), SyncHealth::Pending)));
-    assert!(!mark_pending(&mut health, "first".into()));
+  fn retry_marks_pending_without_replacing_the_sessions_active_sync() {
+    let first = Uuid::new_v4();
+    let second = Uuid::new_v4();
+    let mut health = Some((first, SyncHealth::Failed("Offline".into())));
+    assert!(mark_pending(&mut health, first));
+    assert_eq!(health, Some((first, SyncHealth::Pending)));
+    assert!(!mark_pending(&mut health, first));
 
-    health = Some(("first".into(), SyncHealth::Syncing));
-    assert!(!mark_pending(&mut health, "first".into()));
-    assert_eq!(health, Some(("first".into(), SyncHealth::Syncing)));
-    assert!(mark_pending(&mut health, "second".into()));
-    assert_eq!(health, Some(("second".into(), SyncHealth::Pending)));
+    health = Some((first, SyncHealth::Syncing));
+    assert!(!mark_pending(&mut health, first));
+    assert_eq!(health, Some((first, SyncHealth::Syncing)));
+    assert!(mark_pending(&mut health, second));
+    assert_eq!(health, Some((second, SyncHealth::Pending)));
   }
 
   #[test]

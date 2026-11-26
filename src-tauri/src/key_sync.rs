@@ -5,7 +5,7 @@ mod managed;
 pub(crate) use automatic::{commit_local_credentials, kick, start};
 
 use crate::{
-  account::Access,
+  account::{self, Access},
   commands::blocking,
   host::Host,
   provider_commands::finish_snapshot,
@@ -37,13 +37,38 @@ pub(crate) struct KeySync {
 }
 
 #[derive(Clone)]
-pub(crate) struct BackgroundStop(watch::Receiver<bool>);
+pub(crate) struct BackgroundStop {
+  signing_out: watch::Receiver<bool>,
+  session_id: Option<Uuid>,
+}
 
 impl BackgroundStop {
+  fn new(signing_out: watch::Receiver<bool>) -> Self {
+    Self {
+      signing_out,
+      session_id: None,
+    }
+  }
+
+  pub(crate) fn for_session(mut self, session_id: Uuid) -> Self {
+    self.session_id = Some(session_id);
+    self
+  }
+
+  pub(crate) async fn session(
+    &self,
+    app: &AppHandle,
+    host: &Host,
+  ) -> Result<Option<(String, Uuid)>, String> {
+    self
+      .wait(host.account.session(app, self.session_id))
+      .await?
+  }
+
   fn requested(&self) -> bool {
     // An earlier operation stays cancelled even if it missed the time the
     // flag was set. A fresh operation observes the new receiver version.
-    *self.0.borrow() || self.0.has_changed().unwrap_or(true)
+    *self.signing_out.borrow() || self.signing_out.has_changed().unwrap_or(true)
   }
 
   pub(crate) fn check(&self) -> Result<(), String> {
@@ -56,7 +81,7 @@ impl BackgroundStop {
 
   pub(crate) async fn wait<T>(&self, work: impl Future<Output = T>) -> Result<T, String> {
     self.check()?;
-    let mut requested = self.0.clone();
+    let mut requested = self.signing_out.clone();
     tokio::select! {
       biased;
       _ = requested.changed() => Err(SIGNING_OUT.into()),
@@ -72,11 +97,12 @@ impl BackgroundStop {
     same_session_as: Option<&Access>,
   ) -> Result<Access, String> {
     let task = self
-      .wait(
-        host
-          .account
-          .start_background_access(app, key_exchange, same_session_as),
-      )
+      .wait(host.account.start_background_access(
+        app,
+        key_exchange,
+        same_session_as,
+        self.session_id,
+      ))
       .await??;
     self
       .wait(task)
@@ -190,7 +216,7 @@ impl KeySync {
   }
 
   pub(crate) fn background_stop(&self) -> BackgroundStop {
-    BackgroundStop(self.signing_out.subscribe())
+    BackgroundStop::new(self.signing_out.subscribe())
   }
 
   async fn request(
@@ -311,13 +337,6 @@ async fn save_vault(app: &AppHandle, account: &str, vault: &LocalVault) -> Resul
   blocking(move || tauri_plugin_apell_credentials::write(&app, &slot, Some(&data))).await
 }
 
-async fn verify_account(app: &AppHandle, host: &Host, account: &str) -> Result<(), String> {
-  if host.account.account_key(app).await?.as_deref() != Some(account) {
-    return Err("The signed-in Account changed. Try again.".into());
-  }
-  Ok(())
-}
-
 async fn unlocked(app: &AppHandle, host: &Host, relay: &Access) -> Result<LocalVault, String> {
   let local = local_vault(app, &relay.account_key).await?.ok_or(LOCKED)?;
   if !local.managed || local.setup.is_some() || local.pending_managed {
@@ -403,16 +422,33 @@ fn parse<T: DeserializeOwned>(params: Value) -> Result<T, String> {
   serde_json::from_value(params).map_err(|_| "Invalid encrypted API key sync request.".into())
 }
 
-pub(crate) async fn dispatch(app: AppHandle, method: &str, params: Value) -> Result<Value, String> {
+pub(crate) async fn dispatch(
+  app: AppHandle,
+  method: &str,
+  mut params: Value,
+) -> Result<Value, String> {
+  let session_id = account::take_session_id(&mut params)?;
   let method = method.to_owned();
   finish_snapshot(async move {
     let host = app.state::<Host>();
-    let stop = BackgroundStop(host.key_sync.signing_out.subscribe());
+    let stop = host.key_sync.background_stop().for_session(session_id);
+    let (account, _) = stop
+      .session(&app, &host)
+      .await?
+      .ok_or("Sign in to Apell Account to verify this device.")?;
     match method.as_str() {
       "key_sync.status" | "key_sync.local_status" => {
-        return managed::status(&app, &host, method == "key_sync.local_status").await;
+        return managed::status(
+          &app,
+          &host,
+          &account,
+          session_id,
+          method == "key_sync.local_status",
+          &stop,
+        )
+        .await;
       }
-      "key_sync.retry" => return managed::retry(&app, &host).await,
+      "key_sync.retry" => return managed::retry(&app, &host, &account, session_id, &stop).await,
       "key_sync.conflicts" => return automatic::review_conflicts(&app, &host, &stop).await,
       "key_sync.resolve_conflict" => {
         let input = parse::<automatic::ConflictResolution>(params)?;
@@ -429,17 +465,13 @@ pub(crate) async fn dispatch(app: AppHandle, method: &str, params: Value) -> Res
       }
       _ => {}
     }
-    let account = stop
-      .wait(host.account.account_key(&app))
-      .await??
-      .ok_or("Sign in to Apell Account to verify this device.")?;
     let cancellation = match method.as_str() {
       "key_sync.pair_finish" => {
-        Some(managed::pair_cancellation(&host, &account, &parse(params.clone())?, &stop).await?)
+        Some(managed::pair_cancellation(&host, session_id, &parse(params.clone())?, &stop).await?)
       }
-      "key_sync.recovery_finish" => {
-        Some(managed::recovery_cancellation(&host, &account, &parse(params.clone())?, &stop).await?)
-      }
+      "key_sync.recovery_finish" => Some(
+        managed::recovery_cancellation(&host, session_id, &parse(params.clone())?, &stop).await?,
+      ),
       _ => None,
     };
     let authorize = async {
@@ -474,15 +506,19 @@ pub(crate) async fn dispatch(app: AppHandle, method: &str, params: Value) -> Res
   .await
 }
 
-pub(crate) async fn sign_out(app: AppHandle) -> Result<Value, String> {
+pub(crate) async fn sign_out(app: AppHandle, mut params: Value) -> Result<Value, String> {
+  let session_id = account::take_session_id(&mut params)?;
   finish_snapshot(async move {
     let host = app.state::<Host>();
     let sync = &host.key_sync;
     let _sign_out = sync.sign_out.lock().await;
-    let pause = PauseBackground::new(&sync.signing_out);
+    let pause = host
+      .account
+      .with_current_session(&app, session_id, || PauseBackground::new(&sync.signing_out))
+      .await?;
     let _gate = sync.gate.lock().await;
     let _config = host.config_sync.gate.lock().await;
-    let result = crate::account::dispatch(app.clone(), &host.account, "account.sign_out").await;
+    let result = host.account.sign_out(&app, session_id).await;
     if result.is_ok() {
       sync.managed.clear().await;
       sync.automatic.clear_conflict_reviews().await;
@@ -516,7 +552,7 @@ mod tests {
     let background = sync.clone();
     let worker = tokio::spawn(async move {
       let _gate = background.gate.lock().await;
-      let stop = BackgroundStop(background.signing_out.subscribe());
+      let stop = background.background_stop();
       let refresh = tokio::spawn(async move {
         network_reply.await.unwrap();
         finished.send(()).unwrap();
@@ -531,7 +567,7 @@ mod tests {
       .await
       .expect("Sign-out must not wait for the background network request");
     assert_eq!(worker.await.unwrap().unwrap_err(), SIGNING_OUT);
-    let pending = BackgroundStop(sync.signing_out.subscribe());
+    let pending = sync.background_stop();
     assert!(pending.check().is_err());
     assert!(pending
       .wait(async { panic!("No new work should start during sign-out") })
@@ -541,7 +577,7 @@ mod tests {
     refresh_finished.await.unwrap();
     drop(pause);
     assert!(pending.check().is_err());
-    assert!(BackgroundStop(sync.signing_out.subscribe()).check().is_ok());
+    assert!(sync.background_stop().check().is_ok());
   }
 
   #[tokio::test]
@@ -549,7 +585,7 @@ mod tests {
     let sync = std::sync::Arc::new(KeySync::new(Client::new()));
     let gate = sync.gate.lock().await;
     let queued = sync.clone();
-    let stop = BackgroundStop(sync.signing_out.subscribe());
+    let stop = sync.background_stop();
     let (started, waiting) = oneshot::channel();
     let request = tokio::spawn(async move {
       started.send(()).unwrap();
@@ -573,7 +609,7 @@ mod tests {
     let background = sync.clone();
     let worker = tokio::spawn(async move {
       let _gate = background.gate.lock().await;
-      let stop = BackgroundStop(background.signing_out.subscribe());
+      let stop = background.background_stop();
       stop.check().unwrap();
       started.send(()).unwrap();
       finish_commit.await.unwrap();
