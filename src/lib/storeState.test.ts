@@ -3,6 +3,7 @@ import {
   matchingStoreApplets,
   newStoreAccess,
   recommendedStoreRelease,
+  reviewSavedCatalog,
   reviewStoreRelease,
   storeChannelRelease,
 } from './storeState';
@@ -46,6 +47,7 @@ const applet: StoreCatalogEntry = {
   installed,
   update_available: true,
   source_conflict: false,
+  installation_unavailable: false,
 };
 const detail: StoreDetail = {
   store_url,
@@ -184,6 +186,61 @@ describe('store release review', () => {
 });
 
 describe('store catalog filtering', () => {
+  it('joins saved listings to the verified local inventory without carrying over update claims', () => {
+    const nightly_install: InstalledApplet = {
+      ...installed,
+      source: { kind: 'store', store_url, applet_id: 'chat', channel: 'nightly' },
+    };
+    const other_origin = { ...applet, applet_id: 'external' };
+    const mismatched_id = { ...applet, applet_id: 'different-id' };
+    const unavailable = { ...applet, applet_id: 'broken' };
+    const removed = { ...applet, applet_id: 'removed' };
+    const catalog = {
+      store_url,
+      applets: [applet, other_origin, mismatched_id, unavailable, removed],
+    };
+    const report = {
+      applets: [
+        nightly_install,
+        {
+          ...nightly_install,
+          applet_id: 'external',
+          source: {
+            kind: 'store' as const,
+            channel: 'nightly' as const,
+            store_url: 'https://other.example.invalid',
+            applet_id: 'external',
+          },
+        },
+        { ...nightly_install, applet_id: 'different-id' },
+      ],
+      unavailable: [{ applet_id: 'broken', error: 'fixture package read error' }],
+    };
+    const reviewed = reviewSavedCatalog(catalog, report);
+    expect(
+      reviewed.applets.map(
+        ({ applet_id, installed, source_conflict, installation_unavailable }) => [
+          applet_id,
+          installed?.applet_id,
+          source_conflict,
+          installation_unavailable,
+        ],
+      ),
+    ).toEqual([
+      ['chat', 'chat', false, false],
+      ['external', 'external', true, false],
+      ['different-id', 'different-id', true, false],
+      ['broken', undefined, true, true],
+      ['removed', undefined, false, false],
+    ]);
+    expect(reviewed.applets.every((entry) => !entry.update_available)).toBe(true);
+    expect(recommendedStoreRelease({ ...detail, installed: reviewed.applets[0].installed })).toBe(
+      nightly,
+    );
+    expect(applet.update_available).toBe(true);
+    expect(reviewSavedCatalog(reviewed).applets[0].installed).toBeNull();
+  });
+
   it('includes Stable and Nightly-only applets in one catalog', () => {
     const nightly_only = {
       ...applet,

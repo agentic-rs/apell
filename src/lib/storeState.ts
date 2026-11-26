@@ -1,4 +1,6 @@
 import type {
+  AppletListReport,
+  StoreCatalog,
   StoreCatalogEntry,
   StoreApplet,
   StoreChannel,
@@ -77,6 +79,34 @@ export function installedStoreChannel(
     source.applet_id === applet_id
     ? source.channel
     : undefined;
+}
+
+export function reviewSavedCatalog(
+  catalog: StoreCatalog,
+  report?: Pick<AppletListReport, 'applets' | 'unavailable'>,
+): StoreCatalog {
+  const installed_applets = new Map(report?.applets.map((applet) => [applet.applet_id, applet]));
+  const unavailable = new Set(report?.unavailable.map((applet) => applet.applet_id));
+  return {
+    store_url: catalog.store_url,
+    applets: catalog.applets.map((applet) => {
+      const installation_unavailable = unavailable.has(applet.applet_id);
+      const installed = installation_unavailable
+        ? null
+        : (installed_applets.get(applet.applet_id) ?? null);
+      return {
+        ...applet,
+        installed,
+        update_available: false,
+        source_conflict:
+          installation_unavailable ||
+          Boolean(
+            installed && !installedStoreChannel(catalog.store_url, applet.applet_id, installed),
+          ),
+        installation_unavailable,
+      };
+    }),
+  };
 }
 
 export function recommendedStoreRelease(

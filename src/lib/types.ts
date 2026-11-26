@@ -97,6 +97,7 @@ export interface StoreCatalogEntry extends StoreApplet {
   installed: InstalledApplet | null;
   update_available: boolean;
   source_conflict: boolean;
+  installation_unavailable: boolean;
 }
 export interface StoreCatalog {
   store_url: string;

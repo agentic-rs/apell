@@ -147,6 +147,7 @@ export function cachedCatalog(cache: StoreBrowseCache): StoreCatalog | undefined
         installed: null,
         update_available: false,
         source_conflict: false,
+        installation_unavailable: false,
       })),
     }
   );

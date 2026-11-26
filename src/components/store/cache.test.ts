@@ -51,7 +51,15 @@ const installed = {
 };
 const catalog: StoreCatalog = {
   store_url,
-  applets: [{ ...applet, installed, update_available: true, source_conflict: true }],
+  applets: [
+    {
+      ...applet,
+      installed,
+      update_available: true,
+      source_conflict: true,
+      installation_unavailable: false,
+    },
+  ],
 };
 const detail: StoreDetail = {
   store_url,
@@ -83,7 +91,7 @@ describe('native Store browse cache', () => {
     const saved = readStoreCache(store_url);
     const raw = [...storage.values()].join('');
     expect(raw).not.toMatch(
-      /private-fixture|microphone|downloaded_bytes|switch_snapshot|restart_required/,
+      /private-fixture|microphone|downloaded_bytes|switch_snapshot|restart_required|installation_unavailable|update_available/,
     );
     expect(saved.preferences).toEqual({ query: 'Sample', updates_only: true });
     expect(saved.details[0].selected_version).toBe(release.version);

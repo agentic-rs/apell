@@ -73,6 +73,7 @@ struct CatalogItem {
   installed: Option<InstalledApplet>,
   update_available: bool,
   source_conflict: bool,
+  installation_unavailable: bool,
 }
 #[derive(Serialize)]
 struct CatalogResult {
@@ -325,7 +326,8 @@ pub async fn dispatch(
         .into_iter()
         .map(|applet| {
           let review = review_install(&installed, &store_url, &applet.applet_id);
-          let source_conflict = review.blocked.is_some() || review.switch_snapshot.is_some();
+          let installation_unavailable = review.blocked.is_some();
+          let source_conflict = installation_unavailable || review.switch_snapshot.is_some();
           let update_available = !source_conflict
             && review
               .installed
@@ -335,6 +337,7 @@ pub async fn dispatch(
             installed: review.installed.cloned(),
             update_available,
             source_conflict,
+            installation_unavailable,
           }
         })
         .collect();

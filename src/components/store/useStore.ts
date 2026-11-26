@@ -25,6 +25,7 @@ import type {
   StoreUpdatesReport,
 } from '../../lib/types';
 import {
+  reviewSavedCatalog,
   reviewStoreRelease,
   storeChannelName,
   storeReleaseChannel,
@@ -135,17 +136,33 @@ export function useStore(
     }
   };
 
+  const isCurrentCatalog = (store_url: string, request: number) =>
+    scope.current.alive && scope.current.catalog === request && current_url.current === store_url;
+
+  const loadSavedInstallations = async (store_url: string, request: number) => {
+    if (catalog?.store_url !== store_url && !cache.current?.catalog) return;
+    try {
+      const report = await listApplets();
+      if (isCurrentCatalog(store_url, request)) {
+        setCatalog((current) =>
+          current?.store_url === store_url ? reviewSavedCatalog(current, report) : current,
+        );
+      }
+    } catch {
+      // Saved listings remain available even if the native inventory fails.
+    }
+  };
+
+  const clearCatalogReview = () => setCatalog((current) => current && reviewSavedCatalog(current));
+
   const loadCatalog = async (store_url: string) => {
     const request = ++scope.current.catalog;
     setCatalogLoading(true);
     setCatalogError('');
+    clearCatalogReview();
     try {
       const result = await getStoreCatalog(store_url);
-      if (
-        scope.current.alive &&
-        scope.current.catalog === request &&
-        current_url.current === store_url
-      ) {
+      if (isCurrentCatalog(store_url, request)) {
         setCatalog(result);
         if (cache.current?.store_url === store_url) {
           cacheStoreCatalog(cache.current, result);
@@ -153,9 +170,12 @@ export function useStore(
         }
       }
     } catch (error) {
-      if (scope.current.alive && scope.current.catalog === request) setCatalogError(message(error));
+      if (isCurrentCatalog(store_url, request)) {
+        setCatalogError(message(error));
+        await loadSavedInstallations(store_url, request);
+      }
     } finally {
-      if (scope.current.alive && scope.current.catalog === request) setCatalogLoading(false);
+      if (isCurrentCatalog(store_url, request)) setCatalogLoading(false);
     }
   };
 
@@ -236,11 +256,11 @@ export function useStore(
     } catch (error) {
       if (scope.current.alive && scope.current.config === request) {
         if (!config) setConfigError(message(error));
-        if (selection.current) {
-          void loadDetail(selection.current);
-        } else if (config?.store_url) {
+        if (selection.current) void loadDetail(selection.current);
+        if (config?.store_url) {
           setCatalogError(message(error));
           setCatalogLoading(false);
+          void loadSavedInstallations(config.store_url, ++scope.current.catalog);
         }
       }
     } finally {
@@ -251,6 +271,7 @@ export function useStore(
   useLayoutEffect(() => {
     scope.current.alive = true;
     markFresh(false);
+    clearCatalogReview();
     if (selection.current) {
       setLocalInstallation(undefined);
       setDetailLoading(true);

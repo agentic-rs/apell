@@ -19,6 +19,8 @@ release notes, and declared access before choosing **Install**.
 Apell saves the catalog, recently viewed applet details, and browsing preferences
 on this device. Returning to the Store restores the view while Apell checks for
 changes. Saved listings can still be browsed if the Store is unreachable.
+Apell checks local installations to show their installed channels and sources
+in saved listings. Update badges require a fresh Store response.
 Saved applet details default to the installed channel when the installation
 comes from that Store. If no releases for that channel are saved, you can still
 open the applet or browse another channel.

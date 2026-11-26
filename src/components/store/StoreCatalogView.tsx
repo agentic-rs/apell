@@ -149,6 +149,7 @@ function StoreDiscover({
         <div className="store-feedback" role="alert">
           <strong>{catalog ? 'Couldn’t refresh the store' : 'Couldn’t load the store'}</strong>
           <p>{error}</p>
+          {catalog && <p>Showing saved listings.</p>}
           <button disabled={loading} onClick={onRefresh}>
             Try again
           </button>
@@ -204,7 +205,11 @@ function StoreDiscover({
                     <strong>{applet.name}</strong>
                     <span className="store-card-description">{applet.description}</span>
                     <span className="store-card-meta">
-                      {update_available ? (
+                      {applet.installation_unavailable ? (
+                        <span className="store-badge store-badge-muted">
+                          Installation unavailable
+                        </span>
+                      ) : update_available ? (
                         <span className="store-badge">
                           {channel_name ? `Update available · ${channel_name}` : 'Update available'}
                         </span>
