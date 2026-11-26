@@ -36,7 +36,12 @@ const expired_approval_error =
 type VerificationRequest =
   | { kind: 'join'; pairing: KeySyncPairing }
   | { kind: 'recover' | 'upgrade'; challenge: KeySyncRecovery };
-type Flow = VerificationRequest | { kind: 'approve' } | { kind: 'review' };
+type VerificationStartup = {
+  kind: 'startup';
+  verification_kind: VerificationRequest['kind'];
+  error?: string;
+};
+type Flow = VerificationRequest | VerificationStartup | { kind: 'approve' } | { kind: 'review' };
 type Progress = 'waiting' | 'expired' | 'rejected' | { error: string };
 
 const titles = {
@@ -56,6 +61,44 @@ function PairingCode({ code }: { code: string }) {
     <code className="key-sync-code" aria-label="Pairing code">
       {code}
     </code>
+  );
+}
+
+function VerificationPreparation({
+  startup,
+  pending,
+  onCancel,
+  onRetry,
+}: {
+  startup: VerificationStartup;
+  pending: boolean;
+  onCancel: () => void;
+  onRetry: () => void;
+}) {
+  return (
+    <>
+      {startup.error ? (
+        <p className="status error" role="alert">
+          {startup.error}
+        </p>
+      ) : (
+        <p role="status">
+          {startup.verification_kind === 'join'
+            ? 'Requesting a pairing code…'
+            : 'Preparing Account verification…'}
+        </p>
+      )}
+      <div className="button-row">
+        <button type="button" onClick={onCancel}>
+          {startup.error ? 'Back to Account' : 'Cancel'}
+        </button>
+        {startup.error && (
+          <button type="button" className="primary" disabled={pending} onClick={onRetry}>
+            Try again
+          </button>
+        )}
+      </div>
+    </>
   );
 }
 
@@ -413,6 +456,8 @@ export function EncryptedKeySync({
   const [status, setStatus] = useState<LocalKeySyncStatus | KeySyncStatus>();
   const [flow, setFlow] = useState<Flow>();
   const active_flow = useRef<Flow | undefined>(undefined);
+  const [starting_verification, setStartingVerification] = useState(false);
+  const start_pending = useRef(false);
   const [busy, setBusy] = useState(false);
   const [approving, setApproving] = useState(false);
   const [resolving, setResolving] = useState(false);
@@ -428,6 +473,9 @@ export function EncryptedKeySync({
   const visible = useRef(false);
   const heading = useRef<HTMLHeadingElement>(null);
   const coverage_focus = useRef<HTMLElement>(undefined);
+  const verification_trigger = useRef<HTMLButtonElement>(null);
+  const ending_verification = useRef<HTMLParagraphElement>(null);
+  const verification_content = useRef<HTMLDivElement>(null);
   const outside_keys = status?.state === 'verified' ? status.keys_outside_account : null;
   const isCurrentFlow = useCallback((request: Flow) => active_flow.current === request, []);
 
@@ -466,10 +514,17 @@ export function EncryptedKeySync({
     }
   }
 
+  useLayoutEffect(() => {
+    visible.current = true;
+    return () => {
+      visible.current = false;
+      if (active_flow.current?.kind === 'startup') showFlow();
+    };
+  }, [account_session_id]);
+
   useEffect(() => {
     let active = true;
     let stop: (() => void) | undefined;
-    visible.current = true;
     setRetrying(false);
     const reload = () => {
       if (active) void refresh();
@@ -483,7 +538,6 @@ export function EncryptedKeySync({
     }, reload);
     return () => {
       active = false;
-      visible.current = false;
       window.removeEventListener('focus', reload);
       stop?.();
       read_version.current += 1;
@@ -497,6 +551,26 @@ export function EncryptedKeySync({
       if (document.activeElement === document.body) heading.current?.focus({ preventScroll: true });
     }
   }, [outside_keys, status_error]);
+  useEffect(() => {
+    if (flow) {
+      if (document.activeElement === document.body)
+        verification_content.current?.focus({ preventScroll: true });
+      return;
+    }
+    const trigger = verification_trigger.current;
+    if (!trigger) return;
+    if (starting_verification) {
+      if (document.activeElement === document.body)
+        ending_verification.current?.focus({ preventScroll: true });
+      return;
+    }
+    verification_trigger.current = null;
+    if (document.activeElement === document.body) {
+      (trigger.isConnected && !trigger.disabled ? trigger : heading.current)?.focus({
+        preventScroll: true,
+      });
+    }
+  }, [flow, starting_verification]);
 
   async function retry() {
     const operation = retry_scope.current.start();
@@ -554,23 +628,46 @@ export function EncryptedKeySync({
     void cancelRequest(account_session_id, current);
   }
 
-  function startRequest(kind: VerificationRequest['kind'], replacing?: VerificationRequest) {
-    if (active_flow.current !== replacing) return;
-    return perform(async (isCurrent) => {
-      if (replacing) await cancelRequest(account_session_id, replacing);
-      if (!isCurrent() || active_flow.current !== replacing) return;
+  async function startRequest(
+    verification_kind: VerificationRequest['kind'],
+    replacing?: VerificationRequest | VerificationStartup,
+  ) {
+    if (start_pending.current || !visible.current || active_flow.current !== replacing) return;
+    const startup: VerificationStartup = { kind: 'startup', verification_kind };
+    const isCurrent = () => visible.current && isCurrentFlow(startup);
+    start_pending.current = true;
+    setStartingVerification(true);
+    setError('');
+    showFlow(startup);
+    try {
+      await cancelRequest(account_session_id, replacing);
+      if (!isCurrent()) return;
       const next: VerificationRequest =
-        kind === 'join'
-          ? { kind, pairing: await startKeySyncPairing(account_session_id) }
-          : { kind, challenge: await startKeySyncRecovery(account_session_id) };
-      if (!isCurrent() || active_flow.current !== replacing) {
-        void cancelRequest(account_session_id, next);
+        verification_kind === 'join'
+          ? { kind: verification_kind, pairing: await startKeySyncPairing(account_session_id) }
+          : { kind: verification_kind, challenge: await startKeySyncRecovery(account_session_id) };
+      if (!isCurrent()) {
+        // Keep starts serialized until the abandoned challenge has been cancelled.
+        await cancelRequest(account_session_id, next);
         return;
       }
       showFlow(next);
-      if (next.kind !== 'join')
-        await openKeySyncRecovery(account_session_id, next.challenge.request_id);
-    });
+      if (next.kind !== 'join') openRecovery(next);
+    } catch (cause) {
+      if (isCurrent()) {
+        showFlow({ ...startup, error: message(cause) || 'Couldn’t start verification.' });
+        void refresh();
+      }
+    } finally {
+      start_pending.current = false;
+      setStartingVerification(false);
+    }
+  }
+
+  function beginVerification(kind: VerificationRequest['kind'], trigger: HTMLButtonElement) {
+    trigger.focus({ preventScroll: true });
+    verification_trigger.current = trigger;
+    void startRequest(kind);
   }
 
   function openRecovery(request: VerificationRequest) {
@@ -579,7 +676,7 @@ export function EncryptedKeySync({
   }
 
   if (status?.state === 'signed_out') return null;
-  const button_disabled = disabled || busy || resolving;
+  const button_disabled = disabled || busy || resolving || starting_verification;
   const verification = status?.state === 'unverified' && 'action' in status ? status : undefined;
   const verification_action = !status_error && !checking ? verification?.action : undefined;
   const check_error = status_error || (verification?.action === 'check' ? verification.error : '');
@@ -775,7 +872,7 @@ export function EncryptedKeySync({
                   type="button"
                   className="primary"
                   disabled={button_disabled || checking}
-                  onClick={() => void startRequest('join')}
+                  onClick={(event) => beginVerification('join', event.currentTarget)}
                 >
                   Pair this device
                 </button>
@@ -787,7 +884,7 @@ export function EncryptedKeySync({
                 <button
                   type="button"
                   disabled={button_disabled || checking}
-                  onClick={() => void startRequest('recover')}
+                  onClick={(event) => beginVerification('recover', event.currentTarget)}
                 >
                   Recover access
                 </button>
@@ -801,7 +898,7 @@ export function EncryptedKeySync({
                 type="button"
                 className="primary"
                 disabled={button_disabled || checking}
-                onClick={() => void startRequest('upgrade')}
+                onClick={(event) => beginVerification('upgrade', event.currentTarget)}
               >
                 Verify Account
               </button>
@@ -830,10 +927,15 @@ export function EncryptedKeySync({
           {error}
         </p>
       )}
+      {!flow && starting_verification && (
+        <p ref={ending_verification} tabIndex={-1} role="status">
+          Ending verification request…
+        </p>
+      )}
       {flow && (
         <Sheet
           open
-          title={titles[flow.kind]}
+          title={titles[flow.kind === 'startup' ? flow.verification_kind : flow.kind]}
           onClose={close}
           dismissible={!busy && !approving && !resolving}
         >
@@ -853,8 +955,15 @@ export function EncryptedKeySync({
               }}
             />
           ) : (
-            <div className="transfer-form">
-              {flow.kind === 'approve' ? (
+            <div ref={verification_content} tabIndex={-1} className="transfer-form">
+              {flow.kind === 'startup' ? (
+                <VerificationPreparation
+                  startup={flow}
+                  pending={starting_verification}
+                  onCancel={close}
+                  onRetry={() => void startRequest(flow.verification_kind, flow)}
+                />
+              ) : flow.kind === 'approve' ? (
                 <Approvals
                   account_session_id={account_session_id}
                   request={flow}
