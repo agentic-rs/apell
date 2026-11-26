@@ -53,6 +53,12 @@ struct PermissionReset {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct UnavailablePermissionsQuery {
+  applet_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct OpenPermissionSettings {
   permission: ManagedPermission,
 }
@@ -267,6 +273,11 @@ pub async fn shell_command(
       Ok(Value::Null)
     }
     "permissions.list" => crate::permissions::list(app, &host).await,
+    "permissions.unavailable" => {
+      let request: UnavailablePermissionsQuery =
+        serde_json::from_value(params).map_err(|_| "Choose an unavailable applet.")?;
+      permissions::unavailable(&host, request.applet_id).await
+    }
     "permissions.open_system_settings" => {
       let request: OpenPermissionSettings =
         serde_json::from_value(params).map_err(|_| "Choose an applet permission.")?;

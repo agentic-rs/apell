@@ -78,6 +78,7 @@ export interface PermissionGrant {
   grant_revision: string;
   access: PermissionMode | 'previous_package' | 'undeclared' | 'unverified_package';
   mode?: PermissionMode;
+  saved_mode?: Exclude<PermissionMode, 'ask'>;
   available: boolean;
   system_authorization: SystemAuthorization;
   can_open_system_settings?: boolean;

@@ -91,6 +91,7 @@ describe('applet bridge boundary', () => {
       'store.restore_package',
       'applets.restore_package',
       'permissions.list',
+      'permissions.unavailable',
       'permissions.open_system_settings',
       'permissions.forget',
       'permissions.set_installed_mode',

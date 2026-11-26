@@ -1,7 +1,7 @@
 use crate::host::Host;
 use apell_core::{
   bundles::{
-    digest, AppletListReport, AppletReportEntry, InstalledApplet, PackageSource,
+    digest, AppletListReport, AppletReportEntry, BundleStore, InstalledApplet, PackageSource,
     StoreSwitchSnapshot, UnavailableApplet,
   },
   config::ConfigStore,
@@ -172,7 +172,7 @@ impl PermissionAccess {
   }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum GrantSource {
   Github {
@@ -255,6 +255,16 @@ fn permission_access(stored: Option<&Value>, source: Option<&GrantSource>) -> Pe
       PermissionAccess::Blocked
     }
     Some(_) => PermissionAccess::PreviousPackage,
+  }
+}
+
+fn saved_permission_mode(stored: &Value) -> Option<PermissionMode> {
+  // Compare with the canonical grant so a partial or legacy record stays opaque.
+  let source = GrantSource::deserialize(stored.get("source").unwrap_or(stored)).ok()?;
+  match permission_access(Some(stored), Some(&source)) {
+    PermissionAccess::Remembered => Some(PermissionMode::Remembered),
+    PermissionAccess::Blocked => Some(PermissionMode::Blocked),
+    _ => None,
   }
 }
 
@@ -462,11 +472,16 @@ impl PermissionGrants {
         }
         access => access,
       };
+      let saved_mode = match access {
+        PermissionAccess::UnverifiedPackage => stored.as_ref().and_then(saved_permission_mode),
+        _ => None,
+      };
       grants.push(GrantSummary {
         permission,
         access,
         grant_revision: grant_revision(applet_id, permission, target, stored.as_ref())?,
         mode: (declared && source.is_some()).then_some(access.mode()),
+        saved_mode,
         available: permission.available(),
         system_authorization: SystemAuthorization::Unknown,
         can_open_system_settings: None,
@@ -514,6 +529,32 @@ impl PermissionGrants {
     Ok(json!({ "applet": applet, "permissions": permissions }))
   }
 
+  fn unavailable_summary(
+    &self,
+    applet: UnavailableApplet,
+  ) -> Result<AppletPermissionSummary, String> {
+    let grants = self.summary(&applet.applet_id, None, &[], &GrantTarget::from(&applet))?;
+    Ok(AppletPermissionSummary {
+      applet_id: applet.applet_id.clone(),
+      name: applet.applet_id,
+      installed_revision: None,
+      manifest: None,
+      grants,
+      restart_required: false,
+    })
+  }
+
+  fn read_unavailable(
+    &self,
+    bundles: &BundleStore,
+    applet_id: &str,
+  ) -> Result<Option<AppletPermissionSummary>, String> {
+    match bundles.report_applet(applet_id)? {
+      Some(AppletReportEntry::Unavailable(applet)) => self.unavailable_summary(applet).map(Some),
+      _ => Ok(None),
+    }
+  }
+
   fn summaries(
     &self,
     report: AppletListReport,
@@ -525,16 +566,9 @@ impl PermissionGrants {
       entries.push(self.installed_summary(&applet, restart_required)?);
     }
     for applet in report.unavailable {
-      let grants = self.summary(&applet.applet_id, None, &[], &GrantTarget::from(&applet))?;
-      if !grants.is_empty() {
-        entries.push(AppletPermissionSummary {
-          applet_id: applet.applet_id.clone(),
-          name: applet.applet_id,
-          installed_revision: None,
-          manifest: None,
-          grants,
-          restart_required: false,
-        });
+      let entry = self.unavailable_summary(applet)?;
+      if !entry.grants.is_empty() {
+        entries.push(entry);
       }
     }
     Ok(entries)
@@ -568,6 +602,8 @@ struct GrantSummary {
   grant_revision: String,
   #[serde(skip_serializing_if = "Option::is_none")]
   mode: Option<PermissionMode>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  saved_mode: Option<PermissionMode>,
   available: bool,
   system_authorization: SystemAuthorization,
   #[serde(skip_serializing_if = "Option::is_none")]
@@ -640,6 +676,12 @@ pub async fn list(app: AppHandle, host: &Host) -> Result<Value, String> {
   .await
 }
 
+pub(crate) async fn unavailable(host: &Host, applet_id: String) -> Result<Value, String> {
+  let bundles = host.bundles.clone();
+  let grants = host.grants.clone();
+  crate::commands::blocking(move || Ok(json!(grants.read_unavailable(&bundles, &applet_id)?))).await
+}
+
 pub async fn installed_info(app: AppHandle, applet_id: String) -> Result<Value, String> {
   crate::commands::blocking(move || {
     let host = app.state::<Host>();
@@ -661,7 +703,8 @@ pub fn publish_device_change(app: &AppHandle) {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use apell_core::bundles::{Manifest, StoreChannel, StoreSource};
+  use apell_core::bundles::{pack_directory, Manifest, StoreChannel, StoreSource, API_VERSION};
+  use std::fs;
 
   fn installed(source: PackageSource) -> InstalledApplet {
     InstalledApplet {
@@ -779,6 +822,7 @@ mod tests {
         access,
         grant_revision: "fixture".into(),
         mode: declared.then_some(access.mode()),
+        saved_mode: None,
         available: true,
         system_authorization: SystemAuthorization::Unknown,
         can_open_system_settings: None,
@@ -1062,7 +1106,7 @@ mod tests {
     );
     assert_eq!(
       json!(grants.summary(applet_id, None, &[], &unverified).unwrap()),
-      json!([{"permission":"camera","access":"unverified_package","grant_revision":unverified_revision,"available":sensors_available,"system_authorization":"unknown"}]),
+      json!([{"permission":"camera","access":"unverified_package","grant_revision":unverified_revision,"saved_mode":"remembered","available":sensors_available,"system_authorization":"unknown"}]),
     );
     grants.remember(Location, applet_id, &updated).unwrap();
     grants.forget(Camera, applet_id).unwrap();
@@ -1073,6 +1117,145 @@ mod tests {
       .all(|grant| grant.permission != Camera));
     assert!(!grants.remembered(Camera, applet_id, &source).unwrap());
     assert!(grants.remembered(Location, applet_id, &updated).unwrap());
+  }
+
+  #[test]
+  fn unavailable_lookup_reviews_only_the_current_damaged_applet() {
+    use ManagedPermission::{Camera, Location, Microphone};
+
+    let dir = tempfile::tempdir().unwrap();
+    let bundle_dir = dir.path().join("bundles");
+    let bundles = BundleStore::new(bundle_dir.clone());
+    let grants = PermissionGrants::new(dir.path().join("grants"));
+    let files = tempfile::tempdir().unwrap();
+    let applet_id = "recorder";
+    let read = || grants.read_unavailable(&bundles, applet_id).unwrap();
+    fs::write(
+      files.path().join("manifest.json"),
+      json!({
+        "schema_version": 1, "api_version": API_VERSION, "applet_id": applet_id,
+        "name": "Recorder", "version": "1.0.0", "permissions": ["audio", "camera", "location"],
+      })
+      .to_string(),
+    )
+    .unwrap();
+    fs::write(files.path().join("index.html"), "Recorder").unwrap();
+    let bytes = pack_directory(files.path()).unwrap();
+    let sha256 = digest(&bytes);
+
+    assert!(read().is_none());
+    let installed = bundles.install(&bytes, &sha256).unwrap();
+    assert!(read().is_none());
+    fs::remove_file(bundle_dir.join(applet_id).join(format!("{sha256}.apel"))).unwrap();
+    assert_eq!(
+      json!(read()),
+      json!({
+        "applet_id": applet_id, "name": applet_id, "manifest": null,
+        "grants": [], "restart_required": false,
+      }),
+    );
+    assert!(grants
+      .summaries(bundles.list_report().unwrap(), &HashSet::new())
+      .unwrap()
+      .is_empty());
+
+    let source = GrantSource::from(&installed);
+    grants.remember(Microphone, applet_id, &source).unwrap();
+    grants
+      .set_mode(Camera, applet_id, &source, PermissionMode::Blocked)
+      .unwrap();
+    grants.store(Location, applet_id, json!(true)).unwrap();
+    let entry = json!(read());
+    let settings = grants
+      .summaries(bundles.list_report().unwrap(), &HashSet::new())
+      .unwrap();
+    assert_eq!(entry, json!(settings[0]));
+    let saved_grants = entry["grants"].as_array().unwrap();
+    assert_eq!(saved_grants[0]["saved_mode"], "remembered");
+    assert_eq!(saved_grants[1]["saved_mode"], "blocked");
+    assert!(saved_grants[2].get("saved_mode").is_none());
+    for grant in saved_grants {
+      assert_eq!(grant["access"], "unverified_package");
+      assert!(grant.get("mode").is_none());
+      assert_eq!(grant["system_authorization"], "unknown");
+      assert!(grant.get("can_open_system_settings").is_none());
+    }
+
+    let target = bundles.report_applet(applet_id).unwrap().unwrap();
+    grants
+      .reset_reviewed(
+        applet_id,
+        target,
+        Location,
+        saved_grants[2]["grant_revision"].as_str().unwrap(),
+      )
+      .unwrap();
+    assert_eq!(read().unwrap().grants.len(), 2);
+    let Some(AppletReportEntry::Unavailable(unavailable)) =
+      bundles.report_applet(applet_id).unwrap()
+    else {
+      panic!("Expected a damaged package");
+    };
+    bundles
+      .restore_package(applet_id, &unavailable.restore_snapshot.unwrap(), &bytes)
+      .unwrap();
+    assert!(read().is_none());
+    assert_eq!(
+      grants.mode(Camera, applet_id, &source).unwrap(),
+      PermissionMode::Blocked,
+    );
+    bundles.remove(applet_id, || Ok(())).unwrap();
+    assert!(read().is_none());
+  }
+
+  #[test]
+  fn saved_permission_modes_require_the_exact_persisted_grant_shape() {
+    for source in [
+      GrantSource::Github {
+        repository_id: 1,
+        asset_name: "recorder.apel".into(),
+        release_tag: None,
+      },
+      GrantSource::Github {
+        repository_id: 1,
+        asset_name: "recorder.apel".into(),
+        release_tag: Some("nightly".into()),
+      },
+      GrantSource::Store {
+        store_url: "https://store.example".into(),
+        applet_id: "recorder".into(),
+      },
+      GrantSource::File {
+        sha256: "a".repeat(64),
+      },
+    ] {
+      assert_eq!(
+        saved_permission_mode(&json!(source)),
+        Some(PermissionMode::Remembered)
+      );
+      assert_eq!(
+        saved_permission_mode(&blocked_value(&source)),
+        Some(PermissionMode::Blocked)
+      );
+      assert_eq!(
+        saved_permission_mode(&json!({"mode": "ask", "source": source})),
+        None
+      );
+      assert_eq!(
+        saved_permission_mode(&json!({"mode": "blocked", "source": source, "extra": true})),
+        None
+      );
+    }
+    for malformed in [
+      json!(null),
+      json!(true),
+      json!({"repository_id":1,"asset_name":"recorder.apel","release_tag":null}),
+      json!({"kind":"github","repository_id":1,"asset_name":"recorder.apel"}),
+      json!({"kind":"file","sha256":1}),
+      json!({"mode":"blocked","source":{"kind":"file","sha256":1}}),
+    ] {
+      assert_eq!(saved_permission_mode(&malformed), None);
+    }
   }
 
   #[test]

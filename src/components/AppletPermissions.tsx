@@ -32,7 +32,7 @@ const access_labels: Record<PermissionGrant['access'], string> = {
   ...permission_mode_labels,
   previous_package: 'Setting saved for an earlier package',
   undeclared: 'Unused by installed package',
-  unverified_package: 'Applet unavailable',
+  unverified_package: 'Saved setting',
 };
 
 interface PermissionTarget {
@@ -72,6 +72,7 @@ function PermissionRow({
   const label = managed_permission_labels[permission];
   const unavailable =
     !available && access !== 'unverified_package' ? permission_unavailable : unavailable_reason;
+  const saved_label = grant.saved_mode && `Saved as ${permission_mode_labels[grant.saved_mode]}`;
   const can_reset = access !== 'ask' && (!change || access === 'previous_package');
   const system_label = !unavailable && mode && systemPermissionLabel(system_authorization);
   const description = [
@@ -105,7 +106,7 @@ function PermissionRow({
               ))}
             </select>
           ) : (
-            <span>{unavailable ?? access_labels[access]}</span>
+            <span>{unavailable ?? saved_label ?? access_labels[access]}</span>
           )}
           {((change && access === 'previous_package') || (unavailable && can_reset)) && (
             <small id={`${id}-previous`}>{access_labels[access]}</small>
@@ -146,14 +147,21 @@ function PermissionRow({
 
 interface AppletPermissionDetailsProps {
   applet: AppletPermission;
+  show_id?: boolean;
   busy: boolean;
   saving?: ManagedPermission;
   edit_error?: PermissionChangeError;
   edit: (change: PermissionChange) => void;
 }
 
+function appletPermissionStatus(applet: AppletPermission) {
+  if (applet.manifest === null) return 'Applet unavailable';
+  if (applet.restart_required) return 'Restart required';
+}
+
 function AppletDeviceGrant({
   applet,
+  show_id,
   grant,
   busy,
   saving,
@@ -165,6 +173,7 @@ function AppletDeviceGrant({
   const { permission, grant_revision } = grant;
   const target = { applet_id, permission, grant_revision };
   const declaration = managedPermissionDeclaration(applet.manifest, permission);
+  const applet_status = appletPermissionStatus(applet);
   const can_change =
     installed_revision &&
     declaration &&
@@ -173,13 +182,14 @@ function AppletDeviceGrant({
     grant.mode;
   return (
     <PermissionRow
-      applet_name={applet.name}
+      applet_name={show_id ? `${applet.name} (${applet_id})` : applet.name}
       title={
         show_applet ? (
           <>
             <bdi>{applet.name}</bdi>
-            {applet.restart_required && (
-              <small className="applet-permission-restart">Restart required</small>
+            {show_id && <small className="applet-permission-identity">{applet_id}</small>}
+            {applet_status && (
+              <small className="applet-permission-package-status">{applet_status}</small>
             )}
           </>
         ) : undefined
@@ -199,13 +209,17 @@ function AppletPermissionGroup({
   open,
   ...props
 }: AppletPermissionDetailsProps & { open?: boolean }) {
+  const applet_status = appletPermissionStatus(props.applet);
   return (
     <details className="applet-permission-group" open={open}>
       <summary>
-        <span className="applet-permission-name">{props.applet.name}</span>
-        {props.applet.restart_required && (
-          <span className="applet-permission-restart">Restart required</span>
-        )}
+        <span className="applet-permission-name">
+          <bdi>{props.applet.name}</bdi>
+          {props.show_id && (
+            <small className="applet-permission-identity">{props.applet.applet_id}</small>
+          )}
+        </span>
+        {applet_status && <span className="applet-permission-package-status">{applet_status}</span>}
       </summary>
       <AppletPermissionDetails {...props} />
     </details>
@@ -214,6 +228,7 @@ function AppletPermissionGroup({
 
 export function AppletPermissionDetails({
   applet,
+  show_id,
   busy,
   saving,
   edit_error,
@@ -234,6 +249,7 @@ export function AppletPermissionDetails({
               <AppletDeviceGrant
                 key={grant.permission}
                 applet={applet}
+                show_id={show_id}
                 grant={grant}
                 busy={busy}
                 saving={saving}
@@ -378,6 +394,8 @@ export function AppletPermissions() {
     edit_error,
     load,
   } = useAppletPermissionState(listAppletPermissions);
+  const names = new Map<string, number>();
+  for (const { name } of applets ?? []) names.set(name, (names.get(name) ?? 0) + 1);
   const controls = (applet_id: string) => ({
     busy: busy || !!error,
     saving: saving?.applet_id === applet_id ? saving.permission : undefined,
@@ -439,6 +457,7 @@ export function AppletPermissions() {
                   <AppletPermissionGroup
                     key={applet.applet_id}
                     applet={applet}
+                    show_id={(names.get(applet.name) ?? 0) > 1}
                     open={applets.length === 1 || undefined}
                     {...controls(applet.applet_id)}
                   />
@@ -458,6 +477,7 @@ export function AppletPermissions() {
                           <AppletDeviceGrant
                             key={applet.applet_id}
                             applet={applet}
+                            show_id={(names.get(applet.name) ?? 0) > 1}
                             grant={grant}
                             show_applet
                             {...controls(applet.applet_id)}

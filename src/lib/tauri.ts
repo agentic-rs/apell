@@ -205,6 +205,8 @@ export const onAppletInstallationChanged = (handler: (applet_id: string) => void
     handler(payload.applet_id),
   );
 export const listAppletPermissions = () => shellCall<AppletPermission[]>('permissions.list');
+export const getUnavailableAppletPermissions = (applet_id: string) =>
+  shellCall<AppletPermission | null>('permissions.unavailable', { applet_id });
 export const openPermissionSystemSettings = (permission: ManagedPermission) =>
   shellCall<void>('permissions.open_system_settings', { permission });
 export const onPermissionsChanged = (handler: () => void) =>

@@ -26,13 +26,15 @@ import { Icon } from '../components/Icon';
 import { RestorePackageSheet } from '../components/RestorePackageSheet';
 import { RunningApplets } from '../components/RunningApplets';
 import { Sheet } from '../components/Sheet';
+import { UnavailableAppletPermissions } from '../components/UnavailableAppletPermissions';
 import type { StoreDownloads } from '../components/store/useStoreDownloads';
 
 type AppletAction = {
   applet_id: string;
   name: string;
 } & (
-  { panel: 'actions' | 'info' | 'remove' } | { panel: 'restore'; expected: StoreSwitchSnapshot }
+  | { panel: 'actions' | 'info' | 'remove' | 'permissions' }
+  | { panel: 'restore'; expected: StoreSwitchSnapshot }
 );
 
 interface LibraryProps {
@@ -317,42 +319,52 @@ export function Library({
             <div className="unavailable-applet" key={applet_id}>
               <strong>{applet_id}</strong>
               <p>{error}</p>
-              {(restore_snapshot || can_remove) && (
-                <div className="button-row">
-                  {restore_snapshot && (
-                    <button
-                      disabled={busy}
-                      aria-label={`Restore package for ${applet_id}`}
-                      aria-haspopup="dialog"
-                      onClick={(event) => {
-                        event.currentTarget.focus({ preventScroll: true });
-                        showAction({
-                          applet_id,
-                          name: applet_id,
-                          panel: 'restore',
-                          expected: restore_snapshot,
-                        });
-                      }}
-                    >
-                      Restore package
-                    </button>
-                  )}
-                  {can_remove && (
-                    <button
-                      className="danger"
-                      disabled={busy}
-                      aria-label={`Remove ${applet_id}`}
-                      aria-haspopup="dialog"
-                      onClick={(event) => {
-                        event.currentTarget.focus({ preventScroll: true });
-                        showAction({ applet_id, name: applet_id, panel: 'remove' });
-                      }}
-                    >
-                      Remove
-                    </button>
-                  )}
-                </div>
-              )}
+              <div className="button-row">
+                {restore_snapshot && (
+                  <button
+                    disabled={busy}
+                    aria-label={`Restore package for ${applet_id}`}
+                    aria-haspopup="dialog"
+                    onClick={(event) => {
+                      event.currentTarget.focus({ preventScroll: true });
+                      showAction({
+                        applet_id,
+                        name: applet_id,
+                        panel: 'restore',
+                        expected: restore_snapshot,
+                      });
+                    }}
+                  >
+                    Restore package
+                  </button>
+                )}
+                <button
+                  type="button"
+                  disabled={busy}
+                  aria-label={`Device permissions for ${applet_id}`}
+                  aria-haspopup="dialog"
+                  onClick={(event) => {
+                    event.currentTarget.focus({ preventScroll: true });
+                    showAction({ applet_id, name: applet_id, panel: 'permissions' });
+                  }}
+                >
+                  Device permissions
+                </button>
+                {can_remove && (
+                  <button
+                    className="danger"
+                    disabled={busy}
+                    aria-label={`Remove ${applet_id}`}
+                    aria-haspopup="dialog"
+                    onClick={(event) => {
+                      event.currentTarget.focus({ preventScroll: true });
+                      showAction({ applet_id, name: applet_id, panel: 'remove' });
+                    }}
+                  >
+                    Remove
+                  </button>
+                )}
+              </div>
             </div>
           ))}
         </aside>
@@ -401,6 +413,18 @@ export function Library({
           onClose={() => setAction(undefined)}
           onInstalled={(result) => void installed(result)}
           onRestart={(applet) => openApplet(applet, true)}
+        />
+      ) : action?.panel === 'permissions' ? (
+        <UnavailableAppletPermissions
+          key={action.applet_id}
+          applet_id={action.applet_id}
+          onClose={(installation_changed) => {
+            setAction(undefined);
+            if (installation_changed) {
+              library_focus.current = { applet_id: action.applet_id };
+              reloadLibrary();
+            }
+          }}
         />
       ) : action?.panel === 'restore' ? (
         <RestorePackageSheet

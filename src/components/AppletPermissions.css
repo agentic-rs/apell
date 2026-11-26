@@ -84,11 +84,20 @@
 }
 
 .applet-permission-name {
+  display: grid;
+  gap: 2px;
   flex: 1;
   min-width: 0;
 }
 
-.applet-permission-restart,
+.applet-permission-identity {
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.applet-permission-package-status,
 .applet-permission-count {
   color: var(--muted);
   font-size: 0.75rem;
@@ -176,6 +185,20 @@
   flex-basis: 100%;
   margin: 2px 0 6px;
   font-size: 0.8125rem;
+}
+
+.unavailable-permissions {
+  display: grid;
+  gap: 12px;
+  overflow-wrap: anywhere;
+}
+
+.unavailable-permissions p {
+  margin: 0;
+}
+
+.unavailable-permissions .status + button {
+  margin-top: 8px;
 }
 
 @media (max-width: 360px) {
