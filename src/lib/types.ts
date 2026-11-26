@@ -228,10 +228,12 @@ export interface AccountDeviceCode {
   verification_uri: string;
   expires_at: string;
 }
+export type AccountSignInPhase = 'requesting_code' | 'waiting_for_approval' | 'finishing';
 export type AccountStatus = {
   email: string | null;
   error?: string | null;
   device_code: AccountDeviceCode | null;
+  sign_in_phase?: AccountSignInPhase;
 } & (
   | { state: 'signed_in'; account_session_id: string }
   | { state: 'unavailable' | 'signed_out' | 'signing_in'; account_session_id: null }

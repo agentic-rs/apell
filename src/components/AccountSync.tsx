@@ -70,6 +70,7 @@ export function AccountSync({
   onOpenConnections,
 }: AccountSyncProps) {
   const [account, setAccount] = useState<AccountStatus>();
+  const [sign_in_open, setSignInOpen] = useState(false);
   const [sync, setSync] = useState<ConfigSyncStatus>();
   const latest_sync = useRef<ConfigSyncStatus | undefined>(undefined);
   const [busy, setBusy] = useState<Action>();
@@ -84,8 +85,12 @@ export function AccountSync({
   const [model_action_error, setModelActionError] = useState('');
   const scope = useRef(new OperationScope());
   const read_version = useRef(0);
+  const accepted_account_read = useRef(0);
   const visible = useRef(false);
   const session = useRef<string | null>(null);
+  const account_heading = useRef<HTMLHeadingElement>(null);
+  const showed_sign_in = useRef(false);
+  const dismissed_sign_in_error = useRef<string>(undefined);
   const account_session_id = account?.account_session_id ?? null;
   const onKeySyncBusyChange = useCallback(
     (account_session_id: string, busy: boolean) => {
@@ -121,6 +126,7 @@ export function AccountSync({
       return;
     }
     if (read_version.current !== version) return;
+    accepted_account_read.current = version;
     if (session.current !== current.account_session_id) {
       session.current = current.account_session_id;
       scope.current.cancel();
@@ -134,6 +140,8 @@ export function AccountSync({
       setModelActionError('');
     }
     setAccount(current);
+    if (current.state === 'signing_in') setSignInOpen(true);
+    else if (current.state === 'signed_in' || current.state === 'unavailable') setSignInOpen(false);
     setReadError('');
     if (current.state !== 'signed_in') return;
     try {
@@ -153,8 +161,12 @@ export function AccountSync({
     const reload = () => {
       if (active) void refresh();
     };
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') reload();
+    };
     reload();
     window.addEventListener('focus', reload);
+    document.addEventListener('visibilitychange', onVisibility);
     for (const subscription of [
       onAccountChanged(reload),
       onConfigSyncChanged(reload),
@@ -175,12 +187,20 @@ export function AccountSync({
       active = false;
       visible.current = false;
       window.removeEventListener('focus', reload);
+      document.removeEventListener('visibilitychange', onVisibility);
       for (const unlisten of listeners) unlisten();
       read_version.current += 1;
       // Activity can hide this panel while a native sync is still in progress.
       // Let that operation finish and retain its outcome for the next visit.
     };
   }, [onSyncBusyChange]);
+
+  useEffect(() => {
+    if (showed_sign_in.current && !sign_in_open && document.activeElement === document.body) {
+      account_heading.current?.focus({ preventScroll: true });
+    }
+    showed_sign_in.current = sign_in_open;
+  }, [sign_in_open]);
 
   function clearConflict() {
     setConflict(undefined);
@@ -208,7 +228,7 @@ export function AccountSync({
         if (sync_operation) {
           if (detail !== latest_sync.current?.sync_error) setModelActionError(detail);
         } else setActionError(detail);
-        if (sync_operation || action === 'sign_out') void refresh();
+        if (sync_operation || action === 'sign_out' || action === 'open_sign_in') void refresh();
       }
     } finally {
       if (isCurrent()) {
@@ -219,14 +239,32 @@ export function AccountSync({
     }
   }
 
-  function changeAccount(
-    action: 'sign_in' | 'cancel' | 'sign_out',
-    request: () => Promise<AccountStatus>,
-  ) {
-    return perform(action, async (isCurrent) => {
-      await request();
-      if (isCurrent()) await refresh();
+  function startSignIn() {
+    return perform('sign_in', async (isCurrent) => {
+      dismissed_sign_in_error.current = undefined;
+      setSignInOpen(true);
+      const observed = accepted_account_read.current;
+      const started = await signInToAccount();
+      if (!isCurrent()) return;
+      if (observed === accepted_account_read.current && started.state === 'signing_in') {
+        setAccount(started);
+      }
+      await refresh();
     });
+  }
+
+  function closeSignIn() {
+    if (account?.state === 'signing_in') {
+      return perform('cancel', async (isCurrent) => {
+        await cancelAccountSignIn();
+        if (!isCurrent()) return;
+        setSignInOpen(false);
+        await refresh();
+      });
+    }
+    dismissed_sign_in_error.current = account?.error ?? undefined;
+    setActionError('');
+    setSignInOpen(false);
   }
 
   function toggleSync(enabled: boolean) {
@@ -336,7 +374,18 @@ export function AccountSync({
   const last_sync = sync?.last_synced_at ? new Date(sync.last_synced_at) : null;
   const last_sync_label =
     last_sync && Number.isFinite(last_sync.getTime()) ? last_sync.toLocaleString() : undefined;
-  const error = action_error || read_error || account?.error;
+  const account_error =
+    account?.error === dismissed_sign_in_error.current ? undefined : account?.error;
+  const error = action_error || read_error || account_error;
+  const sign_in_phase =
+    busy === 'cancel'
+      ? 'cancelling'
+      : account?.state === 'signing_in'
+        ? (account.sign_in_phase ??
+          (account.device_code ? 'waiting_for_approval' : 'requesting_code'))
+        : busy === 'sign_in'
+          ? 'requesting_code'
+          : 'failed';
   const model_status_unavailable = !!(read_error || model_read_error);
   const ready =
     account?.state === 'signed_in' && !model_status_unavailable && sync?.state === 'ready';
@@ -355,7 +404,12 @@ export function AccountSync({
       aria-labelledby="settings-account"
       aria-busy={!!busy || keys_busy || (!account && !read_error)}
     >
-      <h2 id="settings-account" className="settings-section-title" tabIndex={-1}>
+      <h2
+        ref={account_heading}
+        id="settings-account"
+        className="settings-section-title"
+        tabIndex={-1}
+      >
         Apell Account
       </h2>
       {!account && !read_error && <p role="status">Checking sign-in…</p>}
@@ -367,19 +421,26 @@ export function AccountSync({
             type="button"
             className="primary"
             disabled={!!busy}
-            onClick={() => void changeAccount('sign_in', signInToAccount)}
+            onClick={(event) => {
+              event.currentTarget.focus({ preventScroll: true });
+              void startSignIn();
+            }}
           >
             {busy === 'sign_in' ? 'Requesting a code…' : 'Sign in'}
           </button>
         </>
       )}
-      {account?.state === 'signing_in' && (
+      {sign_in_open && (
         <AccountSignIn
-          challenge={account.device_code}
+          challenge={account?.device_code ?? null}
+          phase={sign_in_phase}
           busy={!!busy}
-          error={error}
+          error={busy === 'sign_in' ? read_error : error}
+          check_failed={!!read_error}
+          onCheck={() => void refresh()}
+          onRetry={() => void startSignIn()}
           onOpen={() => void perform('open_sign_in', openAccountSignIn)}
-          onCancel={() => void changeAccount('cancel', cancelAccountSignIn)}
+          onCancel={() => void closeSignIn()}
         />
       )}
       {account?.state === 'signed_in' && (
@@ -491,19 +552,22 @@ export function AccountSync({
             type="button"
             disabled={!!busy || keys_busy}
             onClick={() =>
-              void changeAccount('sign_out', () => signOutOfAccount(account.account_session_id))
+              void perform('sign_out', async (isCurrent) => {
+                await signOutOfAccount(account.account_session_id);
+                if (isCurrent()) await refresh();
+              })
             }
           >
             {busy === 'sign_out' ? 'Signing out…' : 'Sign out'}
           </button>
         </>
       )}
-      {error && !review_open && account?.state !== 'signing_in' && (
+      {error && !review_open && !sign_in_open && (
         <p className="status error" role="alert">
           {error}
         </p>
       )}
-      {read_error && !busy && (
+      {read_error && !busy && !sign_in_open && (
         <button type="button" onClick={() => void refresh()}>
           Check again
         </button>

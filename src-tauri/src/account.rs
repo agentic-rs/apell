@@ -36,18 +36,61 @@ enum SignInState {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+enum SignInPhase {
+  RequestingCode,
+  WaitingForApproval,
+  Finishing,
+}
+
+#[derive(Serialize)]
 struct Status {
   state: SignInState,
   account_session_id: Option<Uuid>,
   email: Option<String>,
   error: Option<String>,
   device_code: Option<DeviceCode>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  sign_in_phase: Option<SignInPhase>,
 }
 
 struct Attempt {
   id: Uuid,
   _cancellation: watch::Sender<()>,
-  presentation: Option<Presentation>,
+  phase: AttemptPhase,
+}
+
+enum AttemptPhase {
+  RequestingCode,
+  WaitingForApproval(Presentation),
+  Finishing,
+}
+
+impl Attempt {
+  fn active_presentation(&self) -> Option<&Presentation> {
+    match &self.phase {
+      AttemptPhase::WaitingForApproval(presentation)
+        if presentation.deadline > tokio::time::Instant::now() =>
+      {
+        Some(presentation)
+      }
+      _ => None,
+    }
+  }
+
+  fn status(&self) -> (SignInPhase, Option<DeviceCode>) {
+    if let Some(presentation) = self.active_presentation() {
+      return (
+        SignInPhase::WaitingForApproval,
+        Some(presentation.display.clone()),
+      );
+    }
+    let phase = match self.phase {
+      AttemptPhase::RequestingCode => SignInPhase::RequestingCode,
+      AttemptPhase::WaitingForApproval(_) | AttemptPhase::Finishing => SignInPhase::Finishing,
+    };
+    (phase, None)
+  }
 }
 
 struct Presentation {
@@ -157,26 +200,29 @@ struct State {
 impl State {
   fn status(&self, enabled: bool) -> Status {
     let session = enabled.then_some(self.session.as_ref()).flatten();
+    let attempt = self
+      .attempt
+      .as_ref()
+      .filter(|_| enabled && session.is_none());
     let state = if !enabled {
       SignInState::Unavailable
     } else if session.is_some() {
       SignInState::SignedIn
-    } else if self.attempt.is_some() {
+    } else if attempt.is_some() {
       SignInState::SigningIn
     } else {
       SignInState::SignedOut
     };
+    let (sign_in_phase, device_code) = attempt
+      .map(Attempt::status)
+      .map_or((None, None), |(phase, code)| (Some(phase), code));
     Status {
       state,
       account_session_id: session.map(|session| session.id),
       email: session.and_then(|session| session.stored.email.clone()),
       error: self.error.clone(),
-      device_code: self
-        .attempt
-        .as_ref()
-        .and_then(|attempt| attempt.presentation.as_ref())
-        .filter(|presentation| presentation.deadline > tokio::time::Instant::now())
-        .map(|presentation| presentation.display.clone()),
+      device_code,
+      sign_in_phase,
     }
   }
 
@@ -506,7 +552,7 @@ impl Account {
     state.attempt = Some(Attempt {
       id,
       _cancellation: cancellation,
-      presentation: None,
+      phase: AttemptPhase::RequestingCode,
     });
     changed(app);
     let app = app.clone();
@@ -530,8 +576,7 @@ impl Account {
     let presentation = state
       .attempt
       .as_ref()
-      .and_then(|attempt| attempt.presentation.as_ref())
-      .filter(|presentation| presentation.deadline > tokio::time::Instant::now())
+      .and_then(Attempt::active_presentation)
       .ok_or("Start a new sign-in to get a device code.")?;
     app
       .opener()
@@ -562,6 +607,23 @@ impl Account {
     output_status(state.status(true))
   }
 
+  async fn set_sign_in_phase(
+    &self,
+    app: &AppHandle,
+    id: Uuid,
+    phase: AttemptPhase,
+  ) -> Result<(), String> {
+    let mut state = self.state.lock().await;
+    let attempt = state
+      .attempt
+      .as_mut()
+      .filter(|attempt| attempt.id == id)
+      .ok_or("Apell Account sign-in was cancelled.")?;
+    attempt.phase = phase;
+    changed(app);
+    Ok(())
+  }
+
   async fn sign_in_with_device_code(
     &self,
     app: &AppHandle,
@@ -570,22 +632,22 @@ impl Account {
   ) -> Result<Session, String> {
     let provider = oidc::discover(&self.client, config).await?;
     let challenge = oidc::start_device_sign_in(&self.client, config, &provider).await?;
-    {
-      let mut state = self.state.lock().await;
-      let attempt = state
-        .attempt
-        .as_mut()
-        .filter(|attempt| attempt.id == id)
-        .ok_or("Apell Account sign-in was cancelled.")?;
-      attempt.presentation = Some(Presentation {
-        display: challenge.display.clone(),
-        browser_url: challenge.browser_url.clone(),
-        deadline: challenge.deadline,
-      });
-      changed(app);
-    }
+    self
+      .set_sign_in_phase(
+        app,
+        id,
+        AttemptPhase::WaitingForApproval(Presentation {
+          display: challenge.display.clone(),
+          browser_url: challenge.browser_url.clone(),
+          deadline: challenge.deadline,
+        }),
+      )
+      .await?;
 
     let tokens = oidc::await_device_approval(&self.client, config, &provider, &challenge).await?;
+    self
+      .set_sign_in_phase(app, id, AttemptPhase::Finishing)
+      .await?;
     let identity = oidc::verify(
       &self.client,
       config,
@@ -784,6 +846,74 @@ mod tests {
 
   fn unexpected_event(_: RefreshEvent) {
     panic!("Unexpected Account event")
+  }
+
+  #[test]
+  fn sign_in_status_hides_the_code_during_completion_without_ending_the_attempt() {
+    let mut state = State::default();
+    assert!(output_status(state.status(true))
+      .unwrap()
+      .get("sign_in_phase")
+      .is_none());
+    let id = Uuid::new_v4();
+    let (cancellation, _cancelled) = watch::channel(());
+    state.attempt = Some(Attempt {
+      id,
+      _cancellation: cancellation,
+      phase: AttemptPhase::RequestingCode,
+    });
+    let requesting = output_status(state.status(true)).unwrap();
+    assert_eq!(requesting["state"], "signing_in");
+    assert_eq!(requesting["sign_in_phase"], "requesting_code");
+    assert!(requesting["device_code"].is_null());
+    let presentation = |deadline| Presentation {
+      display: DeviceCode {
+        user_code: "FIXTURE-CODE".into(),
+        verification_uri: Url::parse("https://issuer.example.invalid/device").unwrap(),
+        expires_at: "2026-01-01T00:00:00Z".into(),
+      },
+      browser_url: Url::parse("https://issuer.example.invalid/device?user_code=FIXTURE-CODE")
+        .unwrap(),
+      deadline,
+    };
+    let now = tokio::time::Instant::now();
+    state.attempt.as_mut().unwrap().phase =
+      AttemptPhase::WaitingForApproval(presentation(now + Duration::from_secs(60)));
+    let waiting = output_status(state.status(true)).unwrap();
+    assert_eq!(waiting["sign_in_phase"], "waiting_for_approval");
+    assert_eq!(waiting["device_code"]["user_code"], "FIXTURE-CODE");
+    assert!(state
+      .attempt
+      .as_ref()
+      .unwrap()
+      .active_presentation()
+      .is_some());
+    assert!(output_status(state.status(false))
+      .unwrap()
+      .get("sign_in_phase")
+      .is_none());
+
+    for phase in [
+      AttemptPhase::WaitingForApproval(presentation(now)),
+      AttemptPhase::Finishing,
+    ] {
+      state.attempt.as_mut().unwrap().phase = phase;
+      let finishing = output_status(state.status(true)).unwrap();
+      assert_eq!(finishing["state"], "signing_in");
+      assert_eq!(finishing["sign_in_phase"], "finishing");
+      assert!(finishing["device_code"].is_null());
+      assert!(finishing["error"].is_null());
+      let attempt = state.attempt.as_ref().unwrap();
+      assert_eq!(attempt.id, id);
+      assert!(attempt.active_presentation().is_none());
+    }
+
+    state.attempt = None;
+    state.error = Some(oidc::SIGN_IN_EXPIRED.into());
+    let expired = output_status(state.status(true)).unwrap();
+    assert_eq!(expired["state"], "signed_out");
+    assert_eq!(expired["error"], oidc::SIGN_IN_EXPIRED);
+    assert!(expired.get("sign_in_phase").is_none());
   }
 
   #[test]

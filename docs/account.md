@@ -199,8 +199,10 @@ ID, audience, and sync scopes and uses the token's issuer and subject for the
 settings namespace.
 
 In **Settings → Apell Account**, choose **Sign in** to see the browser address
-and code. Enter the code on the sign-in page on this or another device. When
-Apell shows the signed-in account, turn on **Sync model settings**. Apell
+and code. Enter the code on the sign-in page on this or another device. Apell
+hides the code when it expires and checks whether approval arrived in time.
+If sign-in ends with an error, choose **Get a new code** in the same sheet.
+When Apell shows the signed-in account, turn on **Sync model settings**. Apell
 publishes local changes and checks for cloud changes while it runs. Use **Sync
 now** to check immediately. Apell shows changes on this device that are still
 waiting to sync. If a manual or background sync fails, **Model settings**
