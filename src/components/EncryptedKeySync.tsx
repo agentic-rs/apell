@@ -33,6 +33,8 @@ const expired_request_error = 'This request expired. Start again.';
 const changed_vault_error = 'The saved encryption vault changed. Start verification again.';
 const expired_approval_error =
   'This pairing code expired. Ask the other device to show a new code.';
+const missing_approval_error =
+  'This pairing request is no longer available. Check the other device.';
 
 type VerificationRequest =
   | { kind: 'join'; pairing: KeySyncPairing }
@@ -254,137 +256,253 @@ function Approvals({
   account_session_id,
   request,
   isCurrent,
+  operation_gate,
   onBusyChange,
 }: {
   account_session_id: string;
   request: Extract<Flow, { kind: 'approve' }>;
   isCurrent: (request: Flow) => boolean;
+  operation_gate: OperationScope;
   onBusyChange: (busy: boolean) => void;
 }) {
   const [pairs, setPairs] = useState<KeySyncPairing[]>();
+  const reviewed = useRef<KeySyncPairing[] | undefined>(undefined);
+  const [checking, setChecking] = useState(true);
   const [poll_error, setPollError] = useState('');
-  const [approval_error, setApprovalError] = useState('');
+  const [approval_error, setApprovalError] = useState<{ pair: KeySyncPairing; text: string }>();
   const [busy, setBusy] = useState<string>();
-  const [approved, setApproved] = useState(false);
-  const scope = useRef(new OperationScope());
-  const pending = useRef(false);
+  const [outcome, setOutcome] = useState<{ text: string; error?: boolean }>();
+  const presentation = useRef<symbol | undefined>(undefined);
   const dismissed = useRef(new Set<string>());
+  const instructions = useRef<HTMLParagraphElement>(null);
+  const check_again = useRef<HTMLButtonElement>(null);
+  const focused_control = useRef<HTMLButtonElement>(null);
 
-  useEffect(() => {
-    let active = true;
-    let timer: number | undefined;
-    async function refresh() {
-      if (!active || !isCurrent(request)) return;
-      if (!pending.current) {
-        setPairs((previous) =>
-          previous?.some((pair) => hasExpired(pair.expires_at))
-            ? previous.filter((pair) => !hasExpired(pair.expires_at))
-            : previous,
-        );
-        try {
-          const result = await listKeySyncPairings(account_session_id);
-          if (active && isCurrent(request) && !pending.current) {
-            setPairs(
-              result.pairs.filter(
-                (pair) =>
-                  !pair.approved &&
-                  !hasExpired(pair.expires_at) &&
-                  !dismissed.current.has(pair.pair_id),
-              ),
-            );
-            setPollError('');
-          }
-        } catch (error) {
-          if (active && isCurrent(request) && !pending.current) setPollError(message(error));
-        }
-      }
-      if (active && isCurrent(request)) {
-        timer = window.setTimeout(() => void refresh(), poll_interval);
-      }
-    }
-    void refresh();
+  const publishPairs = useCallback((next?: KeySyncPairing[]) => {
+    reviewed.current = next;
+    setPairs(next);
+  }, []);
+
+  useLayoutEffect(() => {
+    presentation.current = Symbol();
+    reviewed.current = undefined;
+    setPairs(undefined);
+    setChecking(true);
+    setPollError('');
+    setApprovalError(undefined);
+    setBusy(undefined);
+    setOutcome(undefined);
     return () => {
-      active = false;
-      window.clearTimeout(timer);
-      scope.current.cancel();
+      presentation.current = undefined;
+      reviewed.current = undefined;
     };
   }, [account_session_id, request, isCurrent]);
 
-  function dismissPair(pair_id: string) {
-    dismissed.current.add(pair_id);
-    setPairs((previous) => previous?.filter((pair) => pair.pair_id !== pair_id));
-  }
-
-  async function approve(pair: KeySyncPairing) {
-    if (!isCurrent(request)) return;
-    if (hasExpired(pair.expires_at)) {
-      dismissPair(pair.pair_id);
-      setApprovalError(expired_approval_error);
-      return;
+  const removeExpired = useCallback(() => {
+    const current = reviewed.current;
+    if (current?.some((pair) => hasExpired(pair.expires_at))) {
+      publishPairs(current.filter((pair) => !hasExpired(pair.expires_at)));
     }
-    const operation = scope.current.start();
+  }, [publishPairs]);
+
+  const checkRequests = useCallback(async () => {
+    const opening = presentation.current;
+    if (!opening || !isCurrent(request)) return;
+    removeExpired();
+    const operation = operation_gate.start();
     if (!operation) return;
-    pending.current = true;
-    setBusy(pair.pair_id);
-    onBusyChange(true);
-    setApprovalError('');
+    const isOpen = () => presentation.current === opening && isCurrent(request);
+    setChecking(true);
     try {
-      await approveKeySyncPairing(account_session_id, pair.pair_id, pair.approval_nonce);
-      if (!operation.isCurrent() || !isCurrent(request)) return;
-      dismissPair(pair.pair_id);
-      setApproved(true);
-    } catch (error) {
-      if (operation.isCurrent() && isCurrent(request)) {
-        const text = message(error);
-        if (text === expired_request_error) dismissPair(pair.pair_id);
-        setApprovalError(text === expired_request_error ? expired_approval_error : text);
+      const result = await listKeySyncPairings(account_session_id);
+      if (isOpen()) {
+        publishPairs(
+          result.pairs.filter(
+            (pair) =>
+              !pair.approved &&
+              !hasExpired(pair.expires_at) &&
+              !dismissed.current.has(pairKey(pair)),
+          ),
+        );
+        setPollError('');
+      }
+    } catch (cause) {
+      if (isOpen()) {
+        publishPairs();
+        setPollError(message(cause) || 'Try again to check for pairing requests.');
       }
     } finally {
-      pending.current = false;
+      operation.finish();
+      if (isOpen()) setChecking(false);
+    }
+  }, [account_session_id, request, isCurrent, operation_gate, publishPairs, removeExpired]);
+
+  useEffect(() => {
+    const refresh = () => {
+      if (!document.hidden) void checkRequests();
+    };
+    refresh();
+    const timer = window.setInterval(refresh, poll_interval);
+    window.addEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', refresh);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener('focus', refresh);
+      document.removeEventListener('visibilitychange', refresh);
+    };
+  }, [checkRequests]);
+
+  useEffect(() => {
+    if (!pairs?.length) return;
+    const deadline = Math.min(...pairs.map((pair) => pair.expires_at * 1000));
+    const timer = window.setTimeout(removeExpired, Math.max(0, deadline - Date.now()));
+    return () => window.clearTimeout(timer);
+  }, [pairs, removeExpired]);
+
+  useLayoutEffect(() => {
+    const previous = focused_control.current;
+    if (!previous) return;
+    if (!previous.isConnected) focused_control.current = null;
+    const focused = document.activeElement;
+    if (focused !== document.body && focused !== instructions.current) return;
+    const target = previous.isConnected ? previous : check_again.current;
+    (target && !target.disabled ? target : instructions.current)?.focus({ preventScroll: true });
+  }, [pairs, poll_error, checking, busy]);
+
+  async function approve(pair: KeySyncPairing) {
+    const opening = presentation.current;
+    if (!opening || !isCurrent(request) || document.hidden) return;
+    const key = pairKey(pair);
+    const current = reviewed.current?.find((review) => pairKey(review) === key);
+    if (!current) return;
+    if (hasExpired(current.expires_at)) {
+      removeExpired();
+      setOutcome({ text: expired_approval_error, error: true });
+      return;
+    }
+    const operation = operation_gate.start();
+    if (!operation) return;
+    const isOpen = () => presentation.current === opening && isCurrent(request);
+    const dismiss = () => {
+      dismissed.current.add(key);
+      publishPairs(reviewed.current?.filter((pair) => pairKey(pair) !== key));
+    };
+    setBusy(key);
+    onBusyChange(true);
+    setApprovalError(undefined);
+    setOutcome(undefined);
+    try {
+      await approveKeySyncPairing(account_session_id, current.pair_id, current.approval_nonce);
+      if (isOpen()) {
+        dismiss();
+        setOutcome({ text: 'Device approved. It will finish verification.' });
+      }
+    } catch (cause) {
+      if (isOpen()) {
+        const text = message(cause) || 'Could not confirm approval. Check the other device.';
+        if (text === expired_request_error) {
+          dismiss();
+          setOutcome({
+            text: hasExpired(current.expires_at) ? expired_approval_error : missing_approval_error,
+            error: true,
+          });
+        } else if (hasExpired(current.expires_at)) {
+          setOutcome({ text: 'Could not confirm approval. Check the other device.', error: true });
+        } else {
+          setApprovalError({ pair: current, text });
+        }
+      }
+    } finally {
+      operation.finish();
       onBusyChange(false);
-      if (operation.isCurrent()) {
-        operation.finish();
+      if (isOpen()) {
         setBusy(undefined);
+        if (!document.hidden) void checkRequests();
       }
     }
   }
 
-  const error = approval_error || poll_error;
+  const checking_approval = busy && !pairs?.some((pair) => pairKey(pair) === busy);
+  const unconfirmed_approval =
+    approval_error && !pairs?.some((pair) => pairKey(pair) === pairKey(approval_error.pair));
   return (
     <>
-      <p>
+      <p ref={instructions} tabIndex={-1}>
         In <strong>Settings → Account</strong> on the new device, choose{' '}
         <strong>Pair this device</strong>. Approve only when the six digits match.
       </p>
-      {!pairs && !error && <p role="status">Checking for devices…</p>}
-      {pairs?.length === 0 && !error && (
-        <p role="status">
-          {approved
-            ? 'Device approved. It will finish verification.'
-            : 'Waiting for a pairing request…'}
+      {checking_approval && <p role="status">Checking approval…</p>}
+      {!pairs && !poll_error && <p role="status">Checking for devices…</p>}
+      {pairs?.length === 0 && !outcome && !checking_approval && !unconfirmed_approval && (
+        <p role="status">Waiting for a pairing request…</p>
+      )}
+      {pairs?.map((pair) => {
+        const key = pairKey(pair);
+        const error = approval_error && key === pairKey(approval_error.pair) && approval_error.text;
+        const error_id = `pair-approval-error-${pair.pair_id}`;
+        return (
+          <div className="key-sync-approval" key={key}>
+            <PairingCode code={pair.code} />
+            <button
+              type="button"
+              className="primary"
+              aria-label={`Approve code ${[...pair.code].join(' ')}`}
+              aria-describedby={error ? error_id : undefined}
+              disabled={checking || !!busy}
+              onFocus={(event) => (focused_control.current = event.currentTarget)}
+              onClick={(event) => {
+                event.currentTarget.focus({ preventScroll: true });
+                void approve(pair);
+              }}
+            >
+              {busy === key ? 'Approving…' : 'Approve'}
+            </button>
+            {error && (
+              <p id={error_id} role="alert" className="key-sync-approval-error status error">
+                {error}
+              </p>
+            )}
+          </div>
+        );
+      })}
+      {outcome && (
+        <p
+          role={outcome.error ? 'alert' : 'status'}
+          className={outcome.error ? 'status error' : undefined}
+        >
+          {outcome.text}
         </p>
       )}
-      {pairs?.map((pair) => (
-        <div className="key-sync-approval" key={pair.pair_id}>
-          <PairingCode code={pair.code} />
-          <button
-            type="button"
-            className="primary"
-            aria-label={`Approve code ${[...pair.code].join(' ')}`}
-            disabled={!!busy}
-            onClick={() => void approve(pair)}
-          >
-            {busy === pair.pair_id ? 'Approving…' : 'Approve'}
-          </button>
-        </div>
-      ))}
-      {error && (
+      {unconfirmed_approval && (
         <p role="alert" className="status error">
-          {error}
+          Could not confirm approval. Check the other device.
         </p>
+      )}
+      {poll_error && (
+        <>
+          <p role="alert" className="status error">
+            Couldn’t check pairing requests. {poll_error}
+          </p>
+          <button
+            ref={check_again}
+            type="button"
+            disabled={checking}
+            onFocus={(event) => (focused_control.current = event.currentTarget)}
+            onClick={(event) => {
+              event.currentTarget.focus({ preventScroll: true });
+              void checkRequests();
+            }}
+          >
+            {checking ? 'Checking…' : 'Check again'}
+          </button>
+        </>
       )}
     </>
   );
+}
+
+function pairKey(pair: KeySyncPairing): string {
+  return `${pair.pair_id}:${pair.approval_nonce}:${pair.code}`;
 }
 
 interface Props {
@@ -478,6 +596,7 @@ export function EncryptedKeySync({
   const [retry_error, setRetryError] = useState('');
   const scope = useRef(new OperationScope());
   const retry_scope = useRef(new OperationScope());
+  const approval_gate = useRef(new OperationScope());
   const read_version = useRef(0);
   const visible = useRef(false);
   const heading = useRef<HTMLHeadingElement>(null);
@@ -494,9 +613,10 @@ export function EncryptedKeySync({
   }
 
   function updateStatus(current: LocalKeySyncStatus | KeySyncStatus) {
+    const active = active_flow.current?.kind;
     if (
       current.state === 'signed_out' ||
-      (active_flow.current?.kind === 'review' && current.state !== 'verified')
+      ((active === 'review' || active === 'approve') && current.state !== 'verified')
     ) {
       showFlow();
     }
@@ -830,7 +950,9 @@ export function EncryptedKeySync({
               <button
                 type="button"
                 disabled={button_disabled}
-                onClick={() => {
+                onClick={(event) => {
+                  event.currentTarget.focus({ preventScroll: true });
+                  verification_trigger.current = event.currentTarget;
                   setError('');
                   showFlow({ kind: 'approve' });
                 }}
@@ -980,6 +1102,7 @@ export function EncryptedKeySync({
                   account_session_id={account_session_id}
                   request={flow}
                   isCurrent={isCurrentFlow}
+                  operation_gate={approval_gate.current}
                   onBusyChange={(active) => {
                     setApproving(active);
                     onBusyChange(active);

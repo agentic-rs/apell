@@ -242,6 +242,8 @@ On an additional device, choose **Pair this device** and open
 digits on both screens and approve the matching request. When all verified
 devices are unavailable, choose **Recover access** and verify your Account
 again in the browser. Return to Apell after the browser confirms verification.
+If **Approve a device** can’t refresh its request list, choose **Check again**
+to see and approve current codes. Expired codes disappear from the list.
 Apell shows progress while requesting a pairing code or preparing browser
 verification. You can cancel while it waits or retry from the sheet if the
 request fails.

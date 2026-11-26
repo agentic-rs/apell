@@ -748,6 +748,9 @@ svg {
   align-items: center;
   gap: 12px;
 }
+.key-sync-approval-error {
+  flex-basis: 100%;
+}
 .key-conflict-progress:empty {
   position: absolute;
 }

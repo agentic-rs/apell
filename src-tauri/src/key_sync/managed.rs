@@ -114,12 +114,15 @@ struct Pair {
 }
 
 impl Pair {
-  fn valid(&self, now: i64) -> bool {
+  fn valid_shape(&self) -> bool {
     self.pair_id.get_version_num() == 4
       && self.code.len() == 6
       && self.code.bytes().all(|byte| byte.is_ascii_digit())
       && valid_approval_nonce(&self.approval_nonce)
-      && self.expires_at > now
+  }
+
+  fn valid(&self, now: i64) -> bool {
+    self.valid_shape() && self.expires_at > now
   }
 }
 
@@ -143,6 +146,17 @@ pub(super) struct RecoveryInput {
 #[derive(Deserialize)]
 struct PairList {
   pairs: Vec<Pair>,
+}
+
+impl PairList {
+  fn live(mut self, now: i64) -> Result<Vec<Pair>, String> {
+    if self.pairs.len() > 16 || self.pairs.iter().any(|pair| !pair.valid_shape()) {
+      return Err("Account returned an invalid pairing list.".into());
+    }
+    // A code can expire between the relay's list query and arrival here.
+    self.pairs.retain(|pair| pair.expires_at > now);
+    Ok(self.pairs)
+  }
 }
 
 #[derive(Deserialize)]
@@ -485,10 +499,7 @@ pub(super) async fn list_pairs(
   stop
     .wait(host.account.require_current_access(access))
     .await??;
-  if pairs.pairs.len() > 16 || pairs.pairs.iter().any(|pair| !pair.valid(now())) {
-    return Err("Account returned an invalid pairing list.".into());
-  }
-  Ok(json!({ "pairs": pairs.pairs }))
+  Ok(json!({ "pairs": pairs.live(now())? }))
 }
 
 pub(super) async fn approve_pair(
@@ -1167,5 +1178,37 @@ mod tests {
     assert!(!pair.valid(10));
     pair.code = "１２３４５６".into();
     assert!(!pair.valid(9));
+  }
+
+  #[test]
+  fn pairing_list_drops_expired_requests_after_validating_all_entries() {
+    let pair = |code: &str, expires_at| Pair {
+      pair_id: Uuid::new_v4(),
+      code: code.into(),
+      expires_at,
+      approved: false,
+      approval_nonce: URL_SAFE_NO_PAD.encode([0; 16]),
+    };
+    let expired = pair("001234", 10);
+    let active = pair("002345", 11);
+    let active_id = active.pair_id;
+    let live = PairList {
+      pairs: vec![expired, active],
+    }
+    .live(10)
+    .unwrap();
+    assert_eq!(live.len(), 1);
+    assert_eq!(live[0].pair_id, active_id);
+
+    assert!(PairList {
+      pairs: vec![pair("invalid", 9), pair("002345", 11)]
+    }
+    .live(10)
+    .is_err());
+    assert!(PairList {
+      pairs: (0..17).map(|_| pair("001234", 9)).collect()
+    }
+    .live(10)
+    .is_err());
   }
 }
