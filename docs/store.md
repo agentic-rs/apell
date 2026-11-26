@@ -65,7 +65,7 @@ operations leave the previous installation intact.
 
 ## Accounts and package ownership
 
-Sign in with GitHub on the website, open **My packages**, and choose **Register package**. Any signed-in GitHub user can register an available applet ID. The creator owns the package; its public listing appears after the first release. Owners and maintainers can publish files, configure GitHub Actions, and invite or remove other maintainers. Invitations require acceptance. The owner is protected from removal, and ownership transfer requires the current owner and the recipient to agree. See [accounts and publishing access](store-accounts.md) for setup, migration, and the full lifecycle.
+Sign in with Apell Account on the website, then choose **My packages → Register package**. A signed-in Store user can register an available applet ID. The creator owns the package, and its catalog listing appears after the first release. Owners and maintainers can publish files, connect GitHub Actions, and manage maintainers. See [accounts and publishing access](store-accounts.md) for first sign-in, ownership transfers, and maintainer invitations.
 
 ## Publish from an applet repository
 
