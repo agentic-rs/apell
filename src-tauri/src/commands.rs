@@ -148,6 +148,7 @@ pub async fn shell_command(
     "store.config"
     | "store.set_url"
     | "store.catalog"
+    | "store.saved_updates"
     | "store.updates"
     | "store.detail"
     | "store.icon"

@@ -1,6 +1,7 @@
 mod state;
 #[cfg(test)]
 mod tests;
+mod updates;
 
 use crate::host::Host;
 use apell_core::{
@@ -10,24 +11,16 @@ use apell_core::{
   },
   store_client::{
     normalize_store_url, DownloadCheckpoint, DownloadIdentity, DownloadOutcome, PendingDownload,
-    StoreApplet, StoreCatalog, StoreClient, StoreRelease,
+    StoreApplet, StoreClient, StoreRelease,
   },
 };
-use futures_util::{stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::{
-  collections::BTreeMap,
-  future::Future,
-  path::{Path, PathBuf},
-  time::Duration,
-};
+use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Emitter, Manager};
 
 pub use state::StoreConfig;
 
-pub(crate) const MAX_UPDATE_REQUESTS: usize = 4;
-const UPDATE_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const DOWNLOAD_MISSING: &str =
   "The saved download is no longer on this device. Review the release to start again.";
 const DEFAULT_STORE_URL: Option<&str> = if cfg!(all(
@@ -89,32 +82,6 @@ struct CatalogItem {
 struct CatalogResult {
   store_url: String,
   applets: Vec<CatalogItem>,
-}
-#[derive(Serialize)]
-struct AppletUpdate {
-  applet: InstalledApplet,
-  release: StoreRelease,
-}
-#[derive(Serialize)]
-struct UnreachableInstallation {
-  applet_id: String,
-  sha256: String,
-  channel: StoreChannel,
-}
-#[derive(Serialize)]
-struct UpdateSource {
-  store_url: String,
-  installed_count: usize,
-  checked_count: usize,
-  updates: Vec<AppletUpdate>,
-  #[serde(skip_serializing_if = "Option::is_none")]
-  unreachable_installations: Option<Vec<UnreachableInstallation>>,
-  #[serde(skip_serializing_if = "Option::is_none")]
-  error: Option<String>,
-}
-#[derive(Serialize)]
-struct UpdatesResult {
-  sources: Vec<UpdateSource>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -249,85 +216,6 @@ async fn installed(host: &Host) -> Result<AppletListReport, String> {
     .map_err(|_| "Could not read installed applets.")?
 }
 
-async fn check_updates<F>(
-  report: AppletListReport,
-  fetch_catalog: impl Fn(String) -> F,
-) -> UpdatesResult
-where
-  F: Future<Output = Result<StoreCatalog, String>>,
-{
-  let mut installations = BTreeMap::<String, Vec<(InstalledApplet, StoreChannel)>>::new();
-  for applet in report.applets {
-    let Some(PackageSource::Store(source)) = applet.source.as_ref() else {
-      continue;
-    };
-    if source.applet_id == applet.manifest.applet_id && source.validate().is_ok() {
-      let channel = source.channel;
-      installations
-        .entry(source.store_url.clone())
-        .or_default()
-        .push((applet, channel));
-    }
-  }
-
-  let fetch_catalog = &fetch_catalog;
-  let mut sources: Vec<_> = stream::iter(installations)
-    .map(|(store_url, applets)| async move {
-      let catalog = fetch_catalog(store_url.clone()).await;
-      let mut source = UpdateSource {
-        store_url,
-        installed_count: applets.len(),
-        checked_count: 0,
-        updates: Vec::new(),
-        unreachable_installations: None,
-        error: None,
-      };
-      let catalog = match catalog {
-        Ok(catalog) => catalog,
-        Err(error) => {
-          source.error = Some(error);
-          source.unreachable_installations = Some(
-            applets
-              .into_iter()
-              .map(|(applet, channel)| UnreachableInstallation {
-                applet_id: applet.manifest.applet_id,
-                sha256: applet.sha256,
-                channel,
-              })
-              .collect(),
-          );
-          return source;
-        }
-      };
-      let listings: BTreeMap<_, _> = catalog
-        .applets
-        .iter()
-        .map(|listing| (listing.applet_id.as_str(), listing))
-        .collect();
-      for (applet, _) in applets {
-        let Some(release) = listings
-          .get(applet.manifest.applet_id.as_str())
-          .and_then(|listing| installed_channel_release(listing, &applet))
-        else {
-          continue;
-        };
-        source.checked_count += 1;
-        if is_newer(release, &applet) {
-          source.updates.push(AppletUpdate {
-            applet,
-            release: release.clone(),
-          });
-        }
-      }
-      source
-    })
-    .buffer_unordered(MAX_UPDATE_REQUESTS)
-    .collect()
-    .await;
-  sources.sort_by(|a, b| a.store_url.cmp(&b.store_url));
-  UpdatesResult { sources }
-}
-
 fn authorize_installed_source(
   installed: Option<&InstalledApplet>,
   origin: &str,
@@ -396,22 +284,8 @@ pub async fn dispatch(
         .collect();
       output(CatalogResult { store_url, applets })
     }
-    "store.updates" => {
-      let report = installed(host).await?;
-      let result = check_updates(report, |store_url| async move {
-        let _permit = host
-          .store_update_requests
-          .acquire()
-          .await
-          .map_err(|_| "Store update checks are unavailable.")?;
-        let client = store_client(host, &store_url)?;
-        tokio::time::timeout(UPDATE_REQUEST_TIMEOUT, client.catalog())
-          .await
-          .map_err(|_| "The store took too long to respond. Try again shortly.")?
-      })
-      .await;
-      output(result)
-    }
+    "store.saved_updates" => output(updates::saved(host).await?),
+    "store.updates" => output(updates::check(host).await?),
     "store.detail" => {
       let request: DetailQuery = input(params)?;
       let store_url = if let Some(identity) = &request.pending_download {

@@ -1,7 +1,6 @@
 import { storeChannelName } from '../../lib/storeState';
-import type { StoreSource } from '../../lib/types';
+import type { StoreSource, StoreUpdateResults } from '../../lib/types';
 import { AppletIcon } from '../AppletIcon';
-import type { StoreUpdateResults } from './updatesState';
 
 export function StoreUpdatesView({
   report,
@@ -87,7 +86,7 @@ export function StoreUpdatesView({
           )}
           {!!matching.length && (
             <ul className="store-list">
-              {matching.map(({ applet, release, saved }) => {
+              {matching.map(({ applet, version, saved }) => {
                 const installed_source = applet.source;
                 if (installed_source?.kind !== 'store') return null;
                 const version_id = `store-update-version-${applet.applet_id}`;
@@ -111,7 +110,7 @@ export function StoreUpdatesView({
                           {saved && (
                             <span className="store-badge store-badge-muted">Saved result</span>
                           )}
-                          {applet.version} → {release.version}
+                          {applet.version} → {version}
                         </span>
                       </span>
                       <span className="store-card-arrow" aria-hidden="true">

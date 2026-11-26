@@ -1,5 +1,11 @@
-use super::*;
-use apell_core::bundles::{GitHubSource, Manifest, UnavailableApplet};
+use super::{
+  updates::{cache_projection, check_updates, read_cache, write_cache, SavedUpdate, SavedUpdates},
+  *,
+};
+use apell_core::{
+  bundles::{GitHubSource, Manifest, UnavailableApplet},
+  store_client::StoreCatalog,
+};
 
 fn release(version: &str) -> StoreRelease {
   StoreRelease {
@@ -99,6 +105,17 @@ fn listing(id: &str, stable: &str, nightly: Option<&str>) -> StoreApplet {
   applet
 }
 
+fn hint(applet: &InstalledApplet, version: &str) -> SavedUpdate {
+  let Some(PackageSource::Store(source)) = applet.source.clone() else {
+    panic!("fixture must be from a Store");
+  };
+  SavedUpdate {
+    source,
+    sha256: applet.sha256.clone(),
+    version: version.into(),
+  }
+}
+
 #[tokio::test]
 async fn updates_fetch_only_distinct_canonical_installed_origins() {
   let alpha = "https://a.example";
@@ -144,21 +161,26 @@ async fn updates_fetch_only_distinct_canonical_installed_origins() {
     mismatched,
   ];
   let mut calls = std::sync::Mutex::new(Vec::new());
-  let result = check_updates(report, |origin| {
-    let applets = match origin.as_str() {
-      "https://a.example" => vec![
-        listing("alpha", "2.0.0", None),
-        listing("neighbor", "1.0.0", None),
-        listing("bravo", "3.0.0", None),
-        listing("file", "2.0.0", None),
-      ],
-      "https://b.example" => vec![listing("bravo", "1.0.0", None)],
-      _ => panic!("requested an origin without a verified Store installation"),
-    };
-    calls.lock().unwrap().push(origin);
-    std::future::ready(Ok(StoreCatalog { applets }))
-  })
-  .await;
+  let result = check_updates(
+    || std::future::ready(Ok(report.clone())),
+    |origin| {
+      let applets = match origin.as_str() {
+        "https://a.example" => vec![
+          listing("alpha", "2.0.0", None),
+          listing("neighbor", "1.0.0", None),
+          listing("bravo", "3.0.0", None),
+          listing("file", "2.0.0", None),
+        ],
+        "https://b.example" => vec![listing("bravo", "1.0.0", None)],
+        _ => panic!("requested an origin without a verified Store installation"),
+      };
+      calls.lock().unwrap().push(origin);
+      std::future::ready(Ok(StoreCatalog { applets }))
+    },
+    &SavedUpdates::new(),
+  )
+  .await
+  .unwrap();
 
   calls.get_mut().unwrap().sort();
   assert_eq!(calls.into_inner().unwrap(), [alpha, bravo]);
@@ -203,37 +225,43 @@ async fn updates_keep_successful_results_when_an_origin_fails() {
     store_installation("other", unavailable, "1.0.0", StoreChannel::Stable),
     nightly,
   ];
-  let result = check_updates(report, |origin| async move {
-    match origin.as_str() {
-      "https://healthy.example" => Ok(StoreCatalog {
-        applets: vec![listing("sample", "2.0.0", None)],
-      }),
-      "https://unavailable.example" => Err("Could not reach the store.".into()),
-      _ => unreachable!(),
-    }
-  })
-  .await;
+  let saved = SavedUpdates::from([
+    ("other".into(), hint(&report.applets[1], "2.0.0")),
+    ("nightly".into(), hint(&report.applets[2], "2.0.0")),
+  ]);
+  let result = check_updates(
+    || std::future::ready(Ok(report.clone())),
+    |origin| async move {
+      match origin.as_str() {
+        "https://healthy.example" => Ok(StoreCatalog {
+          applets: vec![listing("sample", "2.0.0", None)],
+        }),
+        "https://unavailable.example" => Err("Could not reach the store.".into()),
+        _ => unreachable!(),
+      }
+    },
+    &saved,
+  )
+  .await
+  .unwrap();
   let json = output(result).unwrap();
   let sources = json["sources"].as_array().unwrap();
   assert_eq!(sources.len(), 2);
   assert_eq!(sources[0]["checked_count"], 1);
-  assert_eq!(sources[0]["updates"][0]["release"]["version"], "2.0.0");
+  assert_eq!(sources[0]["updates"][0]["version"], "2.0.0");
+  assert!(sources[0]["updates"][0].get("release").is_none());
   assert!(sources[0].get("error").is_none());
-  assert!(sources[0].get("unreachable_installations").is_none());
-  assert_eq!(
-    sources[1],
-    json!({
-      "store_url": unavailable,
-      "installed_count": 2,
-      "checked_count": 0,
-      "updates": [],
-      "unreachable_installations": [
-        {"applet_id": "other", "sha256": "a".repeat(64), "channel": "stable"},
-        {"applet_id": "nightly", "sha256": "b".repeat(64), "channel": "nightly"}
-      ],
-      "error": "Could not reach the store."
-    })
-  );
+  assert!(sources[0]["saved_updates"].as_array().unwrap().is_empty());
+  assert_eq!(sources[1]["store_url"], unavailable);
+  assert_eq!(sources[1]["installed_count"], 2);
+  assert_eq!(sources[1]["checked_count"], 0);
+  assert_eq!(sources[1]["error"], "Could not reach the store.");
+  assert!(sources[1]["updates"].as_array().unwrap().is_empty());
+  assert!(sources[1].get("unreachable_installations").is_none());
+  let saved = sources[1]["saved_updates"].as_array().unwrap();
+  assert_eq!(saved.len(), 1);
+  assert_eq!(saved[0]["applet"]["applet_id"], "other");
+  assert_eq!(saved[0]["version"], "2.0.0");
 }
 
 #[tokio::test]
@@ -253,20 +281,25 @@ async fn updates_follow_each_installed_channel_and_keep_local_artwork() {
     ),
     store_installation("unlisted", origin, "1.0.0", StoreChannel::Stable),
   ];
-  let result = check_updates(report, |_| async {
-    Ok(StoreCatalog {
-      applets: vec![
-        listing("nightly", "3.0.0", Some("2.0.0-beta.1")),
-        listing("stable", "1.0.0", Some("2.0.0-beta.1")),
-        listing("missing-channel", "3.0.0", None),
-      ],
-    })
-  })
-  .await;
+  let result = check_updates(
+    || std::future::ready(Ok(report.clone())),
+    |_| async {
+      Ok(StoreCatalog {
+        applets: vec![
+          listing("nightly", "3.0.0", Some("2.0.0-beta.1")),
+          listing("stable", "1.0.0", Some("2.0.0-beta.1")),
+          listing("missing-channel", "3.0.0", None),
+        ],
+      })
+    },
+    &SavedUpdates::new(),
+  )
+  .await
+  .unwrap();
   let source = &result.sources[0];
   assert_eq!(source.installed_count, 4);
   assert_eq!(source.checked_count, 2);
-  assert!(source.unreachable_installations.is_none());
+  assert!(source.saved_updates.is_empty());
   assert_eq!(source.updates.len(), 1);
   let update = &source.updates[0];
   assert_eq!(update.applet.manifest.name, "Sample");
@@ -274,7 +307,121 @@ async fn updates_follow_each_installed_channel_and_keep_local_artwork() {
     update.applet.icon_data_url.as_deref(),
     Some("data:image/png;base64,aW5zdGFsbGVk")
   );
-  assert_eq!(update.release.version, "2.0.0-beta.1");
+  assert_eq!(update.version, "2.0.0-beta.1");
+}
+
+#[tokio::test]
+async fn update_cache_revalidates_installations_changed_during_the_network_check() {
+  let available = "https://a.example";
+  let offline = "https://b.example";
+  let foreign = "https://other.example";
+  let stable = |id, origin| store_installation(id, origin, "1.0.0", StoreChannel::Stable);
+  let mut initial = empty_report();
+  initial.applets = vec![
+    stable("already-updated", available),
+    stable("missing", available),
+    stable("removed", offline),
+    stable("replaced", offline),
+    stable("channel", offline),
+    stable("moved", offline),
+    stable("match", offline),
+  ];
+  let earlier = initial
+    .applets
+    .iter()
+    .map(|applet| (applet.manifest.applet_id.clone(), hint(applet, "2.0.0")))
+    .collect();
+  let mut current = initial.clone();
+  current.applets[0].manifest.version = "2.0.0".into();
+  current.applets[3].sha256 = "b".repeat(64);
+  let Some(PackageSource::Store(channel)) = current.applets[4].source.as_mut() else {
+    unreachable!()
+  };
+  channel.channel = StoreChannel::Nightly;
+  let Some(PackageSource::Store(moved)) = current.applets[5].source.as_mut() else {
+    unreachable!()
+  };
+  moved.store_url = foreign.into();
+  current.applets.remove(2);
+  let received = std::cell::Cell::new(false);
+  let result = check_updates(
+    || {
+      std::future::ready(Ok(if received.get() {
+        current.clone()
+      } else {
+        initial.clone()
+      }))
+    },
+    |origin| {
+      received.set(true);
+      std::future::ready(match origin.as_str() {
+        "https://a.example" => Ok(StoreCatalog {
+          applets: vec![listing("already-updated", "2.0.0", None)],
+        }),
+        "https://b.example" => Err("Offline".into()),
+        _ => panic!("new source was not present when we began"),
+      })
+    },
+    &earlier,
+  )
+  .await
+  .unwrap();
+  let [online, offline, moved] = &result.sources[..] else {
+    panic!("expected all three current origins")
+  };
+  assert_eq!((online.installed_count, online.checked_count), (2, 1));
+  assert!(online.updates.is_empty() && online.saved_updates.is_empty());
+  assert_eq!((offline.installed_count, offline.checked_count), (3, 0));
+  assert_eq!(offline.saved_updates.len(), 1);
+  assert_eq!(offline.saved_updates[0].applet.manifest.applet_id, "match");
+  assert_eq!(moved.store_url, foreign);
+  assert!(moved.saved_updates.is_empty());
+  assert_eq!(
+    cache_projection(&result).into_keys().collect::<Vec<_>>(),
+    ["match"]
+  );
+}
+
+#[tokio::test]
+async fn update_cache_stores_only_binding_and_version_and_ignores_invalid_local_data() {
+  let root = tempfile::tempdir().unwrap();
+  assert!(read_cache(root.path()).is_empty());
+  let origin = "https://store.example";
+  let mut report = empty_report();
+  report.applets.push(store_installation(
+    "sample",
+    origin,
+    "1.0.0",
+    StoreChannel::Stable,
+  ));
+  report.applets[0].icon_data_url = Some("data:image/png;base64,fixture".into());
+  let result = check_updates(
+    || std::future::ready(Ok(report.clone())),
+    |_| async {
+      Ok(StoreCatalog {
+        applets: vec![listing("sample", "2.0.0", None)],
+      })
+    },
+    &SavedUpdates::new(),
+  )
+  .await
+  .unwrap();
+  let cache = cache_projection(&result);
+  write_cache(root.path(), &cache);
+  assert_eq!(read_cache(root.path()), cache);
+  let path = root.path().join("store-updates-v1.json");
+  let bytes = std::fs::read(&path).unwrap();
+  assert_eq!(
+    serde_json::from_slice::<Value>(&bytes).unwrap(),
+    json!([{
+      "source":{"store_url":origin,"applet_id":"sample","channel":"stable"},
+      "sha256":"a".repeat(64), "version":"2.0.0",
+    }])
+  );
+  std::fs::write(&path, b"invalid cache").unwrap();
+  assert!(read_cache(root.path()).is_empty());
+  std::fs::write(&path, vec![b'x'; 1024 * 1024 + 1]).unwrap();
+  assert!(read_cache(root.path()).is_empty());
 }
 
 #[test]

@@ -128,23 +128,21 @@ export interface StoreCatalog {
 }
 export interface StoreUpdateEntry {
   applet: InstalledApplet;
-  release: StoreRelease;
-}
-export interface StoreUpdateInstallation {
-  applet_id: string;
-  sha256: string;
-  channel: StoreChannel;
+  version: string;
 }
 export interface StoreUpdateSource {
   store_url: string;
   installed_count: number;
   checked_count: number;
   updates: StoreUpdateEntry[];
+  saved_updates: StoreUpdateEntry[];
   error?: string;
-  unreachable_installations?: StoreUpdateInstallation[];
 }
 export interface StoreUpdatesReport {
   sources: StoreUpdateSource[];
+}
+export interface StoreUpdateResults extends StoreUpdatesReport {
+  fresh: boolean;
 }
 export type StoreReleaseAction =
   'install' | 'update' | 'switch_source' | 'switch_channel' | 'installed' | 'older' | 'conflict';

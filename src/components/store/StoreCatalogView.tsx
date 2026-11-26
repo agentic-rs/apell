@@ -1,4 +1,4 @@
-import type { StoreCatalog, StoreSource } from '../../lib/types';
+import type { StoreCatalog, StoreSource, StoreUpdateResults } from '../../lib/types';
 import {
   installedStoreChannel,
   matchingStoreApplets,
@@ -9,7 +9,6 @@ import {
 import { Icon } from '../Icon';
 import { StoreIcon } from './StoreIcon';
 import { StoreUpdatesView } from './StoreUpdatesView';
-import type { StoreUpdateResults } from './updatesState';
 
 export function StoreCatalogView({
   catalog,
@@ -44,8 +43,9 @@ export function StoreCatalogView({
   onSelectUpdate: (source: StoreSource) => void;
   onOpenDownloads: () => void;
 }) {
-  const update_count =
-    updates?.sources.reduce((count, source) => count + source.updates.length, 0) ?? 0;
+  const update_count = updates?.fresh
+    ? updates.sources.reduce((count, source) => count + source.updates.length, 0)
+    : 0;
   const refresh_label = updates_only ? 'Refresh updates' : 'Refresh store';
   return (
     <section className="store-catalog" aria-label="Applet store" aria-busy={loading}>

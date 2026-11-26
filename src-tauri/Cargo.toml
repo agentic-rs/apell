@@ -30,6 +30,7 @@ jsonwebtoken = { version = "12", default-features = false, features = ["rust_cry
 percent-encoding = "2"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"] }
 ring = "0.17"
+semver = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri = { version = "2", features = [] }

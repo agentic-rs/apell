@@ -82,6 +82,7 @@ dependencies = [
  "percent-encoding",
  "reqwest",
  "ring",
+ "semver",
  "serde",
  "serde_json",
  "sha2 0.10.9",

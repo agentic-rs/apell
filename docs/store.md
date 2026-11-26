@@ -32,9 +32,11 @@ Open an applet to choose its release channel and see that channel’s version
 history. Apell recommends Stable for new installs when available. **Updates**
 checks each installed Store applet against its recorded Store and channel. It
 works when no Store is configured for Discover. If a source cannot be checked,
-Apell still shows updates from the other sources. The Updates page can also show
-saved results for unchanged installations from previous checks. Only current
-results count toward the Updates badge. Open a saved result to check it again.
+Apell still shows updates from the other sources. The Updates page shows **Saved
+result** for earlier checks that still match the installed package, Store, and
+channel, including after you restart or go offline. Only current results count
+toward the Updates badge. Open a saved result to check the release before
+installing it.
 Review an update's permissions, including newly declared access, then choose
 **Update**. Updates are manual, and existing applet data is retained.
 If the old version is running, choose **Restart applet** after installing to

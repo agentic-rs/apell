@@ -89,6 +89,7 @@ export const setStoreUrl = (store_url: string) =>
 export const getStoreCatalog = (store_url: string) =>
   shellCall<StoreCatalog>('store.catalog', { store_url });
 export const getStoreUpdates = () => shellCall<StoreUpdatesReport>('store.updates');
+export const getSavedStoreUpdates = () => shellCall<StoreUpdatesReport>('store.saved_updates');
 export const getStorePendingDownloads = () =>
   shellCall<StorePendingDownload[]>('store.pending_downloads');
 export const onStoreDownloadsChanged = (handler: () => void) =>
