@@ -203,8 +203,9 @@ and code. Enter the code on the sign-in page on this or another device. When
 Apell shows the signed-in account, turn on **Sync model settings**. Apell
 publishes local changes and checks for cloud changes while it runs. Use **Sync
 now** to check immediately. Apell shows changes on this device that are still
-waiting to sync. The **Apell Account** row in Settings shows when model or
-encrypted API-key sync needs attention.
+waiting to sync. If a manual or background sync fails, **Model settings**
+shows the failure so you can retry there. The **Apell Account** row in
+Settings shows when model or encrypted API-key sync needs attention.
 Model settings sync includes connection labels, built-in provider and model
 selections, and the preferred active model. API keys can be synced separately
 through **Encrypted API keys**. **Settings → Default model** shows the

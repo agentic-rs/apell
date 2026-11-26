@@ -1,5 +1,6 @@
-use super::{compare_settings, load_state, synchronize, Run, SyncOptions};
+use super::{compare_settings, load_state, synchronize, Run, RunError, SyncOptions};
 use crate::{account::Access, host::Host, key_sync::BackgroundStop};
+use serde_json::{json, Value};
 use std::{future::Future, time::Duration};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::{watch, Mutex, Notify};
@@ -8,10 +9,34 @@ const INTERVAL: Duration = Duration::from_secs(60);
 const CHANGED: &str = "apell-config-sync-changed";
 const PAUSED: &str = "Automatic model settings sync was stopped.";
 
-#[derive(Clone, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct Activity {
-  pub(super) syncing: bool,
-  pub(super) error: Option<String>,
+  syncing: bool,
+  error: Option<String>,
+}
+
+impl Activity {
+  pub(super) fn running() -> Self {
+    Self {
+      syncing: true,
+      error: None,
+    }
+  }
+
+  fn failed(error: String) -> Self {
+    Self {
+      syncing: false,
+      error: Some(error),
+    }
+  }
+
+  pub(super) fn after_manual_attempt(self, error: Option<&RunError>) -> Option<Self> {
+    match error {
+      Some(RunError::Failed(error)) => Some(Self::failed(error.clone())),
+      Some(RunError::ReviewRequired(_)) => self.error.map(Self::failed),
+      None => None,
+    }
+  }
 }
 
 pub(super) struct Automatic {
@@ -47,7 +72,13 @@ impl Automatic {
       .unwrap_or_default()
   }
 
-  async fn publish(&self, app: &AppHandle, activity: Option<(String, Activity)>) {
+  pub(super) async fn add_activity(&self, account: &str, status: &mut Value) {
+    let activity = self.activity(account).await;
+    status["syncing"] = json!(activity.syncing);
+    status["sync_error"] = json!(activity.error);
+  }
+
+  pub(super) async fn publish(&self, app: &AppHandle, activity: Option<(String, Activity)>) {
     let mut current = self.activity.lock().await;
     if *current != activity {
       *current = activity;
@@ -143,6 +174,9 @@ pub(crate) fn start(app: &AppHandle) {
         _ = automatic.wake.notified() => (),
       }
       let stop = SyncStop::automatic(host.key_sync.background_stop(), automatic);
+      let Ok(_gate) = stop.wait(host.config_sync.gate.lock()).await else {
+        continue;
+      };
       let Ok(account) = stop.wait(host.account.account_key(&app)).await else {
         continue;
       };
@@ -150,21 +184,9 @@ pub(crate) fn start(app: &AppHandle) {
         clear_activity(&app, &host).await;
         continue;
       };
-      let Ok(_gate) = stop.wait(host.config_sync.gate.lock()).await else {
-        continue;
-      };
       let result = synchronize_automatically(&app, &host, &account, &stop).await;
       if stop.check().is_ok() {
-        let activity = match result {
-          Ok(()) => None,
-          Err(error) => Some((
-            account,
-            Activity {
-              syncing: false,
-              error: Some(error),
-            },
-          )),
-        };
+        let activity = result.err().map(|error| (account, Activity::failed(error)));
         automatic.publish(&app, activity).await;
       }
     }
@@ -185,22 +207,9 @@ async fn synchronize_automatically(
   host
     .config_sync
     .automatic
-    .publish(
-      app,
-      Some((
-        account.to_owned(),
-        Activity {
-          syncing: true,
-          error: None,
-        },
-      )),
-    )
+    .publish(app, Some((account.to_owned(), Activity::running())))
     .await;
-  let access = stop.access(app, host).await?;
-  if access.account_key != account {
-    return Err("The signed-in Account changed. Try syncing again.".into());
-  }
-  let compared = compare_settings(app, host, &access, &state, stop).await?;
+  let (access, compared) = compare_settings(app, host, account, &state, stop).await?;
   synchronize(
     app,
     host,
@@ -216,7 +225,8 @@ async fn synchronize_automatically(
       automatic: true,
     },
   )
-  .await?;
+  .await
+  .map_err(RunError::into_message)?;
   Ok(())
 }
 
@@ -224,6 +234,29 @@ async fn synchronize_automatically(
 mod tests {
   use super::*;
   use crate::key_sync::KeySync;
+
+  #[test]
+  fn manual_sync_reports_a_failure_and_preserves_it_until_a_successful_run() {
+    let skipped = RunError::ReviewRequired("Refresh the review.".into());
+    let unavailable = RunError::Failed("Sync service unavailable.".into());
+    assert_eq!(
+      Activity::default().after_manual_attempt(Some(&skipped)),
+      None
+    );
+
+    let previous = Activity::default()
+      .after_manual_attempt(Some(&unavailable))
+      .unwrap();
+    assert_eq!(
+      previous,
+      Activity::failed("Sync service unavailable.".into())
+    );
+    assert_eq!(
+      previous.clone().after_manual_attempt(Some(&skipped)),
+      Some(previous.clone())
+    );
+    assert_eq!(previous.after_manual_attempt(None), None);
+  }
 
   #[tokio::test]
   async fn opting_out_cancels_only_existing_automatic_waits() {

@@ -12,7 +12,7 @@ use crate::{
   settings::{Connection, Settings, LEGACY_DEMO_CONNECTION_ID},
 };
 use apell_core::bundles::{atomic_write, digest};
-use automatic::{Automatic, SyncStop};
+use automatic::{Activity, Automatic, SyncStop};
 use reqwest::{Method, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -98,6 +98,25 @@ struct Run {
   conflict_id: Option<String>,
 }
 
+enum RunError {
+  Failed(String),
+  ReviewRequired(String),
+}
+
+impl RunError {
+  fn into_message(self) -> String {
+    match self {
+      Self::Failed(error) | Self::ReviewRequired(error) => error,
+    }
+  }
+}
+
+impl From<String> for RunError {
+  fn from(error: String) -> Self {
+    Self::Failed(error)
+  }
+}
+
 pub async fn dispatch(
   app: AppHandle,
   _host: &Host,
@@ -118,9 +137,11 @@ pub async fn dispatch(
         let state = stop.wait(load_state(&host, &key)).await??;
         let mut result = stop.wait(local_status(&host, &state)).await??;
         if state.enabled {
-          let activity = host.config_sync.automatic.activity(&key).await;
-          result["syncing"] = json!(activity.syncing);
-          result["sync_error"] = json!(activity.error);
+          host
+            .config_sync
+            .automatic
+            .add_activity(&key, &mut result)
+            .await;
         }
         require_identity(&app, &host, &key, &stop).await?;
         Ok(result)
@@ -145,12 +166,8 @@ pub async fn dispatch(
         if review_only && request.resolution.is_some() {
           return Err("A read-only sync review cannot choose settings.".into());
         }
-        let access = stop.access(&app, &host).await?;
-        if access.account_key != key {
-          return Err("The signed-in Account changed. Try syncing again.".into());
-        }
-        let compared = compare_settings(&app, &host, &access, &state, &stop).await?;
         if review_only {
+          let (_, compared) = compare_settings(&app, &host, &key, &state, &stop).await?;
           require_identity(&app, &host, &key, &stop).await?;
           let mut result = review_settings(&key, &state, &compared);
           let pending = result["conflict_id"].as_str().map(str::to_owned);
@@ -160,28 +177,62 @@ pub async fn dispatch(
             save_state(&host, &key, state).await?;
             let _ = app.emit_to("main", "apell-llm-settings-changed", ());
           }
+          host
+            .config_sync
+            .automatic
+            .add_activity(&key, &mut result["status"])
+            .await;
           return Ok(result);
         }
-        let result = synchronize(
-          &app,
-          &host,
-          &access,
-          state,
-          request,
-          compared,
-          SyncOptions {
-            stop: &stop,
-            automatic: false,
-          },
-        )
-        .await?;
-        clear_activity(&app, &host).await;
-        Ok(result)
+        run_manually(&app, &host, &key, state, request, &stop).await
       }
       _ => Err("Unknown config sync operation.".into()),
     }
   })
   .await
+}
+
+// The caller holds config_sync.gate through both the run and its health update.
+async fn run_manually(
+  app: &AppHandle,
+  host: &Host,
+  account: &str,
+  state: DeviceState,
+  request: Run,
+  stop: &SyncStop,
+) -> Result<Value, String> {
+  require_identity(app, host, account, stop).await?;
+  let activity = &host.config_sync.automatic;
+  let prior = activity.activity(account).await;
+  activity
+    .publish(app, Some((account.to_owned(), Activity::running())))
+    .await;
+  let result = async {
+    let (access, compared) = compare_settings(app, host, account, &state, stop).await?;
+    synchronize(
+      app,
+      host,
+      &access,
+      state,
+      request,
+      compared,
+      SyncOptions {
+        stop,
+        automatic: false,
+      },
+    )
+    .await
+  }
+  .await;
+  let next = if require_identity(app, host, account, stop).await.is_ok() {
+    prior.after_manual_attempt(result.as_ref().err())
+  } else {
+    None
+  };
+  activity
+    .publish(app, next.map(|next| (account.to_owned(), next)))
+    .await;
+  result.map_err(RunError::into_message)
 }
 
 async fn set_enabled(
@@ -348,12 +399,16 @@ pub(crate) async fn pending_preferred_connection_id(
 async fn compare_settings(
   app: &AppHandle,
   host: &Host,
-  access: &Access,
+  account: &str,
   state: &DeviceState,
   stop: &SyncStop,
-) -> Result<ComparedSettings, String> {
+) -> Result<(Access, ComparedSettings), String> {
+  let access = stop.access(app, host).await?;
+  if access.account_key != account {
+    return Err("The signed-in Account changed. Try syncing again.".into());
+  }
   let head = stop
-    .wait(request_head(host, access, Method::GET, None))
+    .wait(request_head(host, &access, Method::GET, None))
     .await??;
   require_identity(app, host, &access.account_key, stop).await?;
   let (mut local, local_active, cloud_apply_blocker) = {
@@ -368,13 +423,16 @@ async fn compare_settings(
   };
   local.validate()?;
   let local_hash = local.fingerprint()?;
-  Ok(ComparedSettings {
-    head,
-    local,
-    local_active,
-    local_hash,
-    cloud_apply_blocker,
-  })
+  Ok((
+    access,
+    ComparedSettings {
+      head,
+      local,
+      local_active,
+      local_hash,
+      cloud_apply_blocker,
+    },
+  ))
 }
 
 fn review_settings(account_key: &str, state: &DeviceState, compared: &ComparedSettings) -> Value {
@@ -421,7 +479,7 @@ async fn synchronize(
   input: Run,
   compared: ComparedSettings,
   options: SyncOptions<'_>,
-) -> Result<Value, String> {
+) -> Result<Value, RunError> {
   let stop = options.stop;
   let ComparedSettings {
     head,
@@ -432,7 +490,9 @@ async fn synchronize(
   } = compared;
   let result = match head {
     None if input.resolution.is_some() => {
-      return Err("The model settings changed. Refresh the review.".into())
+      return Err(RunError::ReviewRequired(
+        "The model settings changed. Refresh the review.".into(),
+      ))
     }
     None if !first_upload_required(&state, &local)? => {
       require_identity(app, host, &access.account_key, stop).await?;
@@ -447,7 +507,9 @@ async fn synchronize(
     Some(remote) => {
       let conflict = conflict_id(&access.account_key, &remote, &local_hash);
       if input.conflict_id.as_ref().is_some_and(|id| *id != conflict) {
-        return Err("The model settings changed. Refresh the review.".into());
+        return Err(RunError::ReviewRequired(
+          "The model settings changed. Refresh the review.".into(),
+        ));
       }
       let allow_removals = matches!(input.resolution, Some(Resolution::UseCloud));
       let action = decide_sync(
@@ -695,17 +757,23 @@ async fn apply_remote(
   remote: &Snapshot,
   options: SyncOptions<'_>,
   allow_removals: bool,
-) -> Result<Option<String>, String> {
+) -> Result<Option<String>, RunError> {
   let SyncOptions { stop, automatic } = options;
   let _gate = stop.wait(host.credential_gate.lock()).await?;
   let mut current = stop.wait(host.settings.lock()).await?;
   require_identity(app, host, &access.account_key, stop).await?;
   if capture(&current, state).fingerprint()? != local_hash {
-    return Err("Provider settings changed during sync. Run sync again.".into());
+    return Err(RunError::ReviewRequired(
+      "Provider settings changed during sync. Run sync again.".into(),
+    ));
   }
-  let (mut next, removals) = remote.settings(&current)?;
+  let (mut next, removals) = remote
+    .settings(&current)
+    .map_err(RunError::ReviewRequired)?;
   if !allow_removals && !removals.is_empty() {
-    return Err("Review the model settings before removing a local connection.".into());
+    return Err(RunError::ReviewRequired(
+      "Review the model settings before removing a local connection.".into(),
+    ));
   }
   let app = app.clone();
   let root = host.root.clone();

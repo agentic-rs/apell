@@ -102,12 +102,20 @@ export function SettingsMenu({
         return;
       }
       setAccountSummary((current) => (current.detail === detail ? current : { detail }));
-      const [model, keys] = await Promise.all([
-        getConfigSyncStatus().catch(() => undefined),
-        getLocalKeySyncStatus().catch(() => undefined),
+      const [model, keys] = await Promise.allSettled([
+        getConfigSyncStatus(),
+        getLocalKeySyncStatus(),
       ]);
       if (alive && request === sequence) {
-        setAccountSummary({ detail, attention: accountSyncAttention(model, keys) });
+        const attention = accountSyncAttention(
+          model.status === 'fulfilled' ? model.value : undefined,
+          keys.status === 'fulfilled' ? keys.value : undefined,
+        );
+        const unavailable = model.status === 'rejected' || keys.status === 'rejected';
+        setAccountSummary({
+          detail,
+          attention: attention ?? (unavailable ? 'Sync status unavailable' : undefined),
+        });
       }
     };
     const reload = () => {
