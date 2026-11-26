@@ -1,5 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-import { managed_permission_labels, systemPermissionLabel } from '../lib/permissions';
+import {
+  canOpenSystemPermissionSettings,
+  managed_permission_labels,
+  systemPermissionLabel,
+} from '../lib/permissions';
 import { message, openPermissionSystemSettings } from '../lib/tauri';
 import type { ManagedPermission, PermissionMode, SystemAuthorization } from '../lib/types';
 import { OperationScope } from './providers/state';
@@ -25,9 +29,7 @@ export function SystemPermissionAccess({
   const label = systemPermissionLabel(authorization);
   if (!label) return null;
   const can_open =
-    can_open_system_settings === true &&
-    (mode === 'ask' || mode === 'remembered') &&
-    (authorization === 'blocked' || authorization === 'not_granted');
+    mode !== 'blocked' && canOpenSystemPermissionSettings(authorization, can_open_system_settings);
   return (
     <div className="system-permission-access">
       <small id={id}>{label}</small>
@@ -43,13 +45,13 @@ export function SystemPermissionAccess({
   );
 }
 
-function OpenSystemSettings({
+export function OpenSystemSettings({
   applet_name,
   permission,
   status_id,
   disabled,
 }: {
-  applet_name: string;
+  applet_name?: string;
   permission: ManagedPermission;
   status_id: string;
   disabled: boolean;
@@ -85,7 +87,7 @@ function OpenSystemSettings({
       <button
         type="button"
         className="system-permission-button"
-        aria-label={`Open system settings, ${managed_permission_labels[permission]} access for ${applet_name}`}
+        aria-label={`Open system settings, ${managed_permission_labels[permission]} access${applet_name ? ` for ${applet_name}` : ''}`}
         aria-describedby={error ? `${status_id} ${status_id}-error` : status_id}
         disabled={disabled || opening}
         onClick={() => void open()}

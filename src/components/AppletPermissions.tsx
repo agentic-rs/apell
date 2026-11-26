@@ -11,6 +11,7 @@ import {
   appletPermissionRows,
   device_access_note,
   groupDevicePermissions,
+  groupSystemPermission,
   isPermissionMode,
   managedPermissionDeclaration,
   managed_permission_labels,
@@ -33,7 +34,7 @@ import type {
   PermissionGrant,
   PermissionMode,
 } from '../lib/types';
-import { SystemPermissionAccess } from './SystemPermissionAccess';
+import { OpenSystemSettings, SystemPermissionAccess } from './SystemPermissionAccess';
 import { Icon } from './Icon';
 import { OperationScope } from './providers/state';
 import './AppletPermissions.css';
@@ -64,6 +65,7 @@ function PermissionRow({
   saving,
   error,
   unavailable_reason,
+  system_status_id,
   change,
   reset,
 }: {
@@ -74,6 +76,7 @@ function PermissionRow({
   saving: boolean;
   error?: string;
   unavailable_reason?: string;
+  system_status_id?: string;
   change?: (mode: PermissionMode) => void;
   reset: () => void;
 }) {
@@ -86,7 +89,7 @@ function PermissionRow({
   const can_reset = access !== 'ask' && (!change || access === 'previous_package');
   const system_label = !unavailable && mode && systemPermissionLabel(system_authorization);
   const description = [
-    system_label && `${id}-system`,
+    system_label && (system_status_id ?? `${id}-system`),
     access === 'previous_package' && change && `${id}-previous`,
     error && `${id}-error`,
   ]
@@ -121,7 +124,7 @@ function PermissionRow({
           {((change && access === 'previous_package') || (unavailable && can_reset)) && (
             <small id={`${id}-previous`}>{access_labels[access]}</small>
           )}
-          {system_label && mode && (
+          {system_label && mode && !system_status_id && (
             <SystemPermissionAccess
               id={`${id}-system`}
               applet_name={applet_name}
@@ -178,7 +181,12 @@ function AppletDeviceGrant({
   edit_error,
   edit,
   show_applet = false,
-}: AppletPermissionDetailsProps & { grant: PermissionGrant; show_applet?: boolean }) {
+  system_status_id,
+}: AppletPermissionDetailsProps & {
+  grant: PermissionGrant;
+  show_applet?: boolean;
+  system_status_id?: string;
+}) {
   const { applet_id, installed_revision } = applet;
   const { permission, grant_revision } = grant;
   const target = { applet_id, permission, grant_revision };
@@ -209,6 +217,7 @@ function AppletDeviceGrant({
       saving={saving === permission}
       error={edit_error?.permission === permission ? edit_error.text : undefined}
       unavailable_reason={declaration?.unavailable_reason}
+      system_status_id={system_status_id}
       change={can_change ? (mode) => edit({ ...target, installed_revision, mode }) : undefined}
       reset={() => edit(target)}
     />
@@ -399,7 +408,7 @@ export function AppletPermissions() {
   const [query, setQuery] = useState('');
   const search = useRef<HTMLInputElement>(null);
   const empty_result = useRef<HTMLParagraphElement>(null);
-  const focused_row = useRef<HTMLElement>(undefined);
+  const focused_row = useRef<{ element: HTMLElement; summary?: HTMLElement | null }>(undefined);
   const search_id = useId();
   const {
     value: applets,
@@ -421,10 +430,12 @@ export function AppletPermissions() {
     empty_message = 'Matching applets have no microphone, camera, or location settings.';
   }
   useLayoutEffect(() => {
-    if (focused_row.current?.isConnected !== false) return;
+    const previous = focused_row.current;
+    if (previous?.element.isConnected !== false) return;
     focused_row.current = undefined;
     if (document.activeElement === document.body) {
-      (empty_result.current ?? search.current)?.focus();
+      const summary = previous.summary?.isConnected ? previous.summary : undefined;
+      (summary ?? empty_result.current ?? search.current)?.focus();
     }
   });
   const names = new Map<string, number>();
@@ -528,7 +539,10 @@ export function AppletPermissions() {
               className="applet-permission-groups"
               aria-busy={busy}
               onFocus={(event) => {
-                focused_row.current = event.target;
+                focused_row.current = {
+                  element: event.target,
+                  summary: event.target.closest('details')?.querySelector('summary'),
+                };
               }}
             >
               {view === 'applet'
@@ -543,6 +557,8 @@ export function AppletPermissions() {
                   ))
                 : groups.map(({ permission, entries, allowed_count }) => {
                     const name = managed_permission_labels[permission];
+                    const system = groupSystemPermission(entries);
+                    const system_id = `${search_id}-${permission}-system`;
                     return entries.length ? (
                       <details
                         key={permission}
@@ -551,10 +567,26 @@ export function AppletPermissions() {
                       >
                         <summary>
                           <span className="applet-permission-name">{name}</span>
-                          <span className="applet-permission-count">
-                            {allowed_count} allowed in Apell
+                          <span className="applet-permission-group-state">
+                            <span className="applet-permission-count">
+                              {allowed_count} allowed in Apell
+                            </span>
+                            {system && (
+                              <small id={system_id} className="applet-permission-system-status">
+                                {systemPermissionLabel(system.authorization)}
+                              </small>
+                            )}
                           </span>
                         </summary>
+                        {system?.can_open_system_settings && (
+                          <div className="applet-permission-system-action system-permission-access">
+                            <OpenSystemSettings
+                              permission={permission}
+                              status_id={system_id}
+                              disabled={busy || !!error}
+                            />
+                          </div>
+                        )}
                         <dl className="applet-permission-subjects">
                           {entries.map(({ applet, grant }) => (
                             <AppletDeviceGrant
@@ -562,6 +594,11 @@ export function AppletPermissions() {
                               applet={applet}
                               show_id={(names.get(applet.name) ?? 0) > 1}
                               grant={grant}
+                              system_status_id={
+                                system?.authorization === grant.system_authorization
+                                  ? system_id
+                                  : undefined
+                              }
                               show_applet
                               {...controls(applet.applet_id)}
                             />

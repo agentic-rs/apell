@@ -37,6 +37,13 @@ export function systemPermissionLabel(authorization: SystemAuthorization) {
   return system_access_labels[authorization];
 }
 
+export function canOpenSystemPermissionSettings(
+  authorization: SystemAuthorization,
+  supported?: boolean,
+) {
+  return supported === true && (authorization === 'blocked' || authorization === 'not_granted');
+}
+
 const permission_labels: Record<string, string> = {
   sqlite: 'Saved app data',
   llm: 'Shared AI',
@@ -112,9 +119,34 @@ export function matchingPermissionApplets(applets: readonly AppletPermission[], 
   );
 }
 
+type DevicePermissionEntry = { applet: AppletPermission; grant: PermissionGrant };
+
+export function groupSystemPermission(entries: readonly DevicePermissionEntry[]) {
+  const applicable = entries.filter(({ applet, grant }) => {
+    if (!applet.installed_revision || !grant.available || !grant.mode || grant.mode === 'blocked')
+      return false;
+    const declaration = managedPermissionDeclaration(applet.manifest, grant.permission);
+    return declaration && !declaration.unavailable_reason;
+  });
+  const authorization = applicable[0]?.grant.system_authorization;
+  if (
+    authorization !== 'blocked' &&
+    authorization !== 'not_granted' &&
+    authorization !== 'restricted'
+  )
+    return;
+  if (applicable.some(({ grant }) => grant.system_authorization !== authorization)) return;
+  return {
+    authorization,
+    can_open_system_settings: applicable.some(({ grant }) =>
+      canOpenSystemPermissionSettings(authorization, grant.can_open_system_settings),
+    ),
+  };
+}
+
 export function groupDevicePermissions(applets: readonly AppletPermission[]) {
   return (Object.keys(managed_permission_labels) as ManagedPermission[]).map((permission) => {
-    const entries: { applet: AppletPermission; grant: PermissionGrant }[] = [];
+    const entries: DevicePermissionEntry[] = [];
     let allowed_count = 0;
     for (const applet of applets) {
       const grant = applet.grants.find((item) => item.permission === permission);

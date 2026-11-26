@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   appletPermissionRows,
   groupDevicePermissions,
+  groupSystemPermission,
   matchingPermissionApplets,
   systemPermissionLabel,
 } from './permissions';
@@ -72,6 +73,62 @@ function fixtureApplet(
 }
 
 describe('permission groups', () => {
+  it('summarizes a device block for current usable grants only', () => {
+    const blocked = deviceGrant('camera', {
+      system_authorization: 'blocked',
+      can_open_system_settings: true,
+    });
+    const ask = { ...blocked, mode: 'ask' as const, access: 'previous_package' as const };
+    const ignored = [
+      fixtureApplet('blocked-in-apell', ['camera', 'fs'], [{ ...blocked, mode: 'blocked' }]),
+      fixtureApplet('unavailable-platform', ['camera', 'fs'], [{ ...blocked, available: false }]),
+      fixtureApplet('missing-files', ['camera'], [blocked]),
+      fixtureApplet('undeclared', ['fs'], [blocked]),
+      fixtureApplet('unavailable-applet', null, [blocked]),
+    ];
+    const entries = (applets: AppletPermission[]) => groupDevicePermissions(applets)[1].entries;
+    expect(groupSystemPermission(entries(ignored))).toBeUndefined();
+    expect(
+      groupSystemPermission(
+        entries([
+          ...ignored,
+          fixtureApplet('ask-current-package', ['camera', 'fs'], [ask]),
+          fixtureApplet('always-allow', ['camera', 'fs'], [blocked]),
+        ]),
+      ),
+    ).toEqual({ authorization: 'blocked', can_open_system_settings: true });
+  });
+
+  it('preserves platform capability and avoids summarizing conflicting system states', () => {
+    const entries = (...grants: PermissionGrant[]) =>
+      grants.map((grant, index) => ({
+        grant,
+        applet: fixtureApplet(`camera-${index}`, ['camera', 'fs'], [grant]),
+      }));
+    const grant = (
+      system_authorization: PermissionGrant['system_authorization'],
+      can_open_system_settings: boolean,
+    ) => deviceGrant('camera', { system_authorization, can_open_system_settings });
+    expect(groupSystemPermission(entries(grant('not_granted', true)))).toEqual({
+      authorization: 'not_granted',
+      can_open_system_settings: true,
+    });
+    expect(groupSystemPermission(entries(grant('blocked', false)))).toEqual({
+      authorization: 'blocked',
+      can_open_system_settings: false,
+    });
+    expect(groupSystemPermission(entries(grant('restricted', true)))).toEqual({
+      authorization: 'restricted',
+      can_open_system_settings: false,
+    });
+    for (const state of ['allowed', 'not_determined', 'unknown'] as const) {
+      expect(groupSystemPermission(entries(grant(state, false)))).toBeUndefined();
+      expect(
+        groupSystemPermission(entries(grant('blocked', true), grant(state, false))),
+      ).toBeUndefined();
+    }
+  });
+
   it('filters display names and IDs without excluding saved permissions for damaged packages', () => {
     const first = { ...fixtureApplet('journal', ['fs'], []), name: 'Café Journal' };
     const damaged = {

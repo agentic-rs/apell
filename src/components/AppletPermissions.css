@@ -139,6 +139,24 @@
   text-align: end;
 }
 
+.applet-permission-group-state {
+  display: grid;
+  gap: 2px;
+  text-align: end;
+}
+
+.applet-permission-system-status {
+  color: var(--text);
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+.applet-permission-group > .applet-permission-system-action {
+  margin: 0;
+  padding: 8px 14px;
+  border-top: 1px solid var(--line);
+}
+
 .applet-permission-section > h3 {
   margin: 0;
   padding: 10px 14px 8px;
@@ -235,6 +253,7 @@
 @media (max-width: 360px) {
   .applet-permission-section > h3,
   .applet-permission-note,
+  .applet-permission-group > .applet-permission-system-action,
   .applet-permission-row {
     padding-inline: 8px;
   }
