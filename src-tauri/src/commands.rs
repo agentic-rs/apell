@@ -225,7 +225,7 @@ pub async fn shell_command(
       crate::store_commands::publish_download_change(&app);
       Ok(result)
     }
-    "applets.update" => crate::install::update(app, &host, string(&params, "applet_id")?).await,
+    "applets.update" => crate::install::update(app, &host, params).await,
     "applets.remove" => {
       let applet_id = string(&params, "applet_id")?;
       host

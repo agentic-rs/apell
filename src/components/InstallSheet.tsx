@@ -17,7 +17,7 @@ interface InstallSheetProps {
   onSample: () => void;
   onFile: (file: File) => void;
   onGitHub: (release: GitHubRelease, asset_name: string) => void;
-  onUpdate: (applet_id: string) => void;
+  onUpdate: (applet: InstalledApplet) => void;
 }
 
 export function InstallSheet(props: InstallSheetProps) {
@@ -162,7 +162,7 @@ export function InstallSheet(props: InstallSheetProps) {
                     <button
                       type="button"
                       disabled={disabled}
-                      onClick={() => props.onUpdate(applet.applet_id)}
+                      onClick={() => props.onUpdate(applet)}
                     >
                       Update
                     </button>

@@ -4,7 +4,9 @@ import {
   installStoreRelease,
   message,
   onAppletInstallationChanged,
+  updateApplet,
 } from '../lib/tauri';
+import { useBackAction } from '../lib/backNavigation';
 import {
   newStoreAccess,
   recommendedStoreRelease,
@@ -15,6 +17,7 @@ import {
 import type {
   AppletInstallResult,
   AppletInstallation,
+  GitHubPackageSource,
   StoreChannel,
   StoreDetail,
   StoreReleaseOption,
@@ -40,11 +43,24 @@ function sameStoreSource(first: StoreSource | null, second: StoreSource | null) 
   );
 }
 
+function sameGitHubAsset(first?: GitHubPackageSource, second?: GitHubPackageSource) {
+  return (
+    first?.repository_id === second?.repository_id &&
+    first?.asset_name === second?.asset_name &&
+    (first?.release_tag ?? null) === (second?.release_tag ?? null)
+  );
+}
+
 function sameInstallation(first: AppletInstallation | undefined, second: AppletInstallation) {
+  const previous_github = first?.github_source;
+  const github = second.github_source;
   return (
     first?.installed_version === second.installed_version &&
     first.installed_sha256 === second.installed_sha256 &&
-    sameStoreSource(first.store_source, second.store_source)
+    sameStoreSource(first.store_source, second.store_source) &&
+    sameGitHubAsset(previous_github, github) &&
+    previous_github?.repository === github?.repository &&
+    Boolean(previous_github?.prerelease) === Boolean(github?.prerelease)
   );
 }
 
@@ -67,6 +83,7 @@ export function AppletChannel({
 }) {
   const [installation, setInstallation] = useState(initial_installation);
   const [review, setReview] = useState<Review>();
+  const [github_review, setGitHubReview] = useState(false);
   const [phase, setPhase] = useState<Phase>();
   const [refresh_requested, setRefreshRequested] = useState(false);
   const transfer = useStoreTransfer();
@@ -78,6 +95,30 @@ export function AppletChannel({
   const current_installation = useRef(initial_installation);
   const load_installation = useRef(loadInstallation);
   load_installation.current = loadInstallation;
+  const reviewing = !!review || github_review;
+  const controls_disabled = disabled || !!phase || refresh_requested;
+  const review_heading = useRef<HTMLElement>(null);
+  const review_trigger = useRef<HTMLElement>(null);
+  const saw_review = useRef(false);
+
+  const cancelReview = () => {
+    setReview(undefined);
+    setGitHubReview(false);
+    setNotice('');
+  };
+  useBackAction(110, reviewing, () => {
+    if (phase !== 'installing') cancelReview();
+  });
+  useLayoutEffect(() => {
+    if (reviewing) {
+      if (!saw_review.current) review_heading.current?.focus({ preventScroll: true });
+      saw_review.current = true;
+    } else if (saw_review.current && !controls_disabled) {
+      saw_review.current = false;
+      if (review_trigger.current?.isConnected)
+        review_trigger.current.focus({ preventScroll: true });
+    }
+  }, [reviewing, controls_disabled]);
 
   const updateInstallation = (next: AppletInstallation) => {
     current_installation.current = next;
@@ -101,8 +142,9 @@ export function AppletChannel({
       scope.current.cancel();
       setPhase(undefined);
       setReview(undefined);
+      setGitHubReview(false);
       setNotice('');
-      setError(phase === 'checking' || review ? installation_changed : '');
+      setError(phase === 'checking' || reviewing ? installation_changed : '');
     }
     updateInstallation(initial_installation);
   }, [initial_installation, phase]);
@@ -112,7 +154,7 @@ export function AppletChannel({
     if (!operation) return;
     setPhase(next);
     setError('');
-    setNotice('');
+    if (next !== 'loading') setNotice('');
     if (next === 'installing') onInstalling(true);
     try {
       await work(operation);
@@ -142,13 +184,17 @@ export function AppletChannel({
         const next = await reload(operation);
         if (operation.isCurrent() && !sameInstallation(previous, next)) {
           setReview(undefined);
-          if (review) setError(installation_changed);
+          setGitHubReview(false);
+          setNotice('');
+          if (reviewing) setError(installation_changed);
         }
       } catch (error) {
         if (operation.isCurrent()) {
           current_installation.current = undefined;
           setInstallation(undefined);
           setReview(undefined);
+          setGitHubReview(false);
+          setNotice('');
         }
         throw error;
       }
@@ -175,7 +221,6 @@ export function AppletChannel({
   }, [refresh_requested, phase]);
 
   const source = installation?.store_source;
-  const controls_disabled = disabled || !!phase || refresh_requested;
   if (!installation) {
     if (!error) return <p role="status">Checking installation…</p>;
     return (
@@ -187,7 +232,7 @@ export function AppletChannel({
       </div>
     );
   }
-  const restart = installation.restart_required && !review && (
+  const restart = installation.restart_required && !reviewing && (
     <>
       <p role="status">Version {installation.installed_version} is installed. Restart to use it.</p>
       <button className="primary" disabled={controls_disabled} onClick={onRestart}>
@@ -195,6 +240,103 @@ export function AppletChannel({
       </button>
     </>
   );
+  if (installation.github_source) {
+    const github = installation.github_source;
+    const tracked_release = github.release_tag ?? 'Latest stable';
+    const installGitHubUpdate = () =>
+      void run('installing', async (operation) => {
+        try {
+          const result = await updateApplet(applet_id, installation.installed_sha256, github);
+          if (!operation.isCurrent()) return;
+          const saved = result.applet;
+          if (
+            saved.applet_id !== applet_id ||
+            saved.source?.kind !== 'github' ||
+            !sameGitHubAsset(github, saved.source)
+          ) {
+            throw new Error(
+              'Could not verify the installed GitHub release. Check its details again.',
+            );
+          }
+          const changed = saved.sha256 !== installation.installed_sha256;
+          setGitHubReview(false);
+          updateInstallation({
+            store_source: null,
+            github_source: saved.source,
+            installed_version: saved.version,
+            installed_sha256: saved.sha256,
+            restart_required: result.restart_required,
+          });
+          if (changed) {
+            onInstalled?.(result);
+            if (!result.restart_required) setNotice(`Version ${saved.version} is installed.`);
+          } else setNotice('You’re up to date.');
+        } catch (error) {
+          if (operation.isCurrent()) {
+            setGitHubReview(false);
+            await reload(operation).catch(() => undefined);
+          }
+          throw error;
+        }
+      });
+    return (
+      <div className="applet-channel">
+        <dl className="applet-access">
+          <div>
+            <dt>GitHub release</dt>
+            <dd>
+              <bdi>{tracked_release}</bdi>
+            </dd>
+          </div>
+        </dl>
+        <button
+          type="button"
+          disabled={controls_disabled || github_review}
+          onClick={(event) => {
+            review_trigger.current = event.currentTarget;
+            setNotice('');
+            setError('');
+            setGitHubReview(true);
+          }}
+        >
+          Update from GitHub
+        </button>
+        {error && <p role="alert">{error}</p>}
+        {notice && <p role="status">{notice}</p>}
+        {github_review && (
+          <div className="applet-channel-review">
+            <strong ref={review_heading} tabIndex={-1}>
+              Update from GitHub?
+            </strong>
+            <p>
+              <bdi>{github.repository}</bdi> · <bdi>{tracked_release}</bdi>
+            </p>
+            <p>
+              Apell will check this release for <bdi>{github.asset_name}</bdi>.
+            </p>
+            {phase === 'installing' ? (
+              <p role="status">Checking and downloading…</p>
+            ) : (
+              <div className="button-row">
+                <button type="button" onClick={cancelReview}>
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="primary"
+                  disabled={controls_disabled}
+                  onClick={installGitHubUpdate}
+                >
+                  Download update
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+        {restart}
+      </div>
+    );
+  }
   if (!source) {
     return restart || error ? (
       <div className="applet-channel">
@@ -340,6 +482,7 @@ export function AppletChannel({
               value={source.channel}
               disabled={controls_disabled || !!review}
               onChange={(event) => {
+                review_trigger.current = event.currentTarget;
                 const next = event.currentTarget.value;
                 if (next === 'stable' || next === 'nightly') checkRelease(next);
               }}
@@ -353,7 +496,10 @@ export function AppletChannel({
       <button
         type="button"
         disabled={controls_disabled || !!review}
-        onClick={() => checkRelease(source.channel)}
+        onClick={(event) => {
+          review_trigger.current = event.currentTarget;
+          checkRelease(source.channel);
+        }}
       >
         Check for updates
       </button>
@@ -363,10 +509,14 @@ export function AppletChannel({
       {review && (
         <div className="applet-channel-review">
           {reviewing_update ? (
-            <strong>Update to {review.release.version}?</strong>
+            <strong ref={review_heading} tabIndex={-1}>
+              Update to {review.release.version}?
+            </strong>
           ) : (
             <>
-              <strong>Switch to {storeChannelName(storeReleaseChannel(review.release))}?</strong>
+              <strong ref={review_heading} tabIndex={-1}>
+                Switch to {storeChannelName(storeReleaseChannel(review.release))}?
+              </strong>
               <p>
                 Install version {review.release.version} and use this channel for future updates.
               </p>
@@ -401,14 +551,7 @@ export function AppletChannel({
             </>
           ) : (
             <div className="button-row">
-              <button
-                onClick={() => {
-                  setReview(undefined);
-                  setNotice('');
-                }}
-              >
-                Cancel
-              </button>
+              <button onClick={cancelReview}>Cancel</button>
               <button
                 className="primary"
                 disabled={controls_disabled}

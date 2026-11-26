@@ -3,7 +3,10 @@ use crate::{
   host::{string, Host},
 };
 use apell_core::{
-  bundles::{GitHubSource, InstalledApplet, PackageSource, StoreSwitchSnapshot, MAX_BUNDLE_BYTES},
+  bundles::{
+    BundleStore, GitHubSource, InstalledApplet, PackageSource, StoreSwitchSnapshot,
+    MAX_BUNDLE_BYTES,
+  },
   github::{GitHubClient, GitHubTarget},
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -17,6 +20,13 @@ struct RestorePackageRequest {
   applet_id: String,
   expected: StoreSwitchSnapshot,
   bundle_base64: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UpdatePackageRequest {
+  applet_id: String,
+  expected: StoreSwitchSnapshot,
 }
 
 pub async fn release(repository: &str) -> Result<Value, String> {
@@ -106,24 +116,35 @@ pub async fn restore_package(app: &AppHandle, host: &Host, params: Value) -> Res
   Ok(published_install_result(app, host, installed))
 }
 
-pub async fn update(app: AppHandle, host: &Host, applet_id: &str) -> Result<Value, String> {
+fn reviewed_github_source(
+  bundles: &BundleStore,
+  request: &UpdatePackageRequest,
+) -> Result<GitHubSource, String> {
+  let installed = bundles.installed(&request.applet_id)?;
+  if request.expected.removed
+    || request.expected.sha256 != installed.sha256
+    || request.expected.source != installed.source
+  {
+    return Err("The installed applet changed. Review its details again.".into());
+  }
+  match installed.source {
+    Some(PackageSource::Github(source)) => Ok(source),
+    _ => Err("This applet does not use a GitHub release.".into()),
+  }
+}
+
+pub async fn update(app: AppHandle, host: &Host, params: Value) -> Result<Value, String> {
+  let request: UpdatePackageRequest =
+    serde_json::from_value(params).map_err(|_| "Review the installed applet before updating.")?;
   let gate = host.store_gate.lock().await;
   let store = host.bundles.clone();
-  let id = applet_id.to_owned();
-  let installed = tauri::async_runtime::spawn_blocking(move || store.installed(&id))
-    .await
-    .map_err(|_| "Could not read the installed applet.")??;
-  let source = installed
-    .source
-    .ok_or("This applet was installed from a file. Choose a new .apel file to update it.")?;
-  let PackageSource::Github(source) = source else {
-    return Err("Open Store to review and install this applet's updates.".into());
-  };
+  let applet_id = request.applet_id.clone();
+  let source = blocking(move || reviewed_github_source(&store, &request)).await?;
   let installed = install_inner(
     &app,
     host,
     json!({"repository":source.repository,"release_tag":source.release_tag,"asset_name":source.asset_name}),
-    Some((applet_id.to_owned(), source)),
+    Some((applet_id, source)),
   )
   .await?;
   drop(gate);
@@ -219,6 +240,9 @@ pub(crate) fn published_install_result(
 #[cfg(test)]
 mod tests {
   use super::*;
+  use apell_core::bundles::{pack_directory, StoreChannel, StoreSource, API_VERSION};
+  use std::fs;
+
   #[test]
   fn local_packages_require_bounded_binary_encoding_and_one_source() {
     assert_eq!(
@@ -274,5 +298,130 @@ mod tests {
       assert!(check_release_snapshot(&params, 9, 11).is_err());
     }
     assert!(check_release_snapshot(&json!({"release_id":9,"asset_id":11}), 9, 11).is_ok());
+  }
+
+  #[test]
+  fn github_update_command_requires_the_complete_reviewed_snapshot() {
+    for malformed in [
+      json!({"applet_id":"sample"}),
+      json!({"applet_id":"sample","expected":{"sha256":"hash","removed":false}}),
+      json!({"applet_id":"sample","expected":{"source":null,"sha256":"hash"}}),
+      json!({"applet_id":"sample","expected":{"source":null,"sha256":"hash","removed":false,"extra":true}}),
+      json!({"applet_id":"sample","expected":{"source":null,"sha256":"hash","removed":false},"extra":true}),
+    ] {
+      assert!(serde_json::from_value::<UpdatePackageRequest>(malformed).is_err());
+    }
+  }
+
+  #[test]
+  fn github_update_binds_the_reviewed_hash_and_full_installation_source() {
+    let root = tempfile::tempdir().unwrap();
+    let staging = tempfile::tempdir().unwrap();
+    fs::write(
+      staging.path().join("manifest.json"),
+      json!({
+        "schema_version":1,"api_version":API_VERSION,"applet_id":"sample",
+        "name":"Sample","version":"1.0.0","permissions":[]
+      })
+      .to_string(),
+    )
+    .unwrap();
+    fs::write(staging.path().join("index.html"), "Sample").unwrap();
+    let bytes = pack_directory(staging.path()).unwrap();
+    let source = GitHubSource {
+      repository_id: 10,
+      repository: "example/project".into(),
+      asset_name: "sample.apel".into(),
+      release_tag: Some("v1.0.0".into()),
+      prerelease: false,
+    };
+    let bundles = BundleStore::new(root.path().join("bundles"));
+    let installed = bundles
+      .install_with_source(&bytes, None, Some(source.clone().into()))
+      .unwrap();
+    let exact = StoreSwitchSnapshot {
+      sha256: installed.sha256.clone(),
+      source: installed.source,
+      removed: false,
+    };
+    let check = |bundles: &BundleStore, expected| {
+      reviewed_github_source(
+        bundles,
+        &UpdatePackageRequest {
+          applet_id: "sample".into(),
+          expected,
+        },
+      )
+    };
+    assert_eq!(check(&bundles, exact.clone()).unwrap(), source);
+    for expected in [
+      StoreSwitchSnapshot {
+        sha256: "f".repeat(64),
+        ..exact.clone()
+      },
+      StoreSwitchSnapshot {
+        source: Some(
+          GitHubSource {
+            repository_id: 11,
+            repository: "example/other".into(),
+            ..source.clone()
+          }
+          .into(),
+        ),
+        ..exact.clone()
+      },
+      StoreSwitchSnapshot {
+        source: Some(
+          GitHubSource {
+            release_tag: None,
+            ..source.clone()
+          }
+          .into(),
+        ),
+        ..exact.clone()
+      },
+      StoreSwitchSnapshot {
+        removed: true,
+        ..exact.clone()
+      },
+    ] {
+      assert!(check(&bundles, expected).is_err());
+    }
+    let file_installations = BundleStore::new(root.path().join("files"));
+    file_installations.install(&bytes, &exact.sha256).unwrap();
+    assert!(check(&file_installations, exact.clone()).is_err());
+    assert!(check(
+      &file_installations,
+      StoreSwitchSnapshot {
+        source: None,
+        ..exact.clone()
+      },
+    )
+    .is_err());
+
+    let switched = bundles
+      .switch_to_store_release(
+        &bytes,
+        &exact.sha256,
+        StoreSource {
+          store_url: "https://store.example".into(),
+          applet_id: "sample".into(),
+          channel: StoreChannel::Stable,
+        },
+        &exact,
+      )
+      .unwrap();
+    assert_eq!(switched.sha256, exact.sha256);
+    assert!(check(&bundles, exact.clone()).is_err());
+    assert!(check(
+      &bundles,
+      StoreSwitchSnapshot {
+        source: switched.source,
+        ..exact.clone()
+      },
+    )
+    .is_err());
+    bundles.remove("sample", || Ok(())).unwrap();
+    assert!(check(&bundles, exact).is_err());
   }
 }

@@ -578,15 +578,24 @@ export function Library({
             {},
           )
         }
-        onUpdate={(applet_id) =>
+        onUpdate={({ applet_id, sha256, source }) => {
+          if (source?.kind !== 'github') return;
           void run(
             async () => {
-              await installed(await updateApplet(applet_id));
+              try {
+                const result = await updateApplet(applet_id, sha256, source);
+                if (result.applet.sha256 === sha256)
+                  setStatus(`${result.applet.name} is up to date.`);
+                else await installed(result);
+              } catch (error) {
+                await refresh().catch(() => undefined);
+                throw error;
+              }
             },
             'Checking GitHub release…',
             {},
-          )
-        }
+          );
+        }}
       />
     </section>
   );

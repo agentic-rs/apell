@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { useBackAction } from '../lib/backNavigation';
+import { useBackAction, useBackNavigation } from '../lib/backNavigation';
 import { Icon } from './Icon';
 
 interface SheetProps {
@@ -14,6 +14,7 @@ interface SheetProps {
 export function Sheet({ open, title, onClose, dismissible = true, children }: SheetProps) {
   const title_id = useId();
   const panel = useRef<HTMLDivElement>(null);
+  const navigation = useBackNavigation();
   const close = useRef(onClose);
   close.current = () => {
     if (dismissible) onClose();
@@ -73,11 +74,11 @@ export function Sheet({ open, title, onClose, dismissible = true, children }: Sh
       });
     };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.isComposing) return;
+      if (event.isComposing || event.defaultPrevented) return;
       if (event.key === 'Escape') {
         event.preventDefault();
         event.stopPropagation();
-        close.current();
+        if (!navigation?.goBack()) close.current();
       } else if (event.key === 'Tab') {
         event.preventDefault();
         const candidates = focusable();
@@ -124,7 +125,7 @@ export function Sheet({ open, title, onClose, dismissible = true, children }: Sh
         previous_focus.focus({ preventScroll: true });
       }
     };
-  }, [open]);
+  }, [open, navigation]);
 
   if (!open) return null;
   return createPortal(

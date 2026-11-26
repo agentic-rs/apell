@@ -16,6 +16,7 @@ import './AppletInfoSheet.css';
 function installation({ applet, permissions }: AppletInfo): AppletInstallation {
   return {
     store_source: applet.source?.kind === 'store' ? applet.source : null,
+    github_source: applet.source?.kind === 'github' ? applet.source : undefined,
     installed_version: applet.version,
     installed_sha256: applet.sha256,
     restart_required: permissions.restart_required,

@@ -319,6 +319,7 @@ export function AppletControls({
                 key={view_id}
                 applet_id={manifest.applet_id}
                 loadInstallation={loadInstallation}
+                disabled={read_only}
                 onInstalling={onInstallingChannel}
                 onRestart={() => {
                   setPanel(null);

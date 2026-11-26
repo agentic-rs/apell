@@ -25,16 +25,15 @@ export interface StoreSource {
   applet_id: string;
   channel: StoreChannel;
 }
-export type PackageSource =
-  | {
-      kind: 'github';
-      repository_id: number;
-      repository: string;
-      asset_name: string;
-      release_tag?: string | null;
-      prerelease?: boolean;
-    }
-  | ({ kind: 'store' } & StoreSource);
+export interface GitHubPackageSource {
+  kind: 'github';
+  repository_id: number;
+  repository: string;
+  asset_name: string;
+  release_tag?: string | null;
+  prerelease?: boolean;
+}
+export type PackageSource = GitHubPackageSource | ({ kind: 'store' } & StoreSource);
 export interface UnavailableApplet {
   applet_id: string;
   error: string;
@@ -98,6 +97,7 @@ export interface AppletRun {
 }
 export interface AppletInstallation {
   store_source: StoreSource | null;
+  github_source?: GitHubPackageSource;
   installed_version: string;
   installed_sha256: string;
   restart_required: boolean;

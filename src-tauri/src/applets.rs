@@ -101,6 +101,8 @@ pub struct AppletInstallation {
   installed_version: String,
   installed_sha256: String,
   store_source: Option<StoreSource>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  github_source: Option<PackageSource>,
   restart_required: bool,
 }
 
@@ -431,13 +433,16 @@ impl Host {
     // A package read can take time; don't return details to a stale view.
     self.require_view(session_id, view_id)?;
     let restart_required = self.needs_applet_restart(&installed);
+    let (store_source, github_source) = match installed.source {
+      Some(PackageSource::Store(source)) => (Some(source), None),
+      source @ Some(PackageSource::Github(_)) => (None, source),
+      None => (None, None),
+    };
     Ok(AppletInstallation {
       installed_version: installed.manifest.version,
       installed_sha256: installed.sha256,
-      store_source: match installed.source {
-        Some(PackageSource::Store(source)) => Some(source),
-        _ => None,
-      },
+      store_source,
+      github_source,
       restart_required,
     })
   }
@@ -820,7 +825,9 @@ pub async fn launch(app: AppHandle, applet_id: &str, restart: bool) -> Result<At
 mod tests {
   use super::*;
   use apell_core::{
-    bundles::{digest, pack_directory, StoreChannel, StoreSwitchSnapshot, API_VERSION},
+    bundles::{
+      digest, pack_directory, GitHubSource, StoreChannel, StoreSwitchSnapshot, API_VERSION,
+    },
     llm::{LlmConfig, LlmRequest, LlmStatus},
   };
   use std::{fs, net::Ipv4Addr, time::Duration};
@@ -1750,6 +1757,10 @@ mod tests {
     let initial = host.view_installation(RUN, &attachment.view_id).unwrap();
     assert_eq!(initial.installed_version, "1.0.0");
     assert!(initial.store_source.is_none());
+    assert!(serde_json::to_value(&initial)
+      .unwrap()
+      .get("github_source")
+      .is_none());
     assert!(!initial.restart_required);
     let installed = host.bundles.installed(APPLET).unwrap();
     assert_eq!(initial.installed_sha256, installed.sha256);
@@ -1783,6 +1794,10 @@ mod tests {
     let installation = host.view_installation(RUN, &attachment.view_id).unwrap();
     assert_eq!(installation.installed_version, "1.0.0");
     assert_eq!(installation.installed_sha256, updated.sha256);
+    assert!(serde_json::to_value(&installation)
+      .unwrap()
+      .get("github_source")
+      .is_none());
     let source = installation.store_source.unwrap();
     assert_eq!(source.store_url, "https://store.example");
     assert_eq!(source.channel, StoreChannel::Stable);
@@ -1792,5 +1807,38 @@ mod tests {
       .is_err());
     host.attach_view(RUN, &attachment.view_id).unwrap();
     assert!(host.view_installation(RUN, &attachment.view_id).is_err());
+  }
+
+  #[test]
+  fn about_exposes_the_exact_tagged_github_installation_source() {
+    let directory = tempfile::tempdir().unwrap();
+    let host = Host::new(directory.path().to_owned()).unwrap();
+    let source = PackageSource::Github(GitHubSource {
+      repository_id: 10,
+      repository: "example/project".into(),
+      asset_name: "sample.apel".into(),
+      release_tag: Some("nightly".into()),
+      prerelease: true,
+    });
+    let original = package_with_permissions(APPLET, "1.0.0-nightly.1", &[]);
+    host
+      .bundles
+      .install_with_source(&original, None, Some(source.clone()))
+      .unwrap();
+    seed_run(&host, RUN, APPLET);
+    let attachment = host.attach_run(RUN).unwrap();
+    let next = package_with_permissions(APPLET, "1.0.0-nightly.2", &[]);
+    let installed = host
+      .bundles
+      .update_from_source(APPLET, &next, None, source.clone())
+      .unwrap();
+    let installation = host.view_installation(RUN, &attachment.view_id).unwrap();
+    assert_eq!(
+      json!(installation),
+      json!({
+        "installed_version":"1.0.0-nightly.2","installed_sha256":installed.sha256,
+        "store_source":null,"github_source":source,"restart_required":true,
+      })
+    );
   }
 }

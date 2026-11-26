@@ -18,6 +18,7 @@ import type {
   ConfigSyncReviewResult,
   ConfigSyncStatus,
   GitHubRelease,
+  GitHubPackageSource,
   CreateConnectionDraft,
   DraftCredential,
   InstallProgress,
@@ -168,8 +169,11 @@ export const installBundle = (
 ) => shellCall<AppletInstallResult>('applets.install', params);
 export const githubRelease = (repository: string) =>
   shellCall<GitHubRelease>('applets.github_release', { repository });
-export const updateApplet = (applet_id: string) =>
-  shellCall<AppletInstallResult>('applets.update', { applet_id });
+export const updateApplet = (applet_id: string, sha256: string, source: GitHubPackageSource) =>
+  shellCall<AppletInstallResult>('applets.update', {
+    applet_id,
+    expected: { sha256, source, removed: false },
+  });
 export const removeApplet = (applet_id: string) => shellCall<void>('applets.remove', { applet_id });
 export const restoreAppletPackage = (
   applet_id: string,
