@@ -6,6 +6,7 @@ import {
   message,
   onAccountChanged,
   onLlmSettingsChanged,
+  saved_connection_changed,
 } from '../lib/tauri';
 import { connectionReadiness } from '../lib/modelChoice';
 import type { LlmConnection, LlmSettings } from '../lib/types';
@@ -38,6 +39,7 @@ export function Settings() {
 
   useBackAction(10, section !== null, () => {
     if (busy || syncing) return;
+    setStatus('');
     if (section === 'connections' && connections_from_account.current) {
       connections_from_account.current = false;
       setSection('account');
@@ -57,22 +59,26 @@ export function Settings() {
     if (editor) {
       window.scrollTo(0, 0);
       document.getElementById('settings-connection-editor')?.focus({ preventScroll: true });
-    } else if (editor_return.current) {
-      const { id, scroll } = editor_return.current;
-      editor_return.current = undefined;
-      window.scrollTo(0, scroll);
-      (document.getElementById(id) ?? document.getElementById(`settings-${section}`))?.focus({
-        preventScroll: true,
-      });
     }
-  }, [editor, section]);
+  }, [editor]);
+  useLayoutEffect(() => {
+    if (editor || loading || reload_requested || !editor_return.current) return;
+    const { id, scroll } = editor_return.current;
+    editor_return.current = undefined;
+    const row = document.getElementById(id);
+    if (row instanceof HTMLButtonElement && !row.disabled) {
+      window.scrollTo(0, scroll);
+      row.focus({ preventScroll: true });
+    } else {
+      document.getElementById(`settings-${section}`)?.focus();
+    }
+  }, [editor, loading, reload_requested, section]);
 
   const load = async () => {
     const operation = scope.current.start();
     if (!operation) return;
     setLoading(true);
     setLoadError('');
-    setStatus('');
     try {
       const result = await getSettings();
       if (operation.isCurrent()) setSettings(result);
@@ -111,8 +117,7 @@ export function Settings() {
   }, [reload_requested, editor, loading, busy]);
 
   const settings_mutation_pending = busy || syncing;
-  const editing_disabled = loading || settings_mutation_pending;
-  const connection_error = status || load_error;
+  const editing_disabled = loading || reload_requested || settings_mutation_pending || !!load_error;
 
   const editConnection = (connection: LlmConnection | undefined, trigger_id: string) => {
     editor_return.current = { id: trigger_id, scroll: window.scrollY };
@@ -128,19 +133,26 @@ export function Settings() {
           pending_preferred_connection_id: null,
         },
     );
-  const activate = async (connection_id: string) => {
+  const activate = async (connection: LlmConnection) => {
     const operation = scope.current.start();
     if (!operation) return;
     setBusy(true);
     setStatus('');
     try {
-      await activateConnection(connection_id);
+      await activateConnection(connection);
       if (operation.isCurrent()) {
-        setActive(connection_id);
+        setActive(connection.connection_id);
         document.getElementById('settings-default-model')?.focus({ preventScroll: true });
       }
     } catch (error) {
-      if (operation.isCurrent()) setStatus(message(error));
+      if (operation.isCurrent()) {
+        const detail = message(error);
+        if (detail === saved_connection_changed) {
+          setStatus('This connection changed. Review the current list before choosing a default.');
+          setReloadRequested(true);
+          document.getElementById('settings-default-model')?.focus();
+        } else setStatus(detail);
+      }
     } finally {
       if (operation.isCurrent()) {
         operation.finish();
@@ -199,7 +211,7 @@ export function Settings() {
         );
         setEditor(undefined);
         setStatus('');
-        void load();
+        setReloadRequested(true);
       }}
     />
   );
@@ -250,13 +262,13 @@ export function Settings() {
           })}
         </div>
       )}
-      {connection_error && (
+      {load_error && (
         <p className="status connection-status error" role="alert">
-          {connection_error}
+          {load_error}
         </p>
       )}
-      {!loading && !settings && (
-        <button type="button" onClick={() => void load()}>
+      {!loading && (!settings || !!load_error) && (
+        <button type="button" disabled={settings_mutation_pending} onClick={() => void load()}>
           Try again
         </button>
       )}
@@ -293,8 +305,10 @@ export function Settings() {
             settings={settings}
             loading={loading}
             disabled={editing_disabled}
-            error={connection_error}
-            onActivate={(id) => void activate(id)}
+            error={status}
+            load_error={load_error}
+            retry_disabled={settings_mutation_pending}
+            onActivate={(connection) => void activate(connection)}
             onEdit={editConnection}
             onRetry={() => void load()}
           />

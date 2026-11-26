@@ -12,6 +12,8 @@ export function DefaultModelSettings({
   loading,
   disabled,
   error,
+  load_error,
+  retry_disabled,
   onActivate,
   onEdit,
   onRetry,
@@ -20,7 +22,9 @@ export function DefaultModelSettings({
   loading: boolean;
   disabled: boolean;
   error: string;
-  onActivate: (connection_id: string) => void;
+  load_error: string;
+  retry_disabled: boolean;
+  onActivate: (connection: LlmConnection) => void;
   onEdit: (connection: LlmConnection | undefined, trigger_id: string) => void;
   onRetry: () => void;
 }) {
@@ -41,6 +45,11 @@ export function DefaultModelSettings({
         Default model
       </h2>
       <p>Applets use this model unless they choose their own.</p>
+      {error && (
+        <p className="status connection-status error" role="alert">
+          {error}
+        </p>
+      )}
       {loading && !settings && (
         <p className="status" role="status">
           Loading connections…
@@ -87,9 +96,7 @@ export function DefaultModelSettings({
                       ? `${action} for ${connection.name}`
                       : `Set ${connection.name} as default`
                   }
-                  onClick={() =>
-                    action ? onEdit(connection, id) : onActivate(connection.connection_id)
-                  }
+                  onClick={() => (action ? onEdit(connection, id) : onActivate(connection))}
                 >
                   <span className="connection-detail">
                     {details}
@@ -111,13 +118,13 @@ export function DefaultModelSettings({
             <Icon name="add" /> Add connection
           </button>
         ))}
-      {error && (
+      {load_error && (
         <p className="status connection-status error" role="alert">
-          {error}
+          {load_error}
         </p>
       )}
-      {!loading && !settings && (
-        <button type="button" onClick={onRetry}>
+      {!loading && (!settings || !!load_error) && (
+        <button type="button" disabled={retry_disabled} onClick={onRetry}>
           Try again
         </button>
       )}

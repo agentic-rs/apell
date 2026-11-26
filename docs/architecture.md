@@ -342,6 +342,13 @@ Codex and Copilot sign-in use Tokn's device-flow helpers. The shell retains the 
 
 The shell creates a draft lazily before authentication, discovery, or Save. Draft destinations are immutable. Provider or endpoint edits discard the old draft and use a new one. Only an exact normalized destination match can inherit a saved credential. Back asks before discarding edited fields or a provider sign-in in progress. Closing setup discards the draft and cancels its authentication and discovery work. Drafts are bounded to four, expire after 30 minutes, and disappear on shell restart. If a draft expires while the editor is open, Apell keeps the form fields for an explicit retry. Temporary provider sign-in expires with the draft and can be started again. Successful saves consume the draft. Entered API keys apply to individual discovery requests without changing the draft's inherited credential, so clearing a replacement still preserves the saved key.
 
+Save, Test connection, Set as default, and Remove check the saved connection
+settings that the user reviewed. If a sync replaced those settings, the editor
+keeps unsaved fields visible until the user chooses to discard them and review
+the saved list. A stale choice from Default model refreshes the list and waits
+for a new selection. Tests use the connection and credential captured together
+when the host accepted the request.
+
 The shell-only draft operations are `llm.create_draft`, `llm.discover_draft_models`, and `llm.discard_draft`. `llm.settings` and successful saves return an `edit_revision` for each connection. Opening a draft for an existing connection requires its ID and reviewed revision. The revision describes stored connection metadata and its credential reference. Native code checks the reviewed settings when creating the draft and again on Save. If the settings changed, reopen the connection to review the current details. `llm.begin_login` takes a draft ID, `llm.poll_login` returns draft credential status without secrets, and `llm.save_connection` takes the draft ID, final name/model, and credential action.
 
 Credentials are isolated by host-generated connection identity, allowing multiple accounts at the same endpoint. Renaming a connection or changing its model preserves its identity. Endpoint or provider changes create a new identity and require explicit credential replacement or removal. API-key edits use `keep`, `replace`, or `remove`, and vault writes roll back if saving connection metadata fails. Settings remains accessible when credential reads fail. Deleting the active connection clears the shared default. Already-started generations retain their captured configuration and credential.

@@ -1013,6 +1013,14 @@ svg {
 .connection-status {
   margin-top: 20px;
 }
+.connection-review-needed {
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+}
+.connection-review-needed p {
+  margin: 0;
+}
 .delete-connection {
   margin-top: 28px;
   border-top: 1px solid var(--line);

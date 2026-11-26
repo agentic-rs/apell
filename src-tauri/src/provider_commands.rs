@@ -17,6 +17,8 @@ use tauri::{AppHandle, Manager};
 use tauri_plugin_opener::OpenerExt;
 
 const MAX_VAULT_BYTES: usize = 128 * 1024;
+const SOURCE_CHANGED: &str =
+  "This saved connection changed. Reopen it to review the current settings.";
 
 mod drafts;
 
@@ -286,9 +288,26 @@ async fn blocking<T: Send + 'static>(
     .map_err(|_| "The provider settings operation was interrupted.".to_owned())?
 }
 
+fn reviewed_connection<'a>(
+  settings: &'a Settings,
+  connection_id: &str,
+  expected_edit_revision: &str,
+) -> Result<&'a Connection, String> {
+  let connection = settings
+    .connection(connection_id)
+    .map_err(|_| SOURCE_CHANGED)?;
+  if connection.edit_revision()? != expected_edit_revision {
+    return Err(SOURCE_CHANGED.into());
+  }
+  Ok(connection)
+}
+
 pub enum ModelRoute<'a> {
   Active,
-  Saved(&'a str),
+  Reviewed {
+    connection_id: &'a str,
+    expected_edit_revision: &'a str,
+  },
   Selected(&'a LlmTarget),
 }
 
@@ -303,7 +322,10 @@ impl<'a> ModelRoute<'a> {
         .active()
         .cloned()
         .ok_or_else(|| "Activate a model connection in Apell Settings.".into()),
-      Self::Saved(id) => settings.connection(id).cloned(),
+      Self::Reviewed {
+        connection_id,
+        expected_edit_revision,
+      } => reviewed_connection(settings, connection_id, expected_edit_revision).cloned(),
       Self::Selected(target) => {
         let mut selected = settings.connection(&target.connection_id)?.clone();
         selected.model_id.clone_from(&target.model_id);
@@ -338,12 +360,21 @@ pub async fn snapshot(
 ) -> Result<ModelSnapshot, String> {
   enum Destination {
     Active,
-    Saved(String),
+    Reviewed {
+      connection_id: String,
+      expected_edit_revision: String,
+    },
     Selected(LlmTarget),
   }
   let destination = match route {
     ModelRoute::Active => Destination::Active,
-    ModelRoute::Saved(id) => Destination::Saved(id.to_owned()),
+    ModelRoute::Reviewed {
+      connection_id,
+      expected_edit_revision,
+    } => Destination::Reviewed {
+      connection_id: connection_id.to_owned(),
+      expected_edit_revision: expected_edit_revision.to_owned(),
+    },
     ModelRoute::Selected(target) => Destination::Selected(target.clone()),
   };
   let app = app.clone();
@@ -352,7 +383,13 @@ pub async fn snapshot(
     let _gate = host.credential_gate.lock().await;
     let route = match &destination {
       Destination::Active => ModelRoute::Active,
-      Destination::Saved(id) => ModelRoute::Saved(id),
+      Destination::Reviewed {
+        connection_id,
+        expected_edit_revision,
+      } => ModelRoute::Reviewed {
+        connection_id,
+        expected_edit_revision,
+      },
       Destination::Selected(target) => ModelRoute::Selected(target),
     };
     let connection = route.resolve(&*host.settings.lock().await)?;
@@ -481,9 +518,10 @@ pub async fn dispatch(
     }
     "llm.activate_connection" => {
       let id = string(&params, "connection_id")?;
+      let expected_edit_revision = string(&params, "expected_edit_revision")?;
       let _gate = host.credential_gate.lock().await;
       let mut current = host.settings.lock().await;
-      let connection = current.connection(id)?.clone();
+      let connection = reviewed_connection(&current, id, expected_edit_revision)?.clone();
       let app_read = app.clone();
       blocking(move || validate_saved_route(&app_read, &connection)).await?;
       let mut next = current.clone();
@@ -497,9 +535,13 @@ pub async fn dispatch(
     }
     "llm.delete_connection" => {
       let id = string(&params, "connection_id")?;
+      let expected_edit_revision = string(&params, "expected_edit_revision")?;
       let _gate = host.credential_gate.lock().await;
       let mut current = host.settings.lock().await;
-      let connection = current.connection(id)?.clone();
+      let slot = reviewed_connection(&current, id, expected_edit_revision)?
+        .credential
+        .account
+        .clone();
       let mut next = current.clone();
       next
         .connections
@@ -507,14 +549,8 @@ pub async fn dispatch(
       if next.active_connection_id.as_deref() == Some(id) {
         next.active_connection_id = None;
       }
-      crate::key_sync::commit_local_credentials(
-        &app,
-        host,
-        &current,
-        &next,
-        vec![(connection.credential.account, None)],
-      )
-      .await?;
+      crate::key_sync::commit_local_credentials(&app, host, &current, &next, vec![(slot, None)])
+        .await?;
       *current = next;
       drafts::invalidate_source(&host.provider_jobs, id, None);
       crate::key_sync::kick(&app);
@@ -522,9 +558,12 @@ pub async fn dispatch(
       Ok(Value::Null)
     }
     "llm.test_connection" => {
-      let id = string(&params, "connection_id")?;
       let request_id = string(&params, "request_id")?.to_owned();
-      let ModelSnapshot { config, account } = snapshot(&app, host, ModelRoute::Saved(id)).await?;
+      let route = ModelRoute::Reviewed {
+        connection_id: string(&params, "connection_id")?,
+        expected_edit_revision: string(&params, "expected_edit_revision")?,
+      };
+      let ModelSnapshot { config, account } = snapshot(&app, host, route).await?;
       let request = LlmRequest {
         request_id,
         messages: vec![json!({"role":"user","content":"Reply with OK."})],
@@ -722,6 +761,45 @@ mod tests {
       .connections
       .retain(|entry| entry.connection_id != target.connection_id);
     assert!(ModelRoute::Selected(&target).resolve(&settings).is_err());
+  }
+
+  #[test]
+  fn reviewed_connection_actions_require_the_exact_saved_metadata() {
+    let mut settings = Settings::default();
+    let original = test_saved_connection("custom");
+    let id = &original.connection_id;
+    let revision = original.edit_revision().unwrap();
+    settings.replace(None, original.clone());
+    let route = ModelRoute::Reviewed {
+      connection_id: id,
+      expected_edit_revision: &revision,
+    };
+    let reviewed = route.resolve(&settings).unwrap();
+    assert_eq!(
+      &reviewed,
+      reviewed_connection(&settings, id, &revision).unwrap()
+    );
+
+    let mut updated = original.clone();
+    updated.model_id = "synced-model".into();
+    settings.replace(Some(id), updated.clone());
+    assert_eq!(route.resolve(&settings).unwrap_err(), SOURCE_CHANGED);
+    assert_eq!(
+      reviewed_connection(&settings, id, &revision).unwrap_err(),
+      SOURCE_CHANGED
+    );
+    assert_ne!(reviewed.config().model_id, updated.model_id);
+    let current_revision = updated.edit_revision().unwrap();
+    assert_eq!(
+      reviewed_connection(&settings, id, &current_revision).unwrap(),
+      &updated
+    );
+
+    settings.connections.clear();
+    assert_eq!(
+      reviewed_connection(&settings, id, &current_revision).unwrap_err(),
+      SOURCE_CHANGED
+    );
   }
 
   #[test]

@@ -1,6 +1,6 @@
 use super::{
-  blocking, credential_status, encode_account, AccountConfig, AppHandle, Connection, Host,
-  KeyAction, ProviderJobs, SaveConnection, Settings,
+  blocking, credential_status, encode_account, reviewed_connection, AccountConfig, AppHandle,
+  Connection, Host, KeyAction, ProviderJobs, SaveConnection, Settings, SOURCE_CHANGED,
 };
 use apell_core::providers;
 use serde::Deserialize;
@@ -16,8 +16,6 @@ const MAX_DRAFTS: usize = 4;
 const DRAFT_LIFETIME: Duration = Duration::from_secs(30 * 60);
 const EXPIRED: &str =
   "This connection draft expired or was discarded. Reopen the editor to continue.";
-const SOURCE_CHANGED: &str =
-  "This saved connection changed while you were editing. Reopen it before saving.";
 
 #[derive(Clone)]
 pub(super) struct Draft {
@@ -99,13 +97,7 @@ fn public(id: &str, status: &str) -> Value {
 
 fn prepare_draft(settings: &Settings, input: CreateDraft) -> Result<Draft, String> {
   let source = match (&input.connection_id, &input.expected_edit_revision) {
-    (Some(id), Some(expected)) => {
-      let source = settings.connection(id).map_err(|_| SOURCE_CHANGED)?;
-      if source.edit_revision()? != *expected {
-        return Err(SOURCE_CHANGED.into());
-      }
-      Some(source.clone())
-    }
+    (Some(id), Some(expected)) => Some(reviewed_connection(settings, id, expected)?.clone()),
     (None, None) => None,
     _ => return Err("Invalid connection draft.".into()),
   };
@@ -273,19 +265,16 @@ async fn account_for_discovery(
       } else if let Some(inherited) = draft.inherited() {
         // Reference the saved credential, including legacy slots. Reading and
         // refreshing it on demand prevents a draft from restoring stale tokens.
-        let super::ModelSnapshot { config, account } = super::snapshot(
+        let snapshot = super::snapshot(
           app,
           host,
-          super::ModelRoute::Saved(&inherited.connection_id),
+          super::ModelRoute::Reviewed {
+            connection_id: &inherited.connection_id,
+            expected_edit_revision: &inherited.edit_revision()?,
+          },
         )
         .await?;
-        if config.provider_id != draft.connection.provider_id
-          || config.connection_id != draft.connection.connection_id
-          || config.base_url.trim().trim_end_matches('/') != draft.connection.base_url
-        {
-          return Err("The saved connection changed. Reopen the editor.".into());
-        }
-        account
+        snapshot.account
       } else {
         Ok(Some(providers::static_account(
           &draft.connection.provider_id,

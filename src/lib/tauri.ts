@@ -326,14 +326,21 @@ export const discardConnectionDraft = (draft_id: string) =>
   shellCall<void>('llm.discard_draft', { draft_id });
 export const saveConnection = (params: SaveConnection) =>
   shellCall<LlmConnection>('llm.save_connection', params);
-export const activateConnection = (connection_id: string) =>
-  shellCall<void>('llm.activate_connection', { connection_id });
-export const deleteConnection = (connection_id: string) =>
-  shellCall<void>('llm.delete_connection', { connection_id });
+export const saved_connection_changed =
+  'This saved connection changed. Reopen it to review the current settings.';
+type ReviewedConnection = Pick<LlmConnection, 'connection_id' | 'edit_revision'>;
+const reviewedConnection = ({ connection_id, edit_revision }: ReviewedConnection) => ({
+  connection_id,
+  expected_edit_revision: edit_revision,
+});
+export const activateConnection = (connection: ReviewedConnection) =>
+  shellCall<void>('llm.activate_connection', reviewedConnection(connection));
+export const deleteConnection = (connection: ReviewedConnection) =>
+  shellCall<void>('llm.delete_connection', reviewedConnection(connection));
 export const discoverDraftModels = (draft_id: string, credential: DraftCredential) =>
   shellCall<LlmModels>('llm.discover_draft_models', { draft_id, ...credential });
-export const testConnection = (connection_id: string, request_id: string) =>
-  shellCall<LlmResult>('llm.test_connection', { connection_id, request_id });
+export const testConnection = (connection: ReviewedConnection, request_id: string) =>
+  shellCall<LlmResult>('llm.test_connection', { ...reviewedConnection(connection), request_id });
 export const cancelConnectionTest = (request_id: string) =>
   shellCall<void>('llm.cancel_test', { request_id });
 export const beginLogin = (draft_id: string) =>

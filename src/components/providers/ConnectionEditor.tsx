@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
   activateConnection,
   beginLogin,
@@ -11,6 +11,7 @@ import {
   message,
   openLogin,
   pollLogin,
+  saved_connection_changed,
   saveConnection,
   testConnection,
 } from '../../lib/tauri';
@@ -56,9 +57,6 @@ interface EditorProps {
 
 const expired_draft =
   'This connection draft expired or was discarded. Reopen the editor to continue.';
-const changed_source =
-  'This saved connection changed while you were editing. Reopen it before saving.';
-
 export function ConnectionEditor(props: EditorProps) {
   const [saved, setSaved] = useState(props.connection);
   const [draft, setDraft] = useState(() => connectionDraft(props.connection, props.providers));
@@ -68,7 +66,8 @@ export function ConnectionEditor(props: EditorProps) {
   const [native_draft, setNativeDraft] = useState<NativeConnectionDraft>();
   const [staged_login, setStagedLogin] = useState(false);
   const [sign_in_expired, setSignInExpired] = useState(false);
-  const [source_changed, setSourceChanged] = useState(false);
+  const [stale_review, setStaleReview] = useState<{ staged_sign_in: boolean }>();
+  const source_changed = stale_review !== undefined;
   const [busy, setBusy] = useState('');
   const back_disabled = ['save', 'activate', 'delete'].includes(busy);
   const [status, setStatus] = useState<{ text: string; failed: boolean; setup: boolean }>();
@@ -77,6 +76,7 @@ export function ConnectionEditor(props: EditorProps) {
   const scope = useRef(new OperationScope());
   const drafts = useRef(new DraftSession(createConnectionDraft, discardConnectionDraft));
   const login_operation = useRef<Operation | undefined>(undefined);
+  const stale_notice = useRef<HTMLParagraphElement>(null);
   const leave = () => {
     scope.current.cancel();
     void drafts.current.discard().catch(() => {});
@@ -88,6 +88,7 @@ export function ConnectionEditor(props: EditorProps) {
     else if (
       busy === 'login' ||
       sign_in_expired ||
+      stale_review?.staged_sign_in ||
       hasUnsavedInputs(draft, saved ?? original_draft.current, staged_login)
     )
       setConfirmDiscard(true);
@@ -125,6 +126,9 @@ export function ConnectionEditor(props: EditorProps) {
     },
     [],
   );
+  useLayoutEffect(() => {
+    if (source_changed) stale_notice.current?.focus();
+  }, [source_changed]);
 
   const announce = (text: string, failed = false, setup = false) =>
     setStatus(text ? { text, failed, setup } : undefined);
@@ -138,10 +142,9 @@ export function ConnectionEditor(props: EditorProps) {
   };
   const handleDraftFailure = (error: unknown, was_signed_in = staged_login) => {
     const detail = message(error);
-    if (detail === changed_source) {
+    if (detail === saved_connection_changed) {
       void discardDraft().catch(() => {});
-      setSourceChanged(true);
-      announce(detail, true, true);
+      setStaleReview({ staged_sign_in: was_signed_in });
       return true;
     }
     if (detail !== expired_draft) return false;
@@ -295,6 +298,17 @@ export function ConnectionEditor(props: EditorProps) {
             ? 'Applets use this connection by default.'
             : 'Choose a provider, connect your account, and select a model.'}
       </p>
+      {source_changed && (
+        <div className="notice connection-review-needed">
+          <p ref={stale_notice} tabIndex={-1} role="alert">
+            {saved_connection_changed}
+          </p>
+          {stale_review.staged_sign_in && <p>The temporary sign-in for this draft ended.</p>}
+          <button type="button" onClick={goBack}>
+            Review saved connections
+          </button>
+        </div>
+      )}
       <form
         onSubmit={(event) => {
           event.preventDefault();
@@ -537,7 +551,7 @@ export function ConnectionEditor(props: EditorProps) {
               disabled={!can_probe}
               onClick={() =>
                 void run('activate', async (operation) => {
-                  await activateConnection(saved.connection_id);
+                  await activateConnection(saved);
                   if (!operation.isCurrent()) return;
                   props.onActivated(saved.connection_id);
                   announce('Default model updated.');
@@ -556,7 +570,7 @@ export function ConnectionEditor(props: EditorProps) {
                 operation.setCancellation(() => {
                   void cancelConnectionTest(request_id).catch(() => {});
                 });
-                const result = await testConnection(saved.connection_id, request_id);
+                const result = await testConnection(saved, request_id);
                 if (!operation.isCurrent()) return;
                 announce(
                   result.status === 'completed'
@@ -595,7 +609,7 @@ export function ConnectionEditor(props: EditorProps) {
                   disabled={!!busy}
                   onClick={() =>
                     void run('delete', async (operation) => {
-                      await deleteConnection(saved.connection_id);
+                      await deleteConnection(saved);
                       if (operation.isCurrent()) props.onDeleted(saved.connection_id);
                     })
                   }
@@ -624,7 +638,7 @@ export function ConnectionEditor(props: EditorProps) {
         <p>Your changes to this connection setup will be lost.</p>
         <div className="button-row">
           <button type="button" onClick={() => setConfirmDiscard(false)}>
-            Keep editing
+            {source_changed ? 'Keep draft' : 'Keep editing'}
           </button>
           <button type="button" className="danger" onClick={leave}>
             Discard changes
