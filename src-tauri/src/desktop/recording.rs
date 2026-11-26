@@ -101,6 +101,20 @@ impl AVCaptureDevice {
   );
 }
 
+fn microphone_status() -> isize {
+  // SAFETY: This is the immutable AVFoundation audio media-type constant.
+  AVCaptureDevice::authorization_status(unsafe { AVMediaTypeAudio })
+}
+
+pub(crate) fn microphone_authorization() -> &'static str {
+  match microphone_status() {
+    0 => "not_determined",
+    1 | 2 => "blocked",
+    3 => "allowed",
+    _ => "unknown",
+  }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Phase {
   Recording,
@@ -339,9 +353,7 @@ fn authorize<R: Runtime>(app: &AppHandle<R>, owner: &str, token: Uuid, main: Mai
     finish(owner, token, Err(error));
     return;
   }
-  // SAFETY: This is the immutable AVFoundation audio media-type constant.
-  let media = unsafe { AVMediaTypeAudio };
-  match AVCaptureDevice::authorization_status(media) {
+  match microphone_status() {
     3 => start_capture(app, owner, token, main),
     0 => {
       let handle = app.clone();
@@ -367,7 +379,8 @@ fn authorize<R: Runtime>(app: &AppHandle<R>, owner: &str, token: Uuid, main: Mai
           }
         });
       });
-      AVCaptureDevice::request_access(media, &completion);
+      // SAFETY: This is the immutable AVFoundation audio media-type constant.
+      AVCaptureDevice::request_access(unsafe { AVMediaTypeAudio }, &completion);
     }
     _ => finish(owner, token, Err(DENIED.into())),
   }

@@ -117,6 +117,7 @@ pub fn run() {
     .on_window_event(|window, event| {
       if window.label() == "main" && matches!(event, tauri::WindowEvent::Focused(true)) {
         key_sync::kick(window.app_handle());
+        permissions::publish_device_change(window.app_handle());
       }
     })
     .invoke_handler(tauri::generate_handler![
@@ -128,6 +129,7 @@ pub fn run() {
     .run(|_app, _event| {
       if matches!(_event, tauri::RunEvent::Resumed) {
         key_sync::kick(_app);
+        permissions::publish_device_change(_app);
       }
       #[cfg(target_os = "macos")]
       desktop::on_event(_app, &_event);

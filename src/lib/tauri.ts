@@ -28,6 +28,7 @@ import type {
   ManagedPermission,
   NativeConnectionDraft,
   PermissionMode,
+  PermissionStatus,
   SaveConnection,
   SettingsTransferCapabilities,
   SettingsTransferExport,
@@ -116,6 +117,8 @@ export const currentApplet = () => shellCall<AppletSession | null>('applets.curr
 export const getAppletInstallation = (session_id: string, view_id: string) =>
   shellCall<AppletInstallation>('applets.installation', { session_id, view_id });
 export const listAppletPermissions = () => shellCall<AppletPermission[]>('permissions.list');
+export const onPermissionsChanged = (handler: () => void) =>
+  listen('apell-permissions-changed', handler);
 export const forgetPermission = (applet_id: string, permission: ManagedPermission) =>
   shellCall<void>('permissions.forget', { applet_id, permission });
 export const getPermissionMode = (
@@ -123,7 +126,7 @@ export const getPermissionMode = (
   view_id: string,
   permission: ManagedPermission,
 ) =>
-  shellCall<PermissionMode | 'unavailable'>('permissions.mode', {
+  shellCall<PermissionStatus>('permissions.mode', {
     session_id,
     view_id,
     permission,
@@ -133,7 +136,7 @@ export const setPermissionMode = (
   view_id: string,
   permission: ManagedPermission,
   mode: PermissionMode,
-) => shellCall<PermissionMode>('permissions.set_mode', { session_id, view_id, permission, mode });
+) => shellCall<PermissionStatus>('permissions.set_mode', { session_id, view_id, permission, mode });
 export const getSettings = () => shellCall<LlmSettings>('llm.settings');
 export const getAccountStatus = () => shellCall<AccountStatus>('account.status');
 export const signInToAccount = () => shellCall<AccountStatus>('account.sign_in');

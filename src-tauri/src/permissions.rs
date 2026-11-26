@@ -6,6 +6,7 @@ use apell_core::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{collections::HashSet, path::PathBuf};
+use tauri::{AppHandle, Emitter};
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -37,6 +38,56 @@ impl ManagedPermission {
     match self {
       Self::Microphone => crate::media::recording_available(),
       Self::Camera | Self::Location => tauri_plugin_apell_sensors::available(),
+    }
+  }
+
+  pub fn system_authorization(self, app: &AppHandle) -> SystemAuthorization {
+    if !self.available() {
+      return SystemAuthorization::Unknown;
+    }
+    match self {
+      Self::Microphone => {
+        #[cfg(target_os = "macos")]
+        {
+          SystemAuthorization::from_native(crate::desktop::microphone_authorization())
+        }
+        #[cfg(any(target_os = "ios", target_os = "android"))]
+        {
+          tauri_plugin_apell_audio::system_authorization(app)
+            .map(|status| SystemAuthorization::from_native(&status))
+            .unwrap_or_default()
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "android")))]
+        SystemAuthorization::Unknown
+      }
+      Self::Camera | Self::Location => {
+        tauri_plugin_apell_sensors::system_authorization(app, self.label())
+          .map(|status| SystemAuthorization::from_native(&status))
+          .unwrap_or_default()
+      }
+    }
+  }
+}
+
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SystemAuthorization {
+  Allowed,
+  Blocked,
+  NotDetermined,
+  NotGranted,
+  #[default]
+  Unknown,
+}
+
+impl SystemAuthorization {
+  fn from_native(status: &str) -> Self {
+    match status {
+      "allowed" => Self::Allowed,
+      "blocked" => Self::Blocked,
+      "not_determined" => Self::NotDetermined,
+      "not_granted" => Self::NotGranted,
+      _ => Self::Unknown,
     }
   }
 }
@@ -208,6 +259,7 @@ impl PermissionGrants {
         permission,
         access,
         available: permission.available(),
+        system_authorization: SystemAuthorization::Unknown,
       });
     }
     Ok(grants)
@@ -265,6 +317,7 @@ struct GrantSummary {
   permission: ManagedPermission,
   access: PermissionAccess,
   available: bool,
+  system_authorization: SystemAuthorization,
 }
 
 #[derive(Serialize)]
@@ -283,7 +336,34 @@ struct AppletPermissionSummary {
   restart_required: bool,
 }
 
-pub async fn list(host: &Host) -> Result<Value, String> {
+fn attach_system_authorizations(
+  entries: &mut [AppletPermissionSummary],
+  mut read: impl FnMut(ManagedPermission) -> SystemAuthorization,
+) {
+  for permission in ManagedPermission::ALL {
+    let mut grants = entries
+      .iter_mut()
+      .filter(|entry| {
+        entry.manifest.as_ref().is_some_and(|manifest| {
+          manifest
+            .permissions
+            .iter()
+            .any(|group| group == permission.manifest_group())
+        })
+      })
+      .flat_map(|entry| &mut entry.grants)
+      .filter(|grant| grant.permission == permission && grant.available)
+      .peekable();
+    if grants.peek().is_some() {
+      let authorization = read(permission);
+      for grant in grants {
+        grant.system_authorization = authorization;
+      }
+    }
+  }
+}
+
+pub async fn list(app: AppHandle, host: &Host) -> Result<Value, String> {
   let bundles = host.bundles.clone();
   let store = host.grants.clone();
   let report = crate::commands::blocking(move || bundles.list_report()).await?;
@@ -293,7 +373,18 @@ pub async fn list(host: &Host) -> Result<Value, String> {
     .filter(|applet| host.needs_applet_restart(applet))
     .map(|applet| applet.manifest.applet_id.clone())
     .collect();
-  crate::commands::blocking(move || Ok(json!(store.summaries(report, &pending_restarts)?))).await
+  crate::commands::blocking(move || {
+    let mut entries = store.summaries(report, &pending_restarts)?;
+    attach_system_authorizations(&mut entries, |permission| {
+      permission.system_authorization(&app)
+    });
+    Ok(json!(entries))
+  })
+  .await
+}
+
+pub fn publish_device_change(app: &AppHandle) {
+  let _ = app.emit_to("main", "apell-permissions-changed", ());
 }
 
 #[cfg(test)]
@@ -352,6 +443,55 @@ mod tests {
         "grants":[],
         "restart_required":false,
       }])
+    );
+  }
+
+  #[test]
+  fn shared_system_status_preserves_each_applets_approval() {
+    let entry = |id: &str, access: PermissionAccess, declared: bool| AppletPermissionSummary {
+      applet_id: id.into(),
+      name: id.into(),
+      manifest: Some(PermissionManifest {
+        permissions: if declared {
+          vec!["audio".into()]
+        } else {
+          vec![]
+        },
+        network: true,
+        has_lib: false,
+      }),
+      grants: vec![GrantSummary {
+        permission: ManagedPermission::Microphone,
+        access,
+        available: true,
+        system_authorization: SystemAuthorization::Unknown,
+      }],
+      restart_required: false,
+    };
+    let mut summaries = [
+      entry("recorder", PermissionAccess::Remembered, true),
+      entry("memo", PermissionAccess::Ask, true),
+      entry("previous", PermissionAccess::Undeclared, false),
+    ];
+    let mut calls = Vec::new();
+    attach_system_authorizations(&mut summaries, |permission| {
+      calls.push(permission);
+      SystemAuthorization::Blocked
+    });
+    assert_eq!(calls, [ManagedPermission::Microphone]);
+    assert!(summaries[0].grants[0].access == PermissionAccess::Remembered);
+    assert!(summaries[1].grants[0].access == PermissionAccess::Ask);
+    assert_eq!(
+      summaries[0].grants[0].system_authorization,
+      SystemAuthorization::Blocked
+    );
+    assert_eq!(
+      summaries[1].grants[0].system_authorization,
+      SystemAuthorization::Blocked
+    );
+    assert_eq!(
+      summaries[2].grants[0].system_authorization,
+      SystemAuthorization::Unknown
     );
   }
 
@@ -552,23 +692,23 @@ mod tests {
         .summary(applet_id, Some(&updated), &["location".into()])
         .unwrap()),
       json!([
-        {"permission":"camera","access":"previous_package","available":sensors_available},
-        {"permission":"location","access":"ask","available":sensors_available},
+        {"permission":"camera","access":"previous_package","available":sensors_available,"system_authorization":"unknown"},
+        {"permission":"location","access":"ask","available":sensors_available,"system_authorization":"unknown"},
       ]),
     );
     assert_eq!(
       json!(grants
         .summary(applet_id, Some(&source), &["camera".into()])
         .unwrap()),
-      json!([{"permission":"camera","access":"remembered","available":sensors_available}]),
+      json!([{"permission":"camera","access":"remembered","available":sensors_available,"system_authorization":"unknown"}]),
     );
     assert_eq!(
       json!(grants.summary(applet_id, Some(&source), &[]).unwrap()),
-      json!([{"permission":"camera","access":"undeclared","available":sensors_available}]),
+      json!([{"permission":"camera","access":"undeclared","available":sensors_available,"system_authorization":"unknown"}]),
     );
     assert_eq!(
       json!(grants.summary(applet_id, None, &[]).unwrap()),
-      json!([{"permission":"camera","access":"unverified_package","available":sensors_available}]),
+      json!([{"permission":"camera","access":"unverified_package","available":sensors_available,"system_authorization":"unknown"}]),
     );
     grants.remember(Location, applet_id, &updated).unwrap();
     grants.forget(Camera, applet_id).unwrap();

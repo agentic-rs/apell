@@ -50,6 +50,10 @@ import java.util.concurrent.TimeUnit
   var operation_id: String = ""
 }
 
+@InvokeArg class SensorAuthorizationArgs {
+  var permission: String = ""
+}
+
 @InvokeArg class TransferQrArgs {
   var payload: String = ""
 }
@@ -95,6 +99,20 @@ class SensorsPlugin(private val activity: Activity) : Plugin(activity) {
       if (activity.moveTaskToBack(false)) invoke.resolve()
       else invoke.reject("Could not leave the Apell task.")
     }
+  }
+
+  @Command fun systemAuthorization(invoke: Invoke) {
+    val args = invoke.parseArgs(SensorAuthorizationArgs::class.java)
+    val status = when (args.permission) {
+      // Capture is delegated to a system camera activity, which owns its access.
+      "camera" -> "unknown"
+      "location" -> if (hasLocationPermission()) "allowed" else "not_granted"
+      else -> {
+        invoke.reject("Invalid sensor permission.")
+        return
+      }
+    }
+    invoke.resolve(JSObject().put("status", status))
   }
 
   @Command fun run(invoke: Invoke) {
@@ -323,7 +341,7 @@ class SensorsPlugin(private val activity: Activity) : Plugin(activity) {
   }
 
   private fun requestLocationPermission(operation: Operation) {
-    if (hasPermission(Manifest.permission.ACCESS_COARSE_LOCATION) || hasPermission(Manifest.permission.ACCESS_FINE_LOCATION)) {
+    if (hasLocationPermission()) {
       readLocation(operation)
       return
     }
@@ -389,6 +407,9 @@ class SensorsPlugin(private val activity: Activity) : Plugin(activity) {
 
   private fun hasPermission(permission: String): Boolean =
     ContextCompat.checkSelfPermission(activity, permission) == PackageManager.PERMISSION_GRANTED
+
+  private fun hasLocationPermission(): Boolean =
+    hasPermission(Manifest.permission.ACCESS_COARSE_LOCATION) || hasPermission(Manifest.permission.ACCESS_FINE_LOCATION)
 
   private fun isVisible(): Boolean = !activity.isFinishing && !activity.isDestroyed &&
     host?.lifecycle?.currentState?.isAtLeast(Lifecycle.State.STARTED) == true

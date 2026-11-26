@@ -458,6 +458,8 @@ Use `photos.pick({ output_format: 'jpeg' })` to normalize the selected photo to 
 
 Camera and Location default to **Ask every time**. The Apell prompt names the applet and offers **Allow once**, **Always allow**, and **Cancel**. Saved grants apply separately to each applet and verified package source. Change them in **About this applet** or reset them in Settings. OS permission and location accuracy still apply. Photo Library shows **Pick each time** because choosing an image authorizes only that selection.
 
+**About this applet** and **Settings → Applet permissions** display system authorization separately from Apell’s saved approval when the platform reports it. The display refreshes when Apell regains focus. Android’s camera opens a system capture app, so its authorization is handled when the camera opens.
+
 Cancelling the Apell prompt, camera, or photo picker returns `null`. Device denial, an unavailable service, or a failed location fix rejects the request. Calls wait for native UI to finish and the location fix has a deadline after permission is granted. Only one sensor request can run at a time.
 
 ## Audio and offline speech

@@ -1,3 +1,8 @@
 .applet-about .applet-about-device-note {
   margin-bottom: 8px;
 }
+
+.applet-access-system {
+  display: block;
+  margin-top: 4px;
+}

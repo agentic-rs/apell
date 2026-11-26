@@ -185,7 +185,7 @@ pub async fn shell_command(
       host.detach_view(string(&params, "session_id")?, string(&params, "view_id")?)?;
       Ok(Value::Null)
     }
-    "permissions.list" => crate::permissions::list(&host).await,
+    "permissions.list" => crate::permissions::list(app, &host).await,
     "settings_transfer.export" | "settings_transfer.preview" | "settings_transfer.apply" => {
       crate::settings_transfer::dispatch(app, &host, &method, params).await
     }
@@ -215,10 +215,16 @@ pub async fn shell_command(
           if update.is_some() {
             return Err("This permission is unavailable on this platform.".into());
           }
-          return Ok(json!("unavailable"));
+          return Ok(json!({
+            "mode": "unavailable",
+            "system_authorization": crate::permissions::SystemAuthorization::Unknown,
+          }));
         }
         let mode = host.view_permission(&session_id, &view_id, permission, update)?;
-        Ok(json!(mode))
+        Ok(json!({
+          "mode": mode,
+          "system_authorization": permission.system_authorization(&app),
+        }))
       })
       .await
     }

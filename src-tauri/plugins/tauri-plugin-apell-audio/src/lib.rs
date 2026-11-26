@@ -29,6 +29,17 @@ pub fn available() -> bool {
   cfg!(any(target_os = "ios", target_os = "android"))
 }
 
+/// Query the shell's microphone authorization without presenting a prompt.
+#[cfg(any(target_os = "ios", target_os = "android"))]
+pub fn system_authorization<R: Runtime>(app: &AppHandle<R>) -> Result<String, String> {
+  let result = call(app, "system_authorization", serde_json::json!({}))?;
+  result
+    .get("authorization")
+    .and_then(Value::as_str)
+    .map(str::to_owned)
+    .ok_or_else(|| "Could not read microphone authorization.".into())
+}
+
 /// Invoke from a blocking worker: the system permission prompt or picker may
 /// remain open until the user responds. No command is exposed to the webview.
 pub fn call<R: Runtime>(
@@ -47,6 +58,7 @@ pub fn call<R: Runtime>(
     "playback_pause" => "playbackPause",
     "seek" => "seek",
     "status" => "status",
+    "system_authorization" => "systemAuthorization",
     "reset" => "reset",
     _ => return Err("Unknown native audio operation.".into()),
   };

@@ -1,10 +1,18 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   appletPermissionRows,
+  device_access_note,
   managed_permission_labels,
   permission_mode_labels,
+  permission_unavailable,
+  systemPermissionLabel,
 } from '../lib/permissions';
-import { forgetPermission, listAppletPermissions, message } from '../lib/tauri';
+import {
+  forgetPermission,
+  listAppletPermissions,
+  message,
+  onPermissionsChanged,
+} from '../lib/tauri';
 import type { AppletPermission, ManagedPermission, PermissionGrant } from '../lib/types';
 import { OperationScope } from './providers/state';
 import './AppletPermissions.css';
@@ -29,13 +37,15 @@ function PermissionRow({
   unavailable_reason?: string;
   reset: () => void;
 }) {
-  const { permission, access, available } = grant;
+  const { permission, access, available, system_authorization } = grant;
   const label = managed_permission_labels[permission];
   const unavailable =
-    !available && access !== 'unverified_package'
-      ? 'Unavailable on this platform'
-      : unavailable_reason;
+    !available && access !== 'unverified_package' ? permission_unavailable : unavailable_reason;
   const can_reset = access !== 'ask';
+  const system_label =
+    !unavailable && (access === 'remembered' || access === 'ask')
+      ? systemPermissionLabel(system_authorization)
+      : undefined;
   return (
     <div className="applet-permission-row">
       <dt>{label}</dt>
@@ -45,6 +55,7 @@ function PermissionRow({
           {unavailable && can_reset && (
             <small>{access === 'remembered' ? 'Approval saved' : access_labels[access]}</small>
           )}
+          {system_label && <small>{system_label}</small>}
         </div>
         {can_reset && (
           <button
@@ -76,6 +87,10 @@ function AppletPermissionGroup({
   const rows = applet.manifest ? appletPermissionRows(applet.manifest) : [];
   const managed = rows.filter((row) => row.kind === 'managed');
   const fixed = rows.filter((row) => row.kind === 'fixed');
+  const pickers = rows.filter((row) => row.kind === 'picker');
+  const configurable = applet.grants.some(
+    (grant) => grant.available && (grant.access === 'ask' || grant.access === 'remembered'),
+  );
   return (
     <details className="applet-permission-group" open={open}>
       <summary>
@@ -84,9 +99,10 @@ function AppletPermissionGroup({
           <span className="applet-permission-restart">Restart required</span>
         )}
       </summary>
-      {applet.grants.length > 0 && (
+      {(applet.grants.length > 0 || pickers.length > 0) && (
         <div className="applet-permission-section">
-          <h3>Device approvals</h3>
+          <h3>Device access</h3>
+          {configurable && <p className="applet-permission-note">{device_access_note}</p>}
           <dl>
             {applet.grants.map((grant) => (
               <PermissionRow
@@ -100,6 +116,12 @@ function AppletPermissionGroup({
                 reset={() => reset(grant.permission)}
               />
             ))}
+            {pickers.map((row) => (
+              <div className="applet-permission-row" key={row.key}>
+                <dt>{row.label}</dt>
+                <dd className="applet-permission-state">{row.status}</dd>
+              </div>
+            ))}
           </dl>
         </div>
       )}
@@ -107,7 +129,7 @@ function AppletPermissionGroup({
         <div className="applet-permission-section">
           <h3>Package access</h3>
           {applet.restart_required && (
-            <p className="applet-permission-restart-note">
+            <p className="applet-permission-note">
               This list shows the installed package’s access. The applet keeps using its previous
               package until you restart it.
             </p>
@@ -153,8 +175,16 @@ export function AppletPermissions() {
   };
 
   useEffect(() => {
+    let open = true;
+    const unsubscribe = onPermissionsChanged(() => {
+      if (open) void load();
+    }).catch(() => undefined);
     void load();
-    return () => scope.current.cancel();
+    return () => {
+      open = false;
+      scope.current.cancel();
+      void unsubscribe.then((unlisten) => unlisten?.());
+    };
   }, []);
 
   return (

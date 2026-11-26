@@ -65,6 +65,17 @@ class AudioPlugin(private val activity: Activity): Plugin(activity) {
   private fun isVisible(): Boolean =
     (activity as? AppCompatActivity)?.lifecycle?.currentState?.isAtLeast(Lifecycle.State.STARTED) == true
 
+  @Command fun systemAuthorization(invoke: Invoke) {
+    activity.runOnUiThread {
+      val authorization = when (getPermissionState("microphone")) {
+        PermissionState.GRANTED -> "allowed"
+        null -> "unknown"
+        else -> "not_granted"
+      }
+      invoke.resolve(JSObject().put("authorization", authorization))
+    }
+  }
+
   @Command fun start(invoke: Invoke) {
     val args = invoke.parseArgs(StartArgs::class.java)
     activity.runOnUiThread {

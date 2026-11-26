@@ -4,6 +4,7 @@ pub mod photos;
 pub mod picker;
 mod recording;
 
+pub(crate) use recording::microphone_authorization;
 use tauri::{AppHandle, Manager, RunEvent, Runtime, WebviewWindow, WindowEvent};
 
 pub fn configure_window<R: Runtime>(window: &WebviewWindow<R>) {

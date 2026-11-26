@@ -1,4 +1,5 @@
 import AVFoundation
+import CoreLocation
 import Foundation
 import Tauri
 import UIKit
@@ -37,6 +38,10 @@ private struct TransferQrArgs: Decodable {
   let payload: String
 }
 
+private struct SensorAuthorizationArgs: Decodable {
+  let permission: SensorKind
+}
+
 private final class SensorOperation {
   let args: SensorArgs
   let invoke: Invoke
@@ -71,6 +76,36 @@ final class SensorsPlugin: Plugin {
 
   deinit {
     if let background = background { NotificationCenter.default.removeObserver(background) }
+  }
+
+  @objc func systemAuthorization(_ invoke: Invoke) {
+    guard let args = try? invoke.parseArgs(SensorAuthorizationArgs.self) else {
+      invoke.reject("Invalid sensor permission.")
+      return
+    }
+    DispatchQueue.main.async {
+      let status: String
+      switch args.permission {
+      case .camera:
+        switch AVCaptureDevice.authorizationStatus(for: .video) {
+        case .authorized: status = "allowed"
+        case .denied, .restricted: status = "blocked"
+        case .notDetermined: status = "not_determined"
+        @unknown default: status = "unknown"
+        }
+      case .location:
+        switch CLLocationManager().authorizationStatus {
+        case .authorizedWhenInUse, .authorizedAlways: status = "allowed"
+        case .denied, .restricted: status = "blocked"
+        case .notDetermined: status = "not_determined"
+        @unknown default: status = "unknown"
+        }
+      case .photos:
+        invoke.reject("Invalid sensor permission.")
+        return
+      }
+      invoke.resolve(["status": status])
+    }
   }
 
   @objc func run(_ invoke: Invoke) {

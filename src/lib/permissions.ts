@@ -1,4 +1,9 @@
-import type { AppletPermissionManifest, ManagedPermission, PermissionMode } from './types';
+import type {
+  AppletPermissionManifest,
+  ManagedPermission,
+  PermissionMode,
+  SystemAuthorization,
+} from './types';
 
 export const managed_permission_labels: Record<ManagedPermission, string> = {
   microphone: 'Microphone',
@@ -10,6 +15,19 @@ export const permission_mode_labels: Record<PermissionMode, string> = {
   ask: 'Ask every time',
   remembered: 'Always allow',
 };
+
+export const device_access_note = 'Apell’s approvals still depend on your system permissions.';
+export const permission_unavailable = 'Unavailable on this platform';
+
+const system_access_labels: Partial<Record<SystemAuthorization, string>> = {
+  blocked: 'Blocked by system',
+  not_granted: 'System access needed',
+  not_determined: 'System permission not requested',
+};
+
+export function systemPermissionLabel(authorization: SystemAuthorization) {
+  return system_access_labels[authorization];
+}
 
 const permission_labels: Record<string, string> = {
   sqlite: 'Saved app data',
@@ -25,7 +43,6 @@ const permission_labels: Record<string, string> = {
   runtime: 'Timers',
   audio: 'Audio files and playback',
   speech: 'Speech transcription',
-  photos: 'Photos',
 };
 
 const offline_status: Record<string, string> = {
@@ -52,14 +69,29 @@ type ManagedPermissionRow = {
   label: string;
   unavailable_reason?: string;
 };
+type PickerPermissionRow = {
+  kind: 'picker';
+  key: 'photos';
+  label: string;
+  status: string;
+};
 
 export function appletPermissionRows(manifest: AppletPermissionManifest) {
   const { network, permissions, has_lib } = manifest;
   const has_files = permissions.includes('fs');
-  const rows: (FixedPermissionRow | ManagedPermissionRow)[] = [
+  const rows: (FixedPermissionRow | ManagedPermissionRow | PickerPermissionRow)[] = [
     { kind: 'fixed', key: 'network', label: 'Network', status: network === false ? 'Off' : 'On' },
   ];
   for (const key of permissions) {
+    if (key === 'photos') {
+      rows.push({
+        kind: 'picker',
+        key,
+        label: 'Photos',
+        status: has_files ? 'Pick each time' : requires_files,
+      });
+      continue;
+    }
     if (key === 'camera' || key === 'location') {
       rows.push({
         kind: 'managed',
@@ -71,12 +103,7 @@ export function appletPermissionRows(manifest: AppletPermissionManifest) {
     }
     const unavailable = !has_lib && backend_permissions.has(key);
     const enabled = unavailable ? 'Requires applet backend' : 'On';
-    const status =
-      key === 'photos'
-        ? has_files
-          ? 'Pick each time'
-          : requires_files
-        : ((network === false ? offline_status[key] : undefined) ?? enabled);
+    const status = (network === false ? offline_status[key] : undefined) ?? enabled;
     rows.push({ kind: 'fixed', key, label: permission_labels[key] ?? key, status });
   }
   if (permissions.includes('audio')) {

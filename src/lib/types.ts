@@ -56,10 +56,17 @@ export interface AppletPermissionManifest extends Pick<Manifest, 'network' | 'pe
 }
 export type ManagedPermission = 'microphone' | 'camera' | 'location';
 export type PermissionMode = 'ask' | 'remembered';
+export type SystemAuthorization =
+  'allowed' | 'blocked' | 'not_determined' | 'not_granted' | 'unknown';
+export interface PermissionStatus {
+  mode: PermissionMode | 'unavailable';
+  system_authorization: SystemAuthorization;
+}
 export interface PermissionGrant {
   permission: ManagedPermission;
   access: PermissionMode | 'previous_package' | 'undeclared' | 'unverified_package';
   available: boolean;
+  system_authorization: SystemAuthorization;
 }
 export interface AppletSession {
   session_id: string;

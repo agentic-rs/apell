@@ -30,6 +30,29 @@ pub fn available() -> bool {
   cfg!(any(target_os = "ios", target_os = "android"))
 }
 
+/// Read system access without requesting a permission or starting a sensor.
+/// Invoke from a blocking worker because the mobile adapter runs on the main thread.
+pub fn system_authorization<R: Runtime>(
+  app: &AppHandle<R>,
+  permission: &str,
+) -> Result<String, String> {
+  if !matches!(permission, "camera" | "location") {
+    return Err("Choose camera or location access.".into());
+  }
+  if !available() {
+    return Ok("unknown".into());
+  }
+  let result = call(
+    app,
+    Command::SystemAuthorization,
+    serde_json::json!({"permission": permission}),
+  )?;
+  result["status"]
+    .as_str()
+    .map(str::to_owned)
+    .ok_or_else(|| "Could not check the system sensor permission.".into())
+}
+
 /// Leave the root shell task without finishing its activity or traversing the
 /// WebView's history. Only the trusted shell can request this native action.
 #[cfg(target_os = "android")]
@@ -45,6 +68,7 @@ pub fn background_task<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
 pub enum Command {
   Run,
   Cancel,
+  SystemAuthorization,
   ShowTransferQr,
   ScanTransferQr,
   SaveTransferFile,
@@ -61,6 +85,7 @@ pub fn call<R: Runtime>(
     let method = match _command {
       Command::Run => "run",
       Command::Cancel => "cancel",
+      Command::SystemAuthorization => "systemAuthorization",
       Command::ShowTransferQr => "showTransferQr",
       Command::ScanTransferQr => "scanTransferQr",
       Command::SaveTransferFile => "saveTransferFile",

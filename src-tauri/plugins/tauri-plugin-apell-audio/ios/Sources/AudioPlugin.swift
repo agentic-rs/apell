@@ -71,6 +71,19 @@ final class AudioPlugin: Plugin, AVAudioRecorderDelegate, AVAudioPlayerDelegate 
     player?.stop()
   }
 
+  @objc func systemAuthorization(_ invoke: Invoke) {
+    DispatchQueue.main.async {
+      let authorization: String
+      switch AVCaptureDevice.authorizationStatus(for: .audio) {
+      case .authorized: authorization = "allowed"
+      case .denied, .restricted: authorization = "blocked"
+      case .notDetermined: authorization = "not_determined"
+      @unknown default: authorization = "unknown"
+      }
+      invoke.resolve(["authorization": authorization])
+    }
+  }
+
   @objc func start(_ invoke: Invoke) throws {
     let args = try invoke.parseArgs(RecordingArgs.self)
     DispatchQueue.main.async {

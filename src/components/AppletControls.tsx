@@ -1,11 +1,19 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import {
   appletPermissionRows,
+  device_access_note,
   managed_permission_labels,
   permission_mode_labels,
+  permission_unavailable,
+  systemPermissionLabel,
 } from '../lib/permissions';
-import { getPermissionMode, message, setPermissionMode } from '../lib/tauri';
-import type { AppletSession, ManagedPermission, PermissionMode } from '../lib/types';
+import { getPermissionMode, message, onPermissionsChanged, setPermissionMode } from '../lib/tauri';
+import type {
+  AppletSession,
+  ManagedPermission,
+  PermissionMode,
+  PermissionStatus,
+} from '../lib/types';
 import { Icon } from './Icon';
 import { Sheet } from './Sheet';
 import { AppletChannel } from './AppletChannel';
@@ -16,14 +24,16 @@ function PermissionAccess({
   session,
   permission,
   read_only,
+  unavailable_reason,
 }: {
   session: AppletSession;
   permission: ManagedPermission;
   read_only: boolean;
+  unavailable_reason?: string;
 }) {
   const { session_id, view_id } = session;
   const label_id = useId();
-  const [mode, setMode] = useState<PermissionMode | 'unavailable'>();
+  const [status, setStatus] = useState<PermissionStatus>();
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState('');
   const scope = useRef(new OperationScope());
@@ -40,7 +50,7 @@ function PermissionAccess({
           next === undefined
             ? await getPermissionMode(session_id, view_id, permission)
             : await setPermissionMode(session_id, view_id, permission, next);
-        if (operation.isCurrent()) setMode(saved);
+        if (operation.isCurrent()) setStatus(saved);
       } catch (error) {
         if (operation.isCurrent()) setError(message(error));
       } finally {
@@ -54,17 +64,34 @@ function PermissionAccess({
   );
 
   useEffect(() => {
+    if (read_only) return;
     const operations = scope.current;
+    let open = true;
+    const unsubscribe = onPermissionsChanged(() => {
+      if (open) void update();
+    }).catch(() => undefined);
     void update();
-    return () => operations.cancel();
-  }, [update]);
+    return () => {
+      open = false;
+      operations.cancel();
+      void unsubscribe.then((unlisten) => unlisten?.());
+    };
+  }, [read_only, update]);
+
+  const mode = status?.mode;
+  const system_label =
+    status && mode !== 'unavailable' && !unavailable_reason
+      ? systemPermissionLabel(status.system_authorization)
+      : undefined;
 
   return (
     <div>
       <dt id={label_id}>{managed_permission_labels[permission]}</dt>
       <dd>
         {mode === 'unavailable' ? (
-          'Unavailable on this platform'
+          permission_unavailable
+        ) : unavailable_reason && (mode || read_only) ? (
+          unavailable_reason
         ) : read_only ? (
           mode ? (
             permission_mode_labels[mode]
@@ -74,6 +101,7 @@ function PermissionAccess({
         ) : mode ? (
           <select
             aria-labelledby={label_id}
+            aria-describedby={system_label ? `${label_id}-system` : undefined}
             value={mode}
             disabled={busy}
             onChange={(event) => {
@@ -90,6 +118,11 @@ function PermissionAccess({
           <button type="button" onClick={() => void update()}>
             Try again
           </button>
+        )}
+        {system_label && (
+          <small className="applet-access-system" id={`${label_id}-system`}>
+            {system_label}
+          </small>
         )}
       </dd>
       {!read_only && error && (
@@ -128,10 +161,8 @@ export function AppletControls({
   const device_access_id = useId();
   const package_access_id = useId();
   const rows = appletPermissionRows({ ...manifest, has_lib: session.has_lib });
-  const device_rows = rows.filter((row) => row.kind === 'managed' || row.key === 'photos');
-  const package_rows = rows
-    .filter((row) => row.kind === 'fixed')
-    .filter((row) => row.key !== 'photos');
+  const device_rows = rows.filter((row) => row.kind !== 'fixed');
+  const package_rows = rows.filter((row) => row.kind === 'fixed');
   return (
     <>
       <div className="applet-controls" role="group" aria-label="Applet controls">
@@ -195,23 +226,22 @@ export function AppletControls({
                 <section aria-labelledby={device_access_id}>
                   <h4 id={device_access_id}>Device access</h4>
                   {device_rows.some((row) => row.kind === 'managed' && !row.unavailable_reason) && (
-                    <p className="applet-about-device-note">
-                      Apell’s approvals still depend on your system permissions.
-                    </p>
+                    <p className="applet-about-device-note">{device_access_note}</p>
                   )}
                   <dl className="applet-access">
                     {device_rows.map((row) =>
-                      row.kind === 'managed' && !row.unavailable_reason ? (
+                      row.kind === 'managed' ? (
                         <PermissionAccess
                           key={`${session.view_id}-${row.key}`}
                           session={session}
                           permission={row.key}
                           read_only={read_only}
+                          unavailable_reason={row.unavailable_reason}
                         />
                       ) : (
                         <div key={row.key}>
                           <dt>{row.label}</dt>
-                          <dd>{row.kind === 'fixed' ? row.status : row.unavailable_reason}</dd>
+                          <dd>{row.status}</dd>
                         </div>
                       ),
                     )}
