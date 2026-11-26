@@ -248,6 +248,7 @@ export type AccountStatus = {
   | { state: 'signed_in'; account_session_id: string }
   | { state: 'unavailable' | 'signed_out' | 'signing_in'; account_session_id: null }
 );
+type UnverifiedDevice = { state: 'unverified'; local_issue?: 'invalid_vault' };
 export type KeySyncStatus =
   | { state: 'signed_out' | 'unavailable' }
   | {
@@ -263,10 +264,9 @@ export type KeySyncStatus =
       sync_error: string | null;
       keys_outside_account: { connection_id: string; name: string }[] | null;
     }
-  | { state: 'unverified'; action: 'setup' | 'pair' | 'upgrade' | 'legacy' }
-  | { state: 'unverified'; action: 'check'; error: string };
-export type LocalKeySyncStatus =
-  Exclude<KeySyncStatus, { state: 'unverified' }> | { state: 'unverified' };
+  | (UnverifiedDevice & { action: 'setup' | 'pair' | 'upgrade' | 'legacy' })
+  | (UnverifiedDevice & { action: 'check'; error: string });
+export type LocalKeySyncStatus = Exclude<KeySyncStatus, UnverifiedDevice> | UnverifiedDevice;
 export interface KeySyncConflict {
   connection_id: string;
   review_id: string;

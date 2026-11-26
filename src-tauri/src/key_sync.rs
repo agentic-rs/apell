@@ -16,6 +16,7 @@ use crypto::{Sealed, Secret};
 use reqwest::{Client, Method, Response, StatusCode};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::{future::Future, time::Duration};
 use tauri::{AppHandle, Manager};
 use tokio::sync::{watch, Mutex};
@@ -26,6 +27,7 @@ const CLOUD_KEYS: &str = "/api/v1/credential-sync/head";
 const MAX_REPLY: usize = 192 * 1024;
 const LOCKED: &str = "Verify this device to sync encrypted API keys.";
 const SIGNING_OUT: &str = "Encrypted API key sync stopped for sign-out.";
+const VAULT_CHANGED: &str = "The saved encryption vault changed. Start verification again.";
 
 pub(crate) struct KeySync {
   client: Client,
@@ -314,27 +316,96 @@ fn slot(account: &str) -> String {
   format!("apell-api-key-vault-v1-{account}")
 }
 
-async fn local_vault(app: &AppHandle, account: &str) -> Result<Option<LocalVault>, String> {
-  let app = app.clone();
-  let slot = slot(account);
-  blocking(move || {
-    let Some(value) = tauri_plugin_apell_credentials::read(&app, &slot)?.map(Zeroizing::new) else {
-      return Ok(None);
-    };
-    serde_json::from_str(&value)
-      .map(Some)
-      .map_err(|_| "The saved encryption vault is invalid.".into())
-  })
-  .await
+enum VaultRead {
+  Missing,
+  Valid(LocalVault, [u8; 32]),
+  Damaged([u8; 32]),
 }
 
-async fn save_vault(app: &AppHandle, account: &str, vault: &LocalVault) -> Result<(), String> {
+#[derive(Clone, PartialEq, Eq)]
+enum VaultEvidence {
+  Missing,
+  Valid([u8; 32]),
+  Damaged([u8; 32]),
+}
+
+impl VaultRead {
+  fn decode(value: &str) -> Self {
+    let digest = Sha256::digest(value.as_bytes()).into();
+    match serde_json::from_str::<LocalVault>(value) {
+      Ok(vault) if vault.key().is_ok() => Self::Valid(vault, digest),
+      _ => Self::Damaged(digest),
+    }
+  }
+
+  fn evidence(&self) -> VaultEvidence {
+    match self {
+      Self::Missing => VaultEvidence::Missing,
+      Self::Valid(_, digest) => VaultEvidence::Valid(*digest),
+      Self::Damaged(digest) => VaultEvidence::Damaged(*digest),
+    }
+  }
+
+  fn valid(&self) -> Option<&LocalVault> {
+    match self {
+      Self::Valid(vault, _) => Some(vault),
+      _ => None,
+    }
+  }
+
+  fn require_evidence(&self, expected: &VaultEvidence) -> Result<(), String> {
+    if &self.evidence() == expected {
+      Ok(())
+    } else {
+      Err(VAULT_CHANGED.into())
+    }
+  }
+
+  fn into_valid(self) -> Result<Option<LocalVault>, String> {
+    match self {
+      Self::Missing => Ok(None),
+      Self::Valid(vault, _) => Ok(Some(vault)),
+      Self::Damaged(_) => Err("The saved encryption vault is invalid.".into()),
+    }
+  }
+}
+
+fn read_vault_slot(app: &AppHandle, slot: &str) -> Result<VaultRead, String> {
+  let Some(value) = tauri_plugin_apell_credentials::read(app, slot)?.map(Zeroizing::new) else {
+    return Ok(VaultRead::Missing);
+  };
+  Ok(VaultRead::decode(&value))
+}
+
+async fn read_local_vault(app: &AppHandle, account: &str) -> Result<VaultRead, String> {
+  let app = app.clone();
+  let slot = slot(account);
+  blocking(move || read_vault_slot(&app, &slot)).await
+}
+
+async fn local_vault(app: &AppHandle, account: &str) -> Result<Option<LocalVault>, String> {
+  read_local_vault(app, account).await?.into_valid()
+}
+
+async fn save_vault(
+  app: &AppHandle,
+  account: &str,
+  vault: &LocalVault,
+  expected: Option<&VaultEvidence>,
+) -> Result<(), String> {
   let app = app.clone();
   let slot = slot(account);
   let data = serde_json::to_string(vault)
     .map(Zeroizing::new)
     .map_err(|_| "Could not encode the encryption vault.")?;
-  blocking(move || tauri_plugin_apell_credentials::write(&app, &slot, Some(&data))).await
+  let expected = expected.cloned();
+  blocking(move || {
+    if let Some(expected) = expected {
+      read_vault_slot(&app, &slot)?.require_evidence(&expected)?;
+    }
+    tauri_plugin_apell_credentials::write(&app, &slot, Some(&data))
+  })
+  .await
 }
 
 async fn unlocked(app: &AppHandle, host: &Host, relay: &Access) -> Result<LocalVault, String> {
@@ -488,7 +559,7 @@ pub(crate) async fn dispatch(
     };
     match method.as_str() {
       "key_sync.create" => managed::create(&app, &host, &relay, &stop).await,
-      "key_sync.pair_start" => managed::start_pair(&host, relay, &stop).await,
+      "key_sync.pair_start" => managed::start_pair(&app, &host, relay, &stop).await,
       "key_sync.pair_list" => managed::list_pairs(&app, &host, &relay, &stop).await,
       "key_sync.pair_finish" => {
         managed::finish_pair(&app, &host, &relay, parse(params)?, &stop).await
@@ -539,6 +610,30 @@ pub(crate) async fn sign_out(app: AppHandle, mut params: Value) -> Result<Value,
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn vault_slot_rejects_invalid_json_and_invalid_key_encodings() {
+    let vault = LocalVault::new(Uuid::new_v4(), &Zeroizing::new([42; 32]));
+    let mut value = serde_json::to_value(&vault).unwrap();
+    value["managed"] = json!(true);
+    let valid = Zeroizing::new(value.to_string());
+    assert!(VaultRead::decode(&valid)
+      .valid()
+      .is_some_and(managed::is_verified));
+
+    for key in ["too-short".to_owned(), "*".repeat(43)] {
+      value["key"] = json!(key);
+      assert!(matches!(
+        VaultRead::decode(&value.to_string()),
+        VaultRead::Damaged(_)
+      ));
+    }
+    assert!(matches!(
+      VaultRead::decode("{invalid"),
+      VaultRead::Damaged(_)
+    ));
+    assert!(VaultRead::Missing.into_valid().unwrap().is_none());
+  }
   use crate::settings::credential_ref;
   use crypto::{PairCode, MAX_API_KEY};
   use tokio::sync::oneshot;

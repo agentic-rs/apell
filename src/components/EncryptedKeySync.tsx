@@ -30,6 +30,7 @@ import { Sheet } from './Sheet';
 
 const poll_interval = 3_000;
 const expired_request_error = 'This request expired. Start again.';
+const changed_vault_error = 'The saved encryption vault changed. Start verification again.';
 const expired_approval_error =
   'This pairing code expired. Ask the other device to show a new code.';
 
@@ -42,7 +43,7 @@ type VerificationStartup = {
   error?: string;
 };
 type Flow = VerificationRequest | VerificationStartup | { kind: 'approve' } | { kind: 'review' };
-type Progress = 'waiting' | 'expired' | 'rejected' | { error: string };
+type Progress = 'waiting' | 'expired' | 'rejected' | 'vault_changed' | { error: string };
 
 const titles = {
   join: 'Pair this device',
@@ -140,6 +141,10 @@ function waitUntilComplete(
         onProgress('expired');
         return;
       }
+      if (text === changed_vault_error) {
+        onProgress('vault_changed');
+        return;
+      }
       onProgress({ error: text });
     }
     schedule();
@@ -193,17 +198,21 @@ function Verification({
 
   const progress = result?.request === request ? result.progress : 'waiting';
   const pairing = request.kind === 'join' ? request.pairing : undefined;
-  if (progress === 'expired' || progress === 'rejected') {
-    const feedback =
-      progress === 'rejected'
-        ? 'Account could not verify this request.'
-        : pairing
-          ? 'This pairing code expired.'
-          : 'Account verification expired.';
+  const restart_feedback =
+    progress === 'rejected'
+      ? 'Account could not verify this request.'
+      : progress === 'vault_changed'
+        ? changed_vault_error
+        : progress === 'expired'
+          ? pairing
+            ? 'This pairing code expired.'
+            : 'Account verification expired.'
+          : undefined;
+  if (restart_feedback) {
     return (
       <>
         <p role="alert" className="status error">
-          {feedback}
+          {restart_feedback}
         </p>
         <button type="button" className="primary" disabled={busy} onClick={onRestart}>
           {busy ? 'Starting…' : pairing ? 'Get a new code' : 'Restart Account verification'}
@@ -842,6 +851,9 @@ export function EncryptedKeySync({
           <p>
             <strong>Unverified</strong>
           </p>
+          {status.local_issue === 'invalid_vault' && (
+            <p>This device’s encryption vault is damaged. Apell keeps your local provider keys.</p>
+          )}
           {checking && !check_error && <p role="status">Checking verification options…</p>}
           {verification_action === 'setup' && (
             <>

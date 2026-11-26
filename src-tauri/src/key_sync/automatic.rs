@@ -291,6 +291,22 @@ pub(super) async fn require_device_sync(root: &Path) -> Result<(), String> {
   blocking(move || Device::load(&root).map(|_| ())).await
 }
 
+fn preserve_ledger(root: &Path) -> Result<(), String> {
+  // A damaged vault points to an existing or interrupted verification. A
+  // missing ledger is not permission to enroll this device's keys again.
+  if std::fs::symlink_metadata(root.join(PAUSE_FILE)).is_ok()
+    || Device::load(root).is_ok_and(|device| device.initialized)
+  {
+    return Ok(());
+  }
+  persist_pause(root)
+}
+
+pub(super) async fn preserve_ledger_for_vault_repair(root: &Path) -> Result<(), String> {
+  let root = root.to_owned();
+  blocking(move || preserve_ledger(&root)).await
+}
+
 pub(super) async fn keys_outside_account(
   app: &AppHandle,
   host: &Host,
@@ -1160,6 +1176,57 @@ mod tests {
     assert!(!device.permits("old", &owner));
     assert!(device.connections["new"].belongs_to(&owner));
     assert_eq!(Settings::load(root).unwrap().connections, next.connections);
+  }
+
+  #[test]
+  fn vault_repair_pauses_sync_without_enrolling_a_missing_or_unusable_ledger() {
+    let uninitialized = serde_json::to_vec(&Device::default()).unwrap();
+    for ledger in [None, Some(uninitialized.as_slice()), Some(b"{damaged")] {
+      let directory = tempfile::tempdir().unwrap();
+      let root = directory.path();
+      let state = root.join(STATE_FILE);
+      if let Some(contents) = ledger {
+        std::fs::write(&state, contents).unwrap();
+      }
+      preserve_ledger(root).unwrap();
+      assert!(root.join(PAUSE_FILE).is_file());
+      assert!(Device::load(root).is_err());
+      assert_eq!(std::fs::read(state).ok().as_deref(), ledger);
+    }
+  }
+
+  #[test]
+  fn vault_repair_keeps_an_initialized_ledger_and_existing_pause_marker_intact() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let owner = Owner {
+      account: "fixture-account".into(),
+      vault_id: Uuid::new_v4(),
+    };
+    let mut device = Device {
+      initialized: true,
+      ..Device::default()
+    };
+    device.record(
+      "tracked".into(),
+      &owner,
+      Some("previous-fingerprint".into()),
+    );
+    device
+      .connections
+      .insert("removed".into(), Tracked::default());
+    device.save(root).unwrap();
+    let ledger = std::fs::read(root.join(STATE_FILE)).unwrap();
+    let marker = root.join(PAUSE_FILE);
+
+    preserve_ledger(root).unwrap();
+    assert!(!marker.exists());
+    assert_eq!(std::fs::read(root.join(STATE_FILE)).unwrap(), ledger);
+
+    std::fs::write(&marker, b"already paused").unwrap();
+    preserve_ledger(root).unwrap();
+    assert_eq!(std::fs::read(marker).unwrap(), b"already paused");
+    assert_eq!(std::fs::read(root.join(STATE_FILE)).unwrap(), ledger);
   }
 
   #[test]

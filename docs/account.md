@@ -248,6 +248,11 @@ request fails.
 If your pairing code expires, choose **Get a new code**. If browser verification
 expires or is incomplete, restart it from Apell.
 
+If the saved vault is damaged, Apell shows **Unverified** and keeps local
+provider keys. Pair or recover access once Account confirms an existing managed
+vault. Verification keeps the device’s existing key sync history. If Apell
+cannot establish that history, it pauses automatic API-key sync on this device.
+
 Apell holds the vault key in native secure storage. It uses HKDF-SHA256 to
 derive separate keys for encrypting provider API keys, proving device approval,
 and tracking credential changes. New API-key backups use the derived encryption

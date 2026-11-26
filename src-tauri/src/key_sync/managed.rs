@@ -1,7 +1,7 @@
 use super::{
   acknowledged, automatic, automatic::SyncHealth, crypto, decode, decode_body, kick, local_vault,
-  response_error, save_vault, unlocked, Access, AppHandle, BackgroundStop, Host, LocalVault,
-  Method, Secret, LOCKED,
+  read_local_vault, response_error, save_vault, unlocked, Access, AppHandle, BackgroundStop, Host,
+  LocalVault, Method, Secret, VaultEvidence, VaultRead, LOCKED,
 };
 use apell_vault_keys::derive_pairing_proof_key;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
@@ -83,6 +83,7 @@ struct Joining {
   vault_id: Uuid,
   pair: Pair,
   secret: Secret,
+  vault_evidence: VaultEvidence,
   cancel: Cancellation,
 }
 
@@ -93,6 +94,7 @@ struct Recovery {
   challenge: Challenge,
   secret: Secret,
   enrolling: bool,
+  vault_evidence: VaultEvidence,
   cancel: Cancellation,
 }
 
@@ -203,8 +205,8 @@ pub(super) async fn status(
   // Keep the local vault, ledger, and credentials in the same read when
   // available. Provider refresh can hold this gate during network I/O.
   let credentials = host.credential_gate.try_lock().ok();
-  let local = stop.wait(local_vault(app, account)).await??;
-  if let Some(vault) = local.as_ref().filter(|vault| is_verified(vault)) {
+  let local = stop.wait(read_local_vault(app, account)).await??;
+  if let Some(vault) = local.valid().filter(|vault| is_verified(vault)) {
     let settings = credentials
       .as_ref()
       .and_then(|_| host.settings.try_lock().ok())
@@ -222,7 +224,7 @@ pub(super) async fn status(
   drop(credentials);
   if local_only {
     stop.session(app, host).await?;
-    return Ok(json!({ "state": "unverified" }));
+    return Ok(unverified_local_status(&local));
   }
   let discovery = async {
     let access = stop.access(app, host, true, None).await?;
@@ -233,24 +235,43 @@ pub(super) async fn status(
   }
   .await;
   stop.session(app, host).await?;
-  Ok(unverified_status(local.as_ref(), discovery))
+  Ok(unverified_status(&local, discovery))
 }
 
-fn unverified_status(local: Option<&LocalVault>, remote: Result<RemoteVault, String>) -> Value {
+fn unverified_local_status(local: &VaultRead) -> Value {
+  let mut status = json!({ "state": "unverified" });
+  if matches!(local, VaultRead::Damaged(_)) {
+    status["local_issue"] = json!("invalid_vault");
+  }
+  status
+}
+
+fn unverified_status(local: &VaultRead, remote: Result<RemoteVault, String>) -> Value {
+  let mut status = unverified_local_status(local);
   let remote = match remote {
     Ok(remote) => remote,
-    Err(error) => return json!({ "state": "unverified", "action": "check", "error": error }),
+    Err(error) => {
+      status["action"] = json!("check");
+      status["error"] = json!(error);
+      return status;
+    }
   };
-  let local_matches = local.is_some_and(|value| Some(value.vault_id) == remote.vault_id);
-  if remote.vault_id.is_none() || (remote.managed && local_matches) {
-    json!({ "state": "unverified", "action": "setup" })
-  } else if remote.managed {
-    json!({ "state": "unverified", "action": "pair" })
-  } else if local_matches {
-    json!({ "state": "unverified", "action": "upgrade" })
-  } else {
-    json!({ "state": "unverified", "action": "legacy" })
-  }
+  let local_matches = local
+    .valid()
+    .is_some_and(|value| Some(value.vault_id) == remote.vault_id);
+  let action = match (remote.vault_id, remote.managed) {
+    (None, _) if matches!(local, VaultRead::Damaged(_)) => {
+      status["error"] = json!("Account has no saved encryption vault for this device to recover.");
+      "check"
+    }
+    (None, _) => "setup",
+    (Some(_), true) if local_matches => "setup",
+    (Some(_), true) => "pair",
+    (Some(_), false) if local_matches => "upgrade",
+    (Some(_), false) => "legacy",
+  };
+  status["action"] = json!(action);
+  status
 }
 
 pub(super) async fn retry(
@@ -300,15 +321,26 @@ async fn activate(
   access: &Access,
   mut vault: LocalVault,
   settings: Settings,
+  expected: Option<&VaultEvidence>,
 ) -> Result<(), String> {
   host.account.require_current_access(access).await?;
   vault.managed = true;
-  vault.pending_managed = true;
   vault.setup = None;
-  save_vault(app, &access.account_key, &vault).await?;
+  if let Some(expected @ VaultEvidence::Damaged(_)) = expected {
+    let local = read_local_vault(app, &access.account_key).await?;
+    local.require_evidence(expected)?;
+    automatic::preserve_ledger_for_vault_repair(&host.root).await?;
+    host.account.require_current_access(access).await?;
+    vault.pending_managed = false;
+    save_vault(app, &access.account_key, &vault, Some(expected)).await?;
+    kick(app);
+    return Ok(());
+  }
+  vault.pending_managed = true;
+  save_vault(app, &access.account_key, &vault, expected).await?;
   automatic::activate(app, host, &access.account_key, vault.vault_id, settings).await?;
   vault.pending_managed = false;
-  save_vault(app, &access.account_key, &vault).await?;
+  save_vault(app, &access.account_key, &vault, None).await?;
   kick(app);
   Ok(())
 }
@@ -320,8 +352,11 @@ pub(super) async fn create(
   stop: &BackgroundStop,
 ) -> Result<Value, String> {
   let remote = stop.wait(remote(host, access)).await??;
-  let saved = stop.wait(local_vault(app, &access.account_key)).await??;
-  let mut vault = match (remote.vault_id, saved) {
+  let saved = stop
+    .wait(read_local_vault(app, &access.account_key))
+    .await??;
+  let expected = saved.evidence();
+  let mut vault = match (remote.vault_id, saved.into_valid()?) {
     (Some(id), Some(saved)) if remote.managed && saved.vault_id == id => saved,
     (Some(_), _) => return Err("Pair this device with the existing encryption vault.".into()),
     (None, Some(saved)) if saved.pending_managed || saved.setup.is_some() => saved,
@@ -333,7 +368,7 @@ pub(super) async fn create(
     .wait(host.account.require_current_access(access))
     .await??;
   stop.check()?;
-  save_vault(app, &access.account_key, &vault).await?;
+  save_vault(app, &access.account_key, &vault, Some(&expected)).await?;
   let response = stop
     .wait(host.key_sync.request(
       access,
@@ -347,7 +382,7 @@ pub(super) async fn create(
   acknowledged(response)?;
   let (_credential, settings) = prepare_activation(host, access, stop).await?;
   stop.check()?;
-  activate(app, host, access, vault, settings).await?;
+  activate(app, host, access, vault, settings, None).await?;
   Ok(Value::Null)
 }
 
@@ -381,12 +416,17 @@ fn encode_proof(
 }
 
 pub(super) async fn start_pair(
+  app: &AppHandle,
   host: &Host,
   access: Access,
   stop: &BackgroundStop,
 ) -> Result<Value, String> {
   let vault = stop.wait(remote(host, &access)).await??;
   let vault_id = vault.vault_id.filter(|_| vault.managed).ok_or(LOCKED)?;
+  let vault_evidence = stop
+    .wait(read_local_vault(app, &access.account_key))
+    .await??
+    .evidence();
   stop
     .wait(host.account.require_current_access(&access))
     .await??;
@@ -417,6 +457,7 @@ pub(super) async fn start_pair(
     vault_id,
     pair,
     secret,
+    vault_evidence,
     cancel: Cancellation::new(),
   })) {
     previous.cancel.signal();
@@ -578,7 +619,15 @@ pub(super) async fn finish_pair(
   {
     let mut pending = stop.wait(host.key_sync.managed.joining.lock()).await?;
     require_current_request(&pending, &request, stop)?;
-    activate(app, host, access, vault, settings).await?;
+    activate(
+      app,
+      host,
+      access,
+      vault,
+      settings,
+      Some(&request.vault_evidence),
+    )
+    .await?;
     *pending = None;
   }
   consume_pair(app, request, stop);
@@ -617,10 +666,12 @@ pub(super) async fn start_recovery(
   let remote = stop.wait(remote(host, access)).await??;
   let vault_id = remote.vault_id.ok_or(LOCKED)?;
   let enrolling = !remote.managed;
+  let local = stop
+    .wait(read_local_vault(app, &access.account_key))
+    .await??;
   if enrolling
-    && !stop
-      .wait(local_vault(app, &access.account_key))
-      .await??
+    && !local
+      .valid()
       .is_some_and(|vault| vault.vault_id == vault_id)
   {
     return Err("Open Apell on a device with this vault to finish its recovery setup.".into());
@@ -651,6 +702,7 @@ pub(super) async fn start_recovery(
     challenge,
     secret,
     enrolling,
+    vault_evidence: local.evidence(),
     cancel: Cancellation::new(),
   })) {
     previous.cancel.signal();
@@ -772,8 +824,10 @@ pub(super) async fn finish_recovery(
       request
         .cancel
         .wait(stop, async {
-          let vault = local_vault(app, &access.account_key)
-            .await?
+          let local = read_local_vault(app, &access.account_key).await?;
+          local.require_evidence(&request.vault_evidence)?;
+          let vault = local
+            .into_valid()?
             .filter(|vault| vault.vault_id == request.vault_id)
             .ok_or(LOCKED)?;
           let key = encode(&vault.key()?);
@@ -811,7 +865,15 @@ pub(super) async fn finish_recovery(
     .await?;
   let mut pending = stop.wait(host.key_sync.managed.recovery.lock()).await?;
   require_current_request(&pending, &request, stop)?;
-  activate(app, host, access, vault, settings).await?;
+  activate(
+    app,
+    host,
+    access,
+    vault,
+    settings,
+    Some(&request.vault_evidence),
+  )
+  .await?;
   *pending = None;
   Ok(json!(true))
 }
@@ -912,6 +974,7 @@ mod tests {
       },
       secret: crypto::random().unwrap(),
       enrolling: false,
+      vault_evidence: VaultEvidence::Missing,
       cancel: Cancellation::new(),
     }));
     assert!(recovery(&stored, session_id, request_id).is_ok());
@@ -983,21 +1046,97 @@ mod tests {
       vault_id: Some(vault.vault_id),
       managed: false,
     };
+    let saved = VaultRead::Valid(vault, [0; 32]);
     assert_eq!(
-      unverified_status(Some(&vault), Ok(remote)),
+      unverified_status(&saved, Ok(remote)),
       json!({ "state": "unverified", "action": "upgrade" })
     );
-    assert_eq!(unverified_status(None, Ok(remote))["action"], "legacy");
-    assert!(!is_verified(&vault));
+    assert_eq!(
+      unverified_status(&VaultRead::Missing, Ok(remote))["action"],
+      "legacy"
+    );
+    assert!(!is_verified(saved.valid().unwrap()));
   }
 
   #[test]
   fn unavailable_verification_discovery_never_guesses_a_setup_action() {
     let vault = LocalVault::new(Uuid::new_v4(), &crypto::random().unwrap());
-    for local in [None, Some(&vault)] {
+    for local in [VaultRead::Missing, VaultRead::Valid(vault, [0; 32])] {
       assert_eq!(
-        unverified_status(local, Err("Could not reach the relay.".into())),
+        unverified_status(&local, Err("Could not reach the relay.".into())),
         json!({"state":"unverified", "action":"check", "error":"Could not reach the relay."}),
+      );
+    }
+  }
+
+  #[test]
+  fn damaged_vault_requires_confirmed_recovery_options_and_never_offers_setup() {
+    let local = VaultRead::Damaged([0; 32]);
+    let vault_id = Some(Uuid::new_v4());
+    assert_eq!(
+      unverified_local_status(&local),
+      json!({"state":"unverified","local_issue":"invalid_vault"})
+    );
+    for (remote, action) in [
+      (
+        Ok(RemoteVault {
+          vault_id,
+          managed: true,
+        }),
+        "pair",
+      ),
+      (
+        Ok(RemoteVault {
+          vault_id,
+          managed: false,
+        }),
+        "legacy",
+      ),
+      (
+        Ok(RemoteVault {
+          vault_id: None,
+          managed: false,
+        }),
+        "check",
+      ),
+      (
+        Ok(RemoteVault {
+          vault_id: None,
+          managed: true,
+        }),
+        "check",
+      ),
+      (Err("Could not reach the relay.".into()), "check"),
+    ] {
+      let state = unverified_status(&local, remote);
+      assert_eq!(state["state"], "unverified");
+      assert_eq!(state["local_issue"], "invalid_vault");
+      assert_eq!(state["action"], action);
+      assert_eq!(state["error"].is_string(), action == "check");
+    }
+  }
+
+  #[test]
+  fn verification_evidence_changes_when_the_damaged_slot_is_replaced() {
+    let looked_up = VaultRead::decode("{damaged");
+    let expected = looked_up.evidence();
+    assert!(matches!(expected, VaultEvidence::Damaged(_)));
+    assert!(VaultRead::decode("{damaged")
+      .require_evidence(&expected)
+      .is_ok());
+
+    let repaired = VaultRead::Valid(
+      LocalVault::new(Uuid::new_v4(), &crypto::random().unwrap()),
+      [0; 32],
+    );
+    for changed in [
+      VaultRead::decode("{different"),
+      repaired,
+      VaultRead::Missing,
+    ] {
+      assert_eq!(
+        changed.require_evidence(&expected).unwrap_err(),
+        super::super::VAULT_CHANGED,
       );
     }
   }
