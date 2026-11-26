@@ -731,7 +731,7 @@ fn installed_source_path_updates_or_switches_only_within_an_active_applets_store
     expected_installed_sha256: Some(saved.sha256.clone()),
     switch_snapshot: None,
     channel_snapshot: None,
-    operation_id: String::new(),
+    operation_id: Uuid::new_v4(),
   };
 
   assert!(review_requested_install(&request, &report, original).is_err());

@@ -1,4 +1,5 @@
 mod browse_cache;
+mod download_pause;
 mod restore;
 mod state;
 #[cfg(test)]
@@ -20,8 +21,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Emitter, Manager};
+use uuid::Uuid;
 
 pub(crate) use browse_cache::BrowseCache;
+pub(crate) use download_pause::DownloadPauses;
 pub use state::StoreConfig;
 
 const DOWNLOAD_MISSING: &str =
@@ -86,7 +89,13 @@ struct InstallQuery {
   expected_installed_sha256: Option<String>,
   switch_snapshot: Option<StoreSwitchSnapshot>,
   channel_snapshot: Option<StoreSwitchSnapshot>,
-  operation_id: String,
+  operation_id: Uuid,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PauseDownloadQuery {
+  operation_id: Uuid,
 }
 
 #[derive(Serialize)]
@@ -499,6 +508,10 @@ pub async fn dispatch(
       publish_download_change(&app);
       output(discarded?)
     }
+    "store.pause_download" => {
+      let request: PauseDownloadQuery = input(params)?;
+      output(host.store_download_pauses.request(request.operation_id)?)
+    }
     "store.install" => {
       let result = install(app.clone(), host, input(params)?).await;
       publish_download_change(&app);
@@ -704,8 +717,6 @@ fn review_requested_install(
 }
 
 async fn install(app: AppHandle, host: &Host, request: InstallQuery) -> Result<Value, String> {
-  uuid::Uuid::parse_str(&request.operation_id)
-    .map_err(|_| "Invalid install operation identity.")?;
   request.release.validate(&request.applet_id)?;
   let gate = host.store_gate.lock().await;
   let store_url = if request.installed_source || request.resume_download {
@@ -720,7 +731,7 @@ async fn install(app: AppHandle, host: &Host, request: InstallQuery) -> Result<V
     applet_id: request.applet_id.clone(),
     channel: StoreChannel::from_prerelease(request.release.prerelease),
   };
-  let operation_id = &request.operation_id;
+  let operation_id = request.operation_id;
   let cache = download_cache(&app)?;
   let checkpoint = DownloadCheckpoint::new(&cache, &store_url, &request.release);
   if request.resume_download {
@@ -730,20 +741,14 @@ async fn install(app: AppHandle, host: &Host, request: InstallQuery) -> Result<V
       return Err("The saved download differs from this release. Review the release again.".into());
     }
   }
-  #[cfg(target_os = "ios")]
-  let lease = crate::ios::WakeLease::begin(&app).await;
-  let pause = async {
-    #[cfg(target_os = "ios")]
-    if let Some(lease) = &lease {
-      return lease.expired().await;
-    }
-    std::future::pending::<()>().await;
-  };
-  let download = store_client(host, &store_url)?.download_resumable(
-    &request.applet_id, &request.release, &checkpoint, pause, |received_bytes, total_bytes| {
+  let client = store_client(host, &store_url)?;
+  let active = host.store_download_pauses.begin(&app, operation_id).await?;
+  let download = client.download_resumable(
+    &request.applet_id, &request.release, &checkpoint, active.wait_for_pause(), |received_bytes, total_bytes| {
       let _ = app.emit_to("main", "install-progress", json!({"operation_id":operation_id,"received_bytes":received_bytes,"total_bytes":total_bytes}));
     },
   ).await?;
+  active.finish_transfer();
   let bytes = match download {
     DownloadOutcome::Verified(bytes) => bytes,
     DownloadOutcome::Paused { received_bytes } => {

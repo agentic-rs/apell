@@ -4,7 +4,6 @@ import {
   installStoreRelease,
   message,
   onAppletInstallationChanged,
-  onInstallProgress,
 } from '../lib/tauri';
 import {
   newStoreAccess,
@@ -16,13 +15,14 @@ import {
 import type {
   AppletInstallResult,
   AppletInstallation,
-  InstallProgress,
   StoreChannel,
   StoreDetail,
   StoreReleaseOption,
   StoreSource,
 } from '../lib/types';
 import { OperationScope, type Operation } from './providers/state';
+import { PauseStoreDownload } from './store/PauseStoreDownload';
+import { useStoreTransfer } from './store/useStoreTransfer';
 
 interface Review {
   detail: StoreDetail;
@@ -69,7 +69,8 @@ export function AppletChannel({
   const [review, setReview] = useState<Review>();
   const [phase, setPhase] = useState<Phase>();
   const [refresh_requested, setRefreshRequested] = useState(false);
-  const [progress, setProgress] = useState<InstallProgress>();
+  const transfer = useStoreTransfer();
+  const { progress } = transfer;
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
   const scope = useRef(new OperationScope());
@@ -263,25 +264,23 @@ export function AppletChannel({
     void run('installing', async (operation) => {
       const { detail, release } = release_review;
       const operation_id = crypto.randomUUID();
-      setProgress(undefined);
-      const stop = await onInstallProgress((event) => {
-        if (operation.isCurrent() && event.operation_id === operation_id) setProgress(event);
-      }).catch(() => () => {});
       try {
-        if (!operation.isCurrent()) return;
-        const result = await installStoreRelease({
-          store_url: detail.store_url,
-          applet_id: detail.applet.applet_id,
-          release,
-          ...(release.action === 'switch_channel'
-            ? { channel_snapshot: detail.channel_snapshot }
-            : {}),
-          expected_installed_sha256: detail.installed?.sha256 ?? null,
-          installed_source: true,
-          ...(release.downloaded_bytes ? { resume_download: true } : {}),
-          operation_id,
+        const result = await transfer.run(operation_id, async () => {
+          if (!operation.isCurrent()) return;
+          return installStoreRelease({
+            store_url: detail.store_url,
+            applet_id: detail.applet.applet_id,
+            release,
+            ...(release.action === 'switch_channel'
+              ? { channel_snapshot: detail.channel_snapshot }
+              : {}),
+            expected_installed_sha256: detail.installed?.sha256 ?? null,
+            installed_source: true,
+            ...(release.downloaded_bytes ? { resume_download: true } : {}),
+            operation_id,
+          });
         });
-        if (!operation.isCurrent()) return;
+        if (!result || !operation.isCurrent()) return;
         if (result.status === 'paused') {
           setReview({
             detail,
@@ -290,7 +289,7 @@ export function AppletChannel({
           setNotice(
             result.received_bytes
               ? 'Download paused. Continue when you’re ready.'
-              : 'Download interrupted. Try again when you’re ready.',
+              : 'Download paused. Start again when you’re ready.',
           );
           return;
         }
@@ -325,8 +324,6 @@ export function AppletChannel({
           await reload(operation).catch(() => undefined);
         }
         throw error;
-      } finally {
-        stop();
       }
     });
 
@@ -389,16 +386,19 @@ export function AppletChannel({
             </>
           )}
           {phase === 'installing' ? (
-            <div className="applet-channel-progress" role="status">
-              <progress
-                aria-label="Applet download"
-                max={progress?.total_bytes || 1}
-                value={progress?.total_bytes ? progress.received_bytes : undefined}
-              />
-              <span>
-                {progress ? `${storeSize(progress.received_bytes)} downloaded` : 'Installing…'}
-              </span>
-            </div>
+            <>
+              <div className="applet-channel-progress" role="status">
+                <progress
+                  aria-label="Applet download"
+                  max={progress?.total_bytes || 1}
+                  value={progress?.total_bytes ? progress.received_bytes : undefined}
+                />
+                <span>
+                  {progress ? `${storeSize(progress.received_bytes)} downloaded` : 'Installing…'}
+                </span>
+              </div>
+              <PauseStoreDownload control={transfer.control} />
+            </>
           ) : (
             <div className="button-row">
               <button

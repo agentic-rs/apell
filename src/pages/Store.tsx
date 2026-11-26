@@ -201,6 +201,7 @@ export function Store({
               installing={state.operation === 'install'}
               opening={opening}
               progress={state.progress}
+              transfer_control={state.transfer_control}
               onChannel={state.setChannel}
               onVersion={state.setSelectedVersion}
               onInstall={state.install}

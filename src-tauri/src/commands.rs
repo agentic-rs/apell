@@ -174,6 +174,7 @@ pub async fn shell_command(
     | "store.icon"
     | "store.pending_downloads"
     | "store.discard_download"
+    | "store.pause_download"
     | "store.restore_package"
     | "store.install" => crate::store_commands::dispatch(app, &host, &method, params).await,
     "applets.list" => {

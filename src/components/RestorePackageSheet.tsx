@@ -4,7 +4,6 @@ import { storeChannelName, storeSize } from '../lib/storeState';
 import {
   discardStoreDownload,
   message,
-  onInstallProgress,
   restoreAppletPackage,
   restoreStorePackage,
 } from '../lib/tauri';
@@ -13,6 +12,8 @@ import { AppletPackagePicker } from './AppletPackagePicker';
 import { Icon } from './Icon';
 import { Sheet } from './Sheet';
 import type { StoreDownloads } from './store/useStoreDownloads';
+import { PauseStoreDownload } from './store/PauseStoreDownload';
+import { useStoreTransfer } from './store/useStoreTransfer';
 
 interface RestoreTarget {
   applet_id: string;
@@ -44,7 +45,7 @@ export function RestorePackageSheet({
   const [discard_target, setDiscardTarget] = useState<StorePendingDownload>();
   const [discarded_version, setDiscardedVersion] = useState<string>();
   const running = useRef(false);
-  const download_operation = useRef<string>(undefined);
+  const transfer = useStoreTransfer();
   const discard_button = useRef<HTMLButtonElement>(null);
   const store_button = useRef<HTMLButtonElement>(null);
   const restore_discard_focus = useRef(false);
@@ -70,40 +71,14 @@ export function RestorePackageSheet({
   const reviewed_download = saved ?? pending_download;
 
   useEffect(() => {
-    let disposed = false;
-    let stop: (() => void) | undefined;
-    void onInstallProgress((event) => {
-      if (
-        disposed ||
-        !download_operation.current ||
-        event.operation_id !== download_operation.current
-      )
-        return;
-      const received = event.received_bytes ? storeSize(event.received_bytes) : '0 KB';
-      const total = event.total_bytes ? ` of ${storeSize(event.total_bytes)}` : '';
-      setFeedback({ text: `Downloading… ${received}${total}` });
-    })
-      .then((unsubscribe) => {
-        if (disposed) unsubscribe();
-        else stop = unsubscribe;
-      })
-      .catch(() => {});
-    return () => {
-      disposed = true;
-      stop?.();
-    };
-  }, []);
-
-  useEffect(() => {
     if (discard_target || busy || !restore_discard_focus.current) return;
     restore_discard_focus.current = false;
     (discard_button.current ?? store_button.current)?.focus({ preventScroll: true });
   }, [busy, discard_target]);
 
-  const run = async (label: string, action: () => Promise<void>, operation_id?: string) => {
+  const run = async (label: string, action: () => Promise<void>) => {
     if (running.current) return;
     running.current = true;
-    download_operation.current = operation_id;
     onBusyChange(true);
     setBusy(true);
     setFeedback({ text: label });
@@ -112,7 +87,6 @@ export function RestorePackageSheet({
     } catch (error) {
       setFeedback({ text: message(error), error: true });
     } finally {
-      download_operation.current = undefined;
       downloads.refresh();
       setBusy(false);
       onBusyChange(false);
@@ -127,24 +101,21 @@ export function RestorePackageSheet({
   const download = () => {
     if (pending_download && !saved) return;
     const operation_id = crypto.randomUUID();
-    void run(
-      'Checking the original Store…',
-      async () => {
-        setDiscardedVersion(undefined);
-        const result = await restoreStorePackage(applet_id, expected, operation_id, saved);
-        download_operation.current = undefined;
-        if (result.status === 'restored') {
-          await onRestored(result);
-        } else {
-          setFeedback({
-            text: result.received_bytes
-              ? `Download paused. ${storeSize(result.received_bytes)} saved.`
-              : 'Download paused. Try again to download the package.',
-          });
-        }
-      },
-      operation_id,
-    );
+    void run('Checking the original Store…', async () => {
+      setDiscardedVersion(undefined);
+      const result = await transfer.run(operation_id, () =>
+        restoreStorePackage(applet_id, expected, operation_id, saved),
+      );
+      if (result.status === 'restored') {
+        await onRestored(result);
+      } else {
+        setFeedback({
+          text: result.received_bytes
+            ? `Download paused. ${storeSize(result.received_bytes)} saved.`
+            : 'Download paused. Try again to download the package.',
+        });
+      }
+    });
   };
   const keepDownload = () => {
     restore_discard_focus.current = true;
@@ -164,11 +135,15 @@ export function RestorePackageSheet({
         });
       }
     });
-  const current_feedback =
-    feedback ??
-    (pending_download && !saved && !downloads.loading
-      ? { text: 'This saved download is no longer available.' }
-      : undefined);
+  const progress = transfer.progress;
+  const current_feedback = progress
+    ? {
+        text: `Downloading… ${progress.received_bytes ? storeSize(progress.received_bytes) : '0 KB'}${progress.total_bytes ? ` of ${storeSize(progress.total_bytes)}` : ''}`,
+      }
+    : (feedback ??
+      (pending_download && !saved && !downloads.loading
+        ? { text: 'This saved download is no longer available.' }
+        : undefined));
 
   return (
     <Sheet
@@ -269,6 +244,7 @@ export function RestorePackageSheet({
           {current_feedback.text}
         </p>
       )}
+      <PauseStoreDownload control={transfer.control} />
     </Sheet>
   );
 }

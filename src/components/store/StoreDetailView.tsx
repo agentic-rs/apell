@@ -20,6 +20,8 @@ import { AppletIcon } from '../AppletIcon';
 import { Icon } from '../Icon';
 import { Sheet } from '../Sheet';
 import { StoreIcon } from './StoreIcon';
+import { PauseStoreDownload } from './PauseStoreDownload';
+import type { StoreTransferControl } from './useStoreTransfer';
 
 export function StoreOpenButton({
   restart_required,
@@ -59,6 +61,7 @@ export function StoreDetailView({
   installing,
   opening,
   progress,
+  transfer_control,
   onChannel,
   onVersion,
   onInstall,
@@ -78,6 +81,7 @@ export function StoreDetailView({
   installing: boolean;
   opening: boolean;
   progress?: InstallProgress;
+  transfer_control: StoreTransferControl;
   onChannel: (channel: StoreChannel) => void;
   onVersion: (version: string) => void;
   onInstall: (release: StoreReleaseOption, confirmed_channel_switch?: boolean) => void;
@@ -316,18 +320,21 @@ export function StoreDetailView({
                 </p>
               )}
               {installing && (
-                <div className="store-progress" role="status">
-                  <progress
-                    aria-label="Applet download"
-                    max={progress?.total_bytes || 1}
-                    value={progress?.total_bytes ? progress.received_bytes : undefined}
-                  />
-                  <span>
-                    {progress
-                      ? `${storeSize(progress.received_bytes)}${progress.total_bytes ? ` of ${storeSize(progress.total_bytes)}` : ''} downloaded`
-                      : 'Downloading and checking the package…'}
-                  </span>
-                </div>
+                <>
+                  <div className="store-progress" role="status">
+                    <progress
+                      aria-label="Applet download"
+                      max={progress?.total_bytes || 1}
+                      value={progress?.total_bytes ? progress.received_bytes : undefined}
+                    />
+                    <span>
+                      {progress
+                        ? `${storeSize(progress.received_bytes)}${progress.total_bytes ? ` of ${storeSize(progress.total_bytes)}` : ''} downloaded`
+                        : 'Downloading and checking the package…'}
+                    </span>
+                  </div>
+                  <PauseStoreDownload control={transfer_control} />
+                </>
               )}
               {fresh && release.action_reason && (
                 <p className="store-action-reason">{release.action_reason}</p>

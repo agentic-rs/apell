@@ -476,6 +476,11 @@ svg {
 .restore-discard-actions {
   margin-top: 12px;
 }
+.store-pause-download {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+}
 .panel {
   width: 100%;
   max-width: 540px;

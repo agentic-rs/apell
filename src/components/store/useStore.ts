@@ -13,14 +13,12 @@ import {
   launchApplet,
   listApplets,
   message,
-  onInstallProgress,
   restartApplet,
   setStoreUrl,
 } from '../../lib/tauri';
 import type {
   AppletInstallResult,
   AppletSession,
-  InstallProgress,
   StoreCatalog,
   StoreChannel,
   StoreConfig,
@@ -46,6 +44,7 @@ import {
   writeStorePreferences,
   type StoreBrowsePreferences,
 } from './cache';
+import { useStoreTransfer } from './useStoreTransfer';
 
 type StoreOperation = 'save' | 'install' | 'open' | 'restart' | 'discard';
 interface DetailTarget {
@@ -87,7 +86,7 @@ export function useStore(
   const [status, setStatus] = useState('');
   const [action_error, setActionError] = useState('');
   const [operation, setOperation] = useState<StoreOperation>();
-  const [progress, setProgress] = useState<InstallProgress>();
+  const transfer = useStoreTransfer();
   const scope = useRef({
     alive: false,
     config: 0,
@@ -479,30 +478,23 @@ export function useStore(
     if (switching_channel && (!confirmed_channel_switch || !snapshot.channel_snapshot)) return;
     if (!switching && !switching_channel && !['install', 'update'].includes(release.action)) return;
     void run('install', async (operation_id) => {
-      setProgress(undefined);
-      const stop = await onInstallProgress((event) => {
-        if (
-          scope.current.alive &&
-          scope.current.operation === operation_id &&
-          event.operation_id === operation_id
-        )
-          setProgress(event);
-      }).catch(() => () => {});
       try {
-        if (!scope.current.alive || fresh.current !== snapshot || selection.current !== requested)
-          return;
-        const installed = await installStoreRelease({
-          store_url: snapshot.store_url,
-          applet_id: snapshot.applet.applet_id,
-          release,
-          expected_installed_sha256: snapshot.installed?.sha256 ?? null,
-          ...(switching ? { switch_snapshot: snapshot.switch_snapshot } : {}),
-          ...(switching_channel ? { channel_snapshot: snapshot.channel_snapshot } : {}),
-          ...(target.installed_source ? { installed_source: true } : {}),
-          ...(has_checkpoint ? { resume_download: true } : {}),
-          operation_id,
+        const installed = await transfer.run(operation_id, async () => {
+          if (!scope.current.alive || fresh.current !== snapshot || selection.current !== requested)
+            return;
+          return installStoreRelease({
+            store_url: snapshot.store_url,
+            applet_id: snapshot.applet.applet_id,
+            release,
+            expected_installed_sha256: snapshot.installed?.sha256 ?? null,
+            ...(switching ? { switch_snapshot: snapshot.switch_snapshot } : {}),
+            ...(switching_channel ? { channel_snapshot: snapshot.channel_snapshot } : {}),
+            ...(target.installed_source ? { installed_source: true } : {}),
+            ...(has_checkpoint ? { resume_download: true } : {}),
+            operation_id,
+          });
         });
-        if (!scope.current.alive) return;
+        if (!installed || !scope.current.alive) return;
         if (installed.status === 'paused') {
           if (resume && installed.received_bytes === 0) {
             closeDetail();
@@ -524,7 +516,7 @@ export function useStore(
           setStatus(
             installed.received_bytes > 0
               ? 'Download paused. Continue when you’re ready.'
-              : 'Download interrupted. Try again when you’re ready.',
+              : 'Download paused. Start again when you’re ready.',
           );
           return;
         }
@@ -552,7 +544,6 @@ export function useStore(
         if (has_checkpoint && scope.current.alive) void loadDetail(requested);
         throw error;
       } finally {
-        stop();
         refreshDownloads();
       }
     });
@@ -633,7 +624,8 @@ export function useStore(
     status,
     action_error,
     operation,
-    progress,
+    progress: transfer.progress,
+    transfer_control: transfer.control,
     saveAddress,
     closeDetail: () => {
       if (!scope.current.operation) closeDetail();

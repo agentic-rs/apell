@@ -64,8 +64,12 @@ can access that data, including secure storage if declared; remembered device
 permissions from the old source do not carry over. A source switch cannot
 downgrade an installed applet. Automatic background updates are not included.
 
-If an install download is interrupted, **Continue download** retries the
-reviewed release from the last saved byte when the Store supports byte ranges.
+Choose **Pause download** during a Store install, update, or repair. Apell
+waits for the transfer to stop before returning to the release review. A
+fully downloaded package may finish verification and install if it completes
+before the pause takes effect. **Continue download** retries a paused or
+interrupted release from its last saved byte when the Store supports byte
+ranges.
 Open **Downloads** in Store or tap the paused downloads row in the Library
 after reopening Apell. Choose **Review** to check that exact release at its
 original Store, even after changing the Store address. A source or channel

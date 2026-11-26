@@ -198,19 +198,16 @@ pub(super) async fn restore_package(
   let source = checked_source(host, &request).await?;
   let pending = requested_checkpoint(reconcile_repairs(&cache, host).await?, &request)?;
   let client = store_client(host, &source.store_url)?;
-  #[cfg(target_os = "ios")]
-  let lease = crate::ios::WakeLease::begin(&app).await;
-  let pause = async {
-    #[cfg(target_os = "ios")]
-    if let Some(lease) = &lease {
-      return lease.expired().await;
-    }
-    std::future::pending::<()>().await;
-  };
+  let active = host
+    .store_download_pauses
+    .begin(&app, request.operation_id)
+    .await?;
+  let pause = active.wait_for_pause();
   tokio::pin!(pause);
   let detail = tokio::select! {
     biased;
     _ = &mut pause => {
+      active.finish_transfer();
       return paused(host, &request, &cache, request.pending_download.as_ref(),
         pending.as_ref().map_or(0, PendingDownload::downloaded_bytes)).await;
     }
@@ -234,6 +231,7 @@ pub(super) async fn restore_package(
       }));
     },
   ).await?;
+  active.finish_transfer();
   let bytes = match outcome {
     DownloadOutcome::Verified(bytes) => bytes,
     DownloadOutcome::Paused { received_bytes } => {

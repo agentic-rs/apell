@@ -105,6 +105,12 @@ export const getStorePendingDownloads = () =>
   shellCall<StorePendingDownload[]>('store.pending_downloads');
 export const onStoreDownloadsChanged = (handler: () => void) =>
   listen('apell-store-download-changed', handler);
+export const onStoreTransferStarted = (handler: (operation_id: string) => void) =>
+  listen<{ operation_id: string }>('apell-store-transfer-started', ({ payload }) =>
+    handler(payload.operation_id),
+  );
+export const pauseStoreDownload = (operation_id: string) =>
+  shellCall<boolean>('store.pause_download', { operation_id });
 const storeDownloadIdentity = ({
   origin,
   applet_id,
