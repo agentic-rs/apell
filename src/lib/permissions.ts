@@ -1,6 +1,8 @@
 import type {
+  AppletPermission,
   AppletPermissionManifest,
   ManagedPermission,
+  PermissionGrant,
   PermissionMode,
   SystemAuthorization,
 } from './types';
@@ -82,6 +84,48 @@ type PickerPermissionRow = {
   status: string;
 };
 
+function managedPermissionRow(key: ManagedPermission, has_files: boolean): ManagedPermissionRow {
+  return {
+    kind: 'managed',
+    key,
+    label: managed_permission_labels[key],
+    unavailable_reason: key === 'camera' && !has_files ? requires_files : undefined,
+  };
+}
+
+export function managedPermissionDeclaration(
+  manifest: AppletPermissionManifest | null | undefined,
+  permission: ManagedPermission,
+): ManagedPermissionRow | undefined {
+  const group = permission === 'microphone' ? 'audio' : permission;
+  if (manifest?.permissions.includes(group)) {
+    return managedPermissionRow(permission, manifest.permissions.includes('fs'));
+  }
+}
+
+export function groupDevicePermissions(applets: readonly AppletPermission[]) {
+  return (Object.keys(managed_permission_labels) as ManagedPermission[]).map((permission) => {
+    const entries: { applet: AppletPermission; grant: PermissionGrant }[] = [];
+    let allowed_count = 0;
+    for (const applet of applets) {
+      const grant = applet.grants.find((item) => item.permission === permission);
+      if (!grant) continue;
+      entries.push({ applet, grant });
+      if (
+        !applet.installed_revision ||
+        !grant.available ||
+        grant.access !== 'remembered' ||
+        grant.mode !== 'remembered'
+      ) {
+        continue;
+      }
+      const declaration = managedPermissionDeclaration(applet.manifest, permission);
+      if (declaration && !declaration.unavailable_reason) allowed_count++;
+    }
+    return { permission, entries, allowed_count };
+  });
+}
+
 export function appletPermissionRows(manifest: AppletPermissionManifest) {
   const { network, permissions, has_lib } = manifest;
   const has_files = permissions.includes('fs');
@@ -99,12 +143,7 @@ export function appletPermissionRows(manifest: AppletPermissionManifest) {
       continue;
     }
     if (key === 'camera' || key === 'location') {
-      rows.push({
-        kind: 'managed',
-        key,
-        label: managed_permission_labels[key],
-        unavailable_reason: key === 'camera' && !has_files ? requires_files : undefined,
-      });
+      rows.push(managedPermissionRow(key, has_files));
       continue;
     }
     const unavailable = !has_lib && backend_permissions.has(key);
@@ -113,7 +152,7 @@ export function appletPermissionRows(manifest: AppletPermissionManifest) {
     rows.push({ kind: 'fixed', key, label: permission_labels[key] ?? key, status });
   }
   if (permissions.includes('audio')) {
-    rows.push({ kind: 'managed', key: 'microphone', label: managed_permission_labels.microphone });
+    rows.push(managedPermissionRow('microphone', has_files));
   }
   return rows;
 }

@@ -1,8 +1,10 @@
-import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import {
   appletPermissionRows,
   device_access_note,
+  groupDevicePermissions,
   isPermissionMode,
+  managedPermissionDeclaration,
   managed_permission_labels,
   permission_mode_labels,
   permission_unavailable,
@@ -44,6 +46,7 @@ type PermissionChangeError = PermissionTarget & { text: string };
 
 function PermissionRow({
   applet_name,
+  title,
   grant,
   busy,
   saving,
@@ -53,6 +56,7 @@ function PermissionRow({
   reset,
 }: {
   applet_name: string;
+  title?: ReactNode;
   grant: PermissionGrant;
   busy: boolean;
   saving: boolean;
@@ -77,7 +81,7 @@ function PermissionRow({
     .join(' ');
   return (
     <div className="applet-permission-row">
-      <dt>{label}</dt>
+      <dt>{title ?? label}</dt>
       <dd>
         <div className="applet-permission-state">
           {change && mode ? (
@@ -146,6 +150,50 @@ interface AppletPermissionDetailsProps {
   edit: (change: PermissionChange) => void;
 }
 
+function AppletDeviceGrant({
+  applet,
+  grant,
+  busy,
+  saving,
+  edit_error,
+  edit,
+  show_applet = false,
+}: AppletPermissionDetailsProps & { grant: PermissionGrant; show_applet?: boolean }) {
+  const { applet_id, installed_revision } = applet;
+  const { permission } = grant;
+  const declaration = managedPermissionDeclaration(applet.manifest, permission);
+  const can_change =
+    installed_revision &&
+    declaration &&
+    !declaration.unavailable_reason &&
+    grant.available &&
+    grant.mode;
+  return (
+    <PermissionRow
+      applet_name={applet.name}
+      title={
+        show_applet ? (
+          <>
+            <bdi>{applet.name}</bdi>
+            {applet.restart_required && (
+              <small className="applet-permission-restart">Restart required</small>
+            )}
+          </>
+        ) : undefined
+      }
+      grant={grant}
+      busy={busy}
+      saving={saving === permission}
+      error={edit_error?.permission === permission ? edit_error.text : undefined}
+      unavailable_reason={declaration?.unavailable_reason}
+      change={
+        can_change ? (mode) => edit({ applet_id, installed_revision, permission, mode }) : undefined
+      }
+      reset={() => edit({ applet_id, permission })}
+    />
+  );
+}
+
 function AppletPermissionGroup({
   open,
   ...props
@@ -171,10 +219,8 @@ export function AppletPermissionDetails({
   edit,
 }: AppletPermissionDetailsProps) {
   const rows = applet.manifest ? appletPermissionRows(applet.manifest) : [];
-  const managed = rows.filter((row) => row.kind === 'managed');
   const fixed = rows.filter((row) => row.kind === 'fixed');
   const pickers = rows.filter((row) => row.kind === 'picker');
-  const { applet_id, installed_revision } = applet;
   const configurable = applet.grants.some((grant) => grant.available && grant.mode);
   return (
     <div className="applet-permission-details">
@@ -183,33 +229,17 @@ export function AppletPermissionDetails({
           <h3>Device access</h3>
           {configurable && <p className="applet-permission-note">{device_access_note}</p>}
           <dl>
-            {applet.grants.map((grant) => {
-              const { permission } = grant;
-              const declaration = managed.find((row) => row.key === permission);
-              const can_change =
-                installed_revision &&
-                declaration &&
-                !declaration.unavailable_reason &&
-                grant.available &&
-                grant.mode;
-              return (
-                <PermissionRow
-                  key={permission}
-                  applet_name={applet.name}
-                  grant={grant}
-                  busy={busy}
-                  saving={saving === permission}
-                  error={edit_error?.permission === permission ? edit_error.text : undefined}
-                  unavailable_reason={declaration?.unavailable_reason}
-                  change={
-                    can_change
-                      ? (mode) => edit({ applet_id, installed_revision, permission, mode })
-                      : undefined
-                  }
-                  reset={() => edit({ applet_id, permission })}
-                />
-              );
-            })}
+            {applet.grants.map((grant) => (
+              <AppletDeviceGrant
+                key={grant.permission}
+                applet={applet}
+                grant={grant}
+                busy={busy}
+                saving={saving}
+                edit_error={edit_error}
+                edit={edit}
+              />
+            ))}
             {pickers.map((row) => (
               <div className="applet-permission-row" key={row.key}>
                 <dt>{row.label}</dt>
@@ -333,6 +363,7 @@ export function useAppletPermissionState<T>(read: () => Promise<T>) {
 }
 
 export function AppletPermissions() {
+  const [view, setView] = useState<'applet' | 'permission'>('applet');
   const {
     value: applets,
     busy,
@@ -341,12 +372,22 @@ export function AppletPermissions() {
     edit_error,
     load,
   } = useAppletPermissionState(listAppletPermissions);
+  const controls = (applet_id: string) => ({
+    busy: busy || !!error,
+    saving: saving?.applet_id === applet_id ? saving.permission : undefined,
+    edit_error: edit_error?.applet_id === applet_id ? edit_error : undefined,
+    edit: (change: PermissionChange) => void load(change),
+  });
   return (
     <section className="panel applet-permissions" aria-labelledby="settings-permissions">
       <h2 id="settings-permissions" className="settings-section-title" tabIndex={-1}>
         Applet permissions
       </h2>
-      <p>Manage device permissions and review each applet’s declared access.</p>
+      <p>
+        {view === 'applet'
+          ? 'Manage device permissions and review each applet’s declared access.'
+          : 'Manage microphone, camera, and location access across applets.'}
+      </p>
       {error && (
         <div role="alert">
           <p className="status error">Couldn’t refresh permissions. {error}</p>
@@ -366,19 +407,69 @@ export function AppletPermissions() {
           </p>
         )}
       {applets?.length ? (
-        <div className="applet-permission-groups" aria-busy={busy}>
-          {applets.map((applet) => (
-            <AppletPermissionGroup
-              key={applet.applet_id}
-              applet={applet}
-              busy={busy || !!error}
-              open={applets.length === 1 || undefined}
-              saving={saving?.applet_id === applet.applet_id ? saving.permission : undefined}
-              edit_error={edit_error?.applet_id === applet.applet_id ? edit_error : undefined}
-              edit={(change) => void load(change)}
-            />
-          ))}
-        </div>
+        <>
+          <div className="applet-permission-switch" role="group" aria-label="Group permissions">
+            <button
+              type="button"
+              aria-pressed={view === 'applet'}
+              onClick={() => setView('applet')}
+            >
+              By applet
+            </button>
+            <button
+              type="button"
+              aria-pressed={view === 'permission'}
+              onClick={() => setView('permission')}
+            >
+              By permission
+            </button>
+          </div>
+          {view === 'permission' && (
+            <p className="applet-permission-overview-note">{device_access_note}</p>
+          )}
+          <div className="applet-permission-groups" aria-busy={busy}>
+            {view === 'applet'
+              ? applets.map((applet) => (
+                  <AppletPermissionGroup
+                    key={applet.applet_id}
+                    applet={applet}
+                    open={applets.length === 1 || undefined}
+                    {...controls(applet.applet_id)}
+                  />
+                ))
+              : groupDevicePermissions(applets).map(({ permission, entries, allowed_count }) => {
+                  const name = managed_permission_labels[permission];
+                  return entries.length ? (
+                    <details key={permission} className="applet-permission-group">
+                      <summary>
+                        <span className="applet-permission-name">{name}</span>
+                        <span className="applet-permission-count">
+                          {allowed_count} allowed in Apell
+                        </span>
+                      </summary>
+                      <dl className="applet-permission-subjects">
+                        {entries.map(({ applet, grant }) => (
+                          <AppletDeviceGrant
+                            key={applet.applet_id}
+                            applet={applet}
+                            grant={grant}
+                            show_applet
+                            {...controls(applet.applet_id)}
+                          />
+                        ))}
+                      </dl>
+                    </details>
+                  ) : (
+                    <div key={permission} className="applet-permission-group">
+                      <div className="applet-permission-empty">
+                        <span className="applet-permission-name">{name}</span>
+                        <span className="applet-permission-count">No applets</span>
+                      </div>
+                    </div>
+                  );
+                })}
+          </div>
+        </>
       ) : (
         (applets || busy) && (
           <p className="status" role="status">

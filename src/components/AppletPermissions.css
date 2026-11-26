@@ -1,3 +1,35 @@
+.applet-permission-switch {
+  display: inline-grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+  max-width: 100%;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--subtle);
+}
+
+.applet-permission-switch button {
+  border-color: transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+.applet-permission-switch button[aria-pressed='true'] {
+  border-color: var(--selection-line);
+  background: var(--surface);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.applet-permission-overview-note {
+  margin: 12px 0 0;
+  color: var(--muted);
+  font-size: 0.8125rem;
+}
+
 .applet-permission-groups {
   display: grid;
   gap: 12px;
@@ -10,7 +42,8 @@
   overflow: hidden;
 }
 
-.applet-permission-group > summary {
+.applet-permission-group > summary,
+.applet-permission-empty {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -20,9 +53,12 @@
   background: var(--subtle);
   font-size: 0.875rem;
   font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.applet-permission-group > summary {
   list-style: none;
   cursor: pointer;
-  overflow-wrap: anywhere;
 }
 
 .applet-permission-group > summary::-webkit-details-marker {
@@ -52,10 +88,15 @@
   min-width: 0;
 }
 
-.applet-permission-restart {
+.applet-permission-restart,
+.applet-permission-count {
   color: var(--muted);
   font-size: 0.75rem;
   font-weight: 500;
+}
+
+.applet-permission-count {
+  text-align: end;
 }
 
 .applet-permission-section > h3 {
@@ -73,7 +114,8 @@
   font-size: 0.8125rem;
 }
 
-.applet-permission-details dl {
+.applet-permission-details dl,
+.applet-permission-subjects {
   margin: 0;
 }
 
@@ -100,6 +142,13 @@
 
 .applet-permission-row dt {
   overflow-wrap: normal;
+}
+
+.applet-permission-subjects dt {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .applet-permission-state {

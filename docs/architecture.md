@@ -458,6 +458,8 @@ Use `photos.pick({ output_format: 'jpeg' })` to normalize the selected photo to 
 
 Camera and Location default to **Ask every time**. The Apell prompt names the applet and offers **Allow once**, **Always allow**, and **Cancel**. In **About this applet** or **Settings → Applet permissions**, choose **Ask every time**, **Always allow**, or **Don’t allow** for each available device permission. **Don’t allow** rejects later requests without opening a permission prompt. Saved choices apply to the applet and verified package source. OS permission and location accuracy still apply. Photo Library shows **Pick each time** because choosing an image authorizes only that selection.
 
+Choose **By permission** in **Settings → Applet permissions** to review microphone, camera, or location across applets. Each group counts the applets that Apell is set to always allow for that permission. Open a group to change an applet’s setting or review stale settings from earlier packages.
+
 **About this applet** and **Settings → Applet permissions** display system authorization separately from Apell’s saved choice when the platform reports it. The display refreshes when Apell regains focus. Restart an applet after switching sources before editing its device permissions in About. Android’s camera opens a system capture app, so its authorization is handled when the camera opens.
 
 When the system reports a device permission you can change, **Open system settings** opens Apell’s app settings on iOS and Android, or the microphone privacy pane on macOS. System restrictions such as parental controls are shown as **Restricted by system** when the platform reports them.
