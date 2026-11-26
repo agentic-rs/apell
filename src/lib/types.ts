@@ -156,9 +156,12 @@ export interface StoreSwitchSnapshot {
   source: PackageSource | null;
   removed: boolean;
 }
-export interface StoreDetail {
+export interface StoreSavedDetail {
   store_url: string;
   applet: StoreApplet;
+  releases: StoreRelease[];
+}
+export interface StoreDetail extends StoreSavedDetail {
   releases: StoreReleaseOption[];
   installed: InstalledApplet | null;
   restart_required: boolean;

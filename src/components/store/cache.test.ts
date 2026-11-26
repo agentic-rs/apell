@@ -1,76 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { StoreApplet, StoreCatalog, StoreDetail, StoreRelease } from '../../lib/types';
 import {
-  cachedCatalog,
-  cachedDetail,
-  cacheStoreCatalog,
-  cacheStoreDetail,
-  readStoreCache,
-  writeStoreCache,
+  DEFAULT_BROWSE,
+  readStorePreferences,
+  rememberedStoreVersion,
+  rememberStoreVersion,
   writeStorePreferences,
 } from './cache';
 
 const store_url = 'https://store.example.invalid';
-const release: StoreRelease = {
-  version: '1.0.0',
-  sha256: 'a'.repeat(64),
-  size_bytes: 42,
-  published_at: '2026-01-01T00:00:00Z',
-  release_notes: 'What changed',
-  api_version: 2,
-  permissions: ['sqlite'],
-  network: true,
-  has_backend: false,
-  download_url: '/api/v1/applets/sample/versions/1.0.0/download',
-  prerelease: false,
-};
-const applet: StoreApplet = {
-  applet_id: 'sample',
-  name: 'Sample',
-  description: 'A sample applet',
-  project_url: null,
-  icon_url: null,
-  latest_release: release,
-  latest_stable_release: release,
-};
-const installed = {
-  schema_version: 1,
-  api_version: 2,
-  applet_id: 'sample',
-  name: 'Local sample',
-  version: '0.9.0',
-  permissions: ['microphone'],
-  network: true,
-  sha256: 'b'.repeat(64),
-  source: {
-    kind: 'github' as const,
-    repository_id: 1,
-    repository: 'example/private-fixture',
-    asset_name: 'sample.apel',
-  },
-};
-const catalog: StoreCatalog = {
-  store_url,
-  applets: [
-    {
-      ...applet,
-      installed,
-      update_available: true,
-      source_conflict: true,
-      installation_unavailable: false,
-    },
-  ],
-};
-const detail: StoreDetail = {
-  store_url,
-  applet,
-  releases: [{ ...release, action: 'switch_source', downloaded_bytes: 12 }],
-  installed,
-  restart_required: true,
-  switch_snapshot: { removed: false, source: installed.source, sha256: installed.sha256 },
-};
+const other = 'https://other.example.invalid';
 
-describe('native Store browse cache', () => {
+describe('Store browsing preferences', () => {
   const storage = new Map<string, string>();
   beforeEach(() => {
     storage.clear();
@@ -81,52 +21,32 @@ describe('native Store browse cache', () => {
   });
   afterEach(() => vi.unstubAllGlobals());
 
-  it('persists only public metadata and browse preferences for the configured origin', () => {
-    const cache = readStoreCache(store_url);
-    cacheStoreCatalog(cache, catalog);
-    cacheStoreDetail(cache, detail, release.version);
-    writeStoreCache(cache);
+  it('stores search and view preferences for the configured origin', () => {
     writeStorePreferences(store_url, { query: 'Sample', updates_only: true });
-
-    const saved = readStoreCache(store_url);
-    const raw = [...storage.values()].join('');
-    expect(raw).not.toMatch(
-      /private-fixture|microphone|downloaded_bytes|switch_snapshot|restart_required|installation_unavailable|update_available/,
-    );
-    expect(saved.preferences).toEqual({ query: 'Sample', updates_only: true });
-    expect(saved.details[0].selected_version).toBe(release.version);
-    expect(cachedCatalog(saved)?.applets[0].installed).toBeNull();
-    expect(cachedDetail(saved, applet.applet_id)).toMatchObject({
-      installed: null,
-      restart_required: false,
-      releases: [{ action: 'conflict', release_notes: 'What changed' }],
-    });
-    const foreign = readStoreCache('https://other.example.invalid');
-    expect(cachedCatalog(foreign)).toBeUndefined();
-    expect(foreign.details).toEqual([]);
-    expect(foreign.preferences.query).toBe('');
+    expect(readStorePreferences(store_url)).toEqual({ query: 'Sample', updates_only: true });
+    expect(readStorePreferences(other)).toEqual(DEFAULT_BROWSE);
   });
 
-  it('restores the search and update filter from earlier preferences with a catalog channel', () => {
-    storage.set(
-      'apell.store.preferences.v1',
-      JSON.stringify({ store_url, query: 'Sample', updates_only: true, channel: 'nightly' }),
-    );
-    expect(readStoreCache(store_url).preferences).toEqual({ query: 'Sample', updates_only: true });
+  it('remembers versions independently for each Store and applet', () => {
+    rememberStoreVersion(store_url, 'sample', '1.0.0');
+    rememberStoreVersion(other, 'sample', '2.0.0');
+    rememberStoreVersion(other, 'next', '4.0.0');
+    rememberStoreVersion(store_url, 'sample', '3.0.0');
+    expect(rememberedStoreVersion(store_url, 'sample')).toBe('3.0.0');
+    expect(rememberedStoreVersion(other, 'sample')).toBe('2.0.0');
+    expect(rememberedStoreVersion(other, 'next')).toBe('4.0.0');
+    rememberStoreVersion(other, 'sample');
+    expect(rememberedStoreVersion(other, 'sample')).toBeUndefined();
   });
 
-  it('bounds its detail history and tolerates corrupted storage', () => {
-    const cache = readStoreCache(store_url);
-    for (let index = 0; index < 12; index++) {
-      const next = { ...detail, applet: { ...applet, applet_id: `sample-${index}` } };
-      cacheStoreDetail(cache, next, release.version);
+  it('replaces old version choices within a bounded list and skips corrupt storage', () => {
+    for (let index = 0; index < 40; index++) {
+      rememberStoreVersion(store_url, `sample-${index}`, '1.0.0');
     }
-    writeStoreCache(cache);
-    const saved = readStoreCache(store_url);
-    expect(saved.details).toHaveLength(8);
-    expect(saved.details[0].applet.applet_id).toBe('sample-11');
-    expect(cachedDetail(saved, 'sample-0')).toBeUndefined();
+    expect(rememberedStoreVersion(store_url, 'sample-0')).toBeUndefined();
+    expect(rememberedStoreVersion(store_url, 'sample-39')).toBe('1.0.0');
     for (const key of storage.keys()) storage.set(key, '{not-json');
-    expect(readStoreCache(store_url).details).toEqual([]);
+    expect(rememberedStoreVersion(store_url, 'sample-39')).toBeUndefined();
+    expect(readStorePreferences(store_url)).toEqual(DEFAULT_BROWSE);
   });
 });

@@ -149,8 +149,8 @@ function StoreDiscover({
   return (
     <>
       {loading && (
-        <p className={catalog ? 'visually-hidden' : 'status'} role="status">
-          Checking the store…
+        <p className="status" role="status">
+          {catalog ? 'Showing saved listings while checking the Store…' : 'Checking the Store…'}
         </p>
       )}
       {error && (

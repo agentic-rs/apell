@@ -80,7 +80,7 @@ fn store_installation(
   applet
 }
 
-fn listing(id: &str, stable: &str, nightly: Option<&str>) -> StoreApplet {
+pub(super) fn listing(id: &str, stable: &str, nightly: Option<&str>) -> StoreApplet {
   let release_for = |version: &str| StoreRelease {
     download_url: format!("/api/v1/applets/{id}/versions/{version}/download"),
     ..release(version)
@@ -114,6 +114,73 @@ fn hint(applet: &InstalledApplet, version: &str) -> SavedUpdate {
     sha256: applet.sha256.clone(),
     version: version.into(),
   }
+}
+
+#[test]
+fn saved_catalog_recomputes_installation_flags_without_claiming_updates() {
+  let origin = "https://store.example";
+  let ready = store_installation("ready", origin, "1.0.0", StoreChannel::Stable);
+  let foreign = store_installation(
+    "foreign",
+    "https://other.example",
+    "1.0.0",
+    StoreChannel::Stable,
+  );
+  let mut installed = empty_report();
+  installed.applets = vec![ready, foreign];
+  installed.unavailable.push(UnavailableApplet {
+    applet_id: "broken".into(),
+    error: "Broken package".into(),
+    can_remove: false,
+    restore_snapshot: None,
+  });
+  let catalog = StoreCatalog {
+    applets: ["ready", "foreign", "broken"]
+      .map(|id| listing(id, "2.0.0", None))
+      .into(),
+  };
+  let fresh = catalog_result(origin.into(), catalog.clone(), &installed, true);
+  assert!(fresh.applets[0].update_available);
+  let saved = catalog_result(origin.into(), catalog, &installed, false);
+  assert!(saved.applets.iter().all(|entry| !entry.update_available));
+  assert_eq!(
+    saved.applets[0]
+      .installed
+      .as_ref()
+      .unwrap()
+      .manifest
+      .version,
+    "1.0.0"
+  );
+  assert!(!saved.applets[0].source_conflict);
+  assert!(saved.applets[1].source_conflict && !saved.applets[1].installation_unavailable);
+  assert!(saved.applets[2].source_conflict && saved.applets[2].installation_unavailable);
+}
+
+#[test]
+fn saved_detail_is_public_and_never_accepts_pending_download_privileges() {
+  let mut request =
+    json!({ "store_url":"https://store.example", "applet_id":"sample", "installed_source":true });
+  assert!(
+    input::<SavedDetailQuery>(request.clone())
+      .unwrap()
+      .installed_source
+  );
+  request["pending_download"] = json!({});
+  assert!(input::<SavedDetailQuery>(request).is_err());
+  let applet = listing("sample", "2.0.0", None);
+  let schema = output(SavedDetailResult {
+    store_url: "https://store.example".into(),
+    detail: StoreDetail {
+      releases: vec![applet.latest_release.clone()],
+      applet,
+    },
+  })
+  .unwrap();
+  assert_eq!(schema.as_object().unwrap().len(), 3);
+  assert!(schema.get("applet").is_some() && schema.get("store_url").is_some());
+  assert!(schema["releases"][0].get("action").is_none());
+  assert!(schema["releases"][0].get("downloaded_bytes").is_none());
 }
 
 #[tokio::test]

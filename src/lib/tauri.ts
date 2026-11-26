@@ -47,6 +47,7 @@ import type {
   StoreInstallRequest,
   StoreInstallResult,
   StorePendingDownload,
+  StoreSavedDetail,
   StoreSwitchSnapshot,
   StoreUpdatesReport,
 } from './types';
@@ -88,6 +89,8 @@ export const setStoreUrl = (store_url: string) =>
   shellCall<StoreConfig>('store.set_url', { store_url });
 export const getStoreCatalog = (store_url: string) =>
   shellCall<StoreCatalog>('store.catalog', { store_url });
+export const getSavedStoreCatalog = (store_url: string) =>
+  shellCall<StoreCatalog | null>('store.saved_catalog', { store_url });
 export const getStoreUpdates = () => shellCall<StoreUpdatesReport>('store.updates');
 export const getSavedStoreUpdates = () => shellCall<StoreUpdatesReport>('store.saved_updates');
 export const getStorePendingDownloads = () =>
@@ -111,6 +114,16 @@ export const discardStoreDownload = (download: StoreDownloadIdentity) =>
   shellCall<boolean>('store.discard_download', storeDownloadIdentity(download));
 export const getStoreDetail = (store_url: string, applet_id: string, installed_source = false) =>
   shellCall<StoreDetail>('store.detail', {
+    store_url,
+    applet_id,
+    ...(installed_source ? { installed_source } : {}),
+  });
+export const getSavedStoreDetail = (
+  store_url: string,
+  applet_id: string,
+  installed_source = false,
+) =>
+  shellCall<StoreSavedDetail | null>('store.saved_detail', {
     store_url,
     applet_id,
     ...(installed_source ? { installed_source } : {}),

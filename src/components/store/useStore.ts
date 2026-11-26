@@ -1,6 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
   discardStoreDownload,
+  getSavedStoreCatalog,
+  getSavedStoreDetail,
   getSavedStoreUpdates,
   getStoreCatalog,
   getStoreConfig,
@@ -29,6 +31,7 @@ import type {
   StoreUpdateResults,
 } from '../../lib/types';
 import {
+  installedStoreChannel,
   reviewSavedCatalog,
   reviewStoreRelease,
   storeChannelName,
@@ -36,15 +39,11 @@ import {
   type StoreReleaseChoice,
 } from '../../lib/storeState';
 import {
-  cachedCatalog,
-  cachedDetail,
-  cacheStoreCatalog,
-  cacheStoreDetail,
   DEFAULT_BROWSE,
-  readStoreCache,
-  writeStoreCache,
+  readStorePreferences,
+  rememberedStoreVersion,
+  rememberStoreVersion,
   writeStorePreferences,
-  type StoreBrowseCache,
   type StoreBrowsePreferences,
 } from './cache';
 
@@ -91,7 +90,6 @@ export function useStore(
     operation: '',
   });
   const current_url = useRef<string | null>(null);
-  const cache = useRef<StoreBrowseCache | undefined>(undefined);
   const selection = useRef<DetailSelection | undefined>(undefined);
   const fresh = useRef(false);
 
@@ -109,13 +107,11 @@ export function useStore(
     if (current_url.current === store_url) return;
     current_url.current = store_url;
     scope.current.catalog++;
-    const next = store_url ? readStoreCache(store_url) : undefined;
-    cache.current = next;
+    const preferences = store_url ? readStorePreferences(store_url) : DEFAULT_BROWSE;
     setBrowse((current) => {
-      const preferences = next?.preferences ?? DEFAULT_BROWSE;
       return current.updates_only ? { ...preferences, updates_only: true } : preferences;
     });
-    setCatalog(next && cachedCatalog(next));
+    setCatalog(undefined);
     setCatalogError('');
     setCatalogLoading(false);
     if (selection.current?.installed_source || selection.current?.pending_download) return;
@@ -140,28 +136,11 @@ export function useStore(
       setUpdatesLoading(true);
     }
     setBrowse(next);
-    if (cache.current) {
-      cache.current.preferences = next;
-      writeStorePreferences(cache.current.store_url, next);
-    }
+    if (current_url.current) writeStorePreferences(current_url.current, next);
   };
 
   const isCurrentCatalog = (store_url: string, request: number) =>
     scope.current.alive && scope.current.catalog === request && current_url.current === store_url;
-
-  const loadSavedInstallations = async (store_url: string, request: number) => {
-    if (catalog?.store_url !== store_url && !cache.current?.catalog) return;
-    try {
-      const report = await listApplets();
-      if (isCurrentCatalog(store_url, request)) {
-        setCatalog((current) =>
-          current?.store_url === store_url ? reviewSavedCatalog(current, report) : current,
-        );
-      }
-    } catch {
-      // Saved listings remain available even if the native inventory fails.
-    }
-  };
 
   const clearCatalogReview = () => setCatalog((current) => current && reviewSavedCatalog(current));
 
@@ -170,20 +149,22 @@ export function useStore(
     setCatalogLoading(true);
     setCatalogError('');
     clearCatalogReview();
+    let checked = false;
+    const saved = (async () => {
+      try {
+        const result = await getSavedStoreCatalog(store_url);
+        if (result && !checked && isCurrentCatalog(store_url, request)) setCatalog(result);
+      } catch {
+        // The live check can still succeed when saved listings are unavailable.
+      }
+    })();
     try {
       const result = await getStoreCatalog(store_url);
-      if (isCurrentCatalog(store_url, request)) {
-        setCatalog(result);
-        if (cache.current?.store_url === store_url) {
-          cacheStoreCatalog(cache.current, result);
-          writeStoreCache(cache.current);
-        }
-      }
+      checked = true;
+      if (isCurrentCatalog(store_url, request)) setCatalog(result);
     } catch (error) {
-      if (isCurrentCatalog(store_url, request)) {
-        setCatalogError(message(error));
-        await loadSavedInstallations(store_url, request);
-      }
+      await saved;
+      if (isCurrentCatalog(store_url, request)) setCatalogError(message(error));
     } finally {
       if (isCurrentCatalog(store_url, request)) setCatalogLoading(false);
     }
@@ -235,7 +216,11 @@ export function useStore(
     void listApplets().then(
       (report) => {
         if (isCurrent()) {
-          const applet = report.applets.find((applet) => applet.applet_id === applet_id);
+          const applet = report.applets.find(
+            (applet) =>
+              applet.applet_id === applet_id &&
+              (!installed_source || installedStoreChannel(store_url, applet_id, applet)),
+          );
           setLocalInstallation(
             applet && { applet, restart_required: report.restart_required.includes(applet_id) },
           );
@@ -243,24 +228,44 @@ export function useStore(
       },
       () => {},
     );
+    let checked = false;
+    const saved = pending_download
+      ? undefined
+      : (async () => {
+          try {
+            const result = await getSavedStoreDetail(store_url, applet_id, installed_source);
+            if (result && !checked && isCurrent()) {
+              setDetail({
+                ...result,
+                releases: result.releases.map((release) => ({ ...release, action: 'conflict' })),
+                installed: null,
+                restart_required: false,
+              });
+            }
+          } catch {
+            // A previously shown installed-source page may no longer belong to this Store.
+            if (installed_source && !checked && isCurrent()) setDetail(undefined);
+          }
+        })();
     try {
       const result = await (pending_download
         ? getStoreDownloadDetail(pending_download)
         : getStoreDetail(store_url, applet_id, installed_source));
+      checked = true;
       const requested = selection.current;
       if (isCurrent() && requested) {
         setDetail(result);
         markFresh(true);
-        if (!installed_source && !pending_download && cache.current?.store_url === store_url) {
+        if (!installed_source && !pending_download) {
           const remembered = requested.version ?? requested.remembered_version;
           const version = requested.channel
             ? reviewStoreRelease(result, requested).release?.version
             : result.releases.find((release) => release.version === remembered)?.version;
-          cacheStoreDetail(cache.current, result, version ?? '');
-          writeStoreCache(cache.current);
+          rememberStoreVersion(store_url, applet_id, version);
         }
       }
     } catch (error) {
+      await saved;
       if (isCurrent()) setDetailError(message(error));
     } finally {
       if (isCurrent()) setDetailLoading(false);
@@ -287,7 +292,8 @@ export function useStore(
         if (config?.store_url) {
           setCatalogError(message(error));
           setCatalogLoading(false);
-          void loadSavedInstallations(config.store_url, ++scope.current.catalog);
+          scope.current.catalog++;
+          clearCatalogReview();
         }
       }
     } finally {
@@ -519,13 +525,11 @@ export function useStore(
       return;
     const next = { ...requested, ...choice, remembered_version: undefined };
     selectDetail(next);
-    const record = cache.current?.details.find(
-      (entry) => entry.applet.applet_id === requested.applet_id,
+    rememberStoreVersion(
+      requested.store_url,
+      requested.applet_id,
+      reviewStoreRelease(displayed_detail, choice).release?.version,
     );
-    if (record && cache.current?.store_url === requested.store_url) {
-      record.selected_version = reviewStoreRelease(displayed_detail, choice).release?.version ?? '';
-      writeStoreCache(cache.current);
-    }
   };
 
   return {
@@ -577,13 +581,11 @@ export function useStore(
       if (!current_url.current || scope.current.operation) return;
       setStatus('');
       setActionError('');
-      const fallback = cache.current && cachedDetail(cache.current, applet_id);
-      const remembered_version = cache.current?.details.find(
-        (entry) => entry.applet.applet_id === applet_id,
-      )?.selected_version;
-      const requested = { store_url: current_url.current, applet_id, remembered_version };
+      const store_url = current_url.current;
+      const remembered_version = rememberedStoreVersion(store_url, applet_id);
+      const requested = { store_url, applet_id, remembered_version };
       selectDetail(requested);
-      setDetail(fallback);
+      setDetail(undefined);
       void loadDetail(requested);
     },
     openUpdate: (source: StoreSource) => {

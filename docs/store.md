@@ -16,14 +16,15 @@ stays in the device's local settings; browsing and installation never require a
 publishing token. Search the catalog, open an applet, and review its version,
 release notes, and declared access before choosing **Install**.
 
-Apell saves the catalog, recently viewed applet details, and browsing preferences
-on this device. Returning to the Store restores the view while Apell checks for
-changes. Saved listings can still be browsed if the Store is unreachable.
+Apell saves public catalog listings and recently viewed applet details on the
+device, including after a restart. Returning to Store shows saved results while
+Apell checks for changes. Discover and Updates can both show saved applet details
+when the Store is unreachable.
 Apell checks local installations to show their installed channels and sources
 in saved listings. Update badges require a fresh Store response.
-Saved applet details default to the installed channel when the installation
-comes from that Store. If no releases for that channel are saved, you can still
-open the applet or browse another channel.
+Saved applet details for an installed source follow that Store and the applet’s
+installed channel, even while Discover points at another Store. If no releases
+for the channel are saved, you can still open the installed applet.
 Installation and updates require a fresh review of the selected release.
 The Store website also saves public listings in the browser.
 

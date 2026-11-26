@@ -1,3 +1,4 @@
+mod browse_cache;
 mod state;
 #[cfg(test)]
 mod tests;
@@ -11,7 +12,7 @@ use apell_core::{
   },
   store_client::{
     normalize_store_url, DownloadCheckpoint, DownloadIdentity, DownloadOutcome, PendingDownload,
-    StoreApplet, StoreClient, StoreRelease,
+    StoreApplet, StoreCatalog, StoreClient, StoreDetail, StoreRelease,
   },
 };
 use serde::{Deserialize, Serialize};
@@ -19,6 +20,7 @@ use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Emitter, Manager};
 
+pub(crate) use browse_cache::BrowseCache;
 pub use state::StoreConfig;
 
 const DOWNLOAD_MISSING: &str =
@@ -46,6 +48,14 @@ struct DetailQuery {
   #[serde(default)]
   installed_source: bool,
   pending_download: Option<DownloadIdentity>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SavedDetailQuery {
+  store_url: String,
+  applet_id: String,
+  #[serde(default)]
+  installed_source: bool,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -82,6 +92,13 @@ struct CatalogItem {
 struct CatalogResult {
   store_url: String,
   applets: Vec<CatalogItem>,
+}
+
+#[derive(Serialize)]
+struct SavedDetailResult {
+  store_url: String,
+  #[serde(flatten)]
+  detail: StoreDetail,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -242,6 +259,47 @@ async fn installed_applet(host: &Host, applet_id: &str) -> Result<InstalledApple
   crate::commands::blocking(move || bundles.installed(&applet_id)).await
 }
 
+fn catalog_result(
+  store_url: String,
+  catalog: StoreCatalog,
+  installed: &AppletListReport,
+  fresh: bool,
+) -> CatalogResult {
+  let applets = catalog
+    .applets
+    .into_iter()
+    .map(|applet| {
+      let review = review_install(installed, &store_url, &applet.applet_id);
+      let installation_unavailable = review.blocked.is_some();
+      let source_conflict = installation_unavailable || review.switch_snapshot.is_some();
+      let update_available = fresh
+        && !source_conflict
+        && review
+          .installed
+          .is_some_and(|saved| has_update(&applet, saved));
+      CatalogItem {
+        applet,
+        installed: review.installed.cloned(),
+        update_available,
+        source_conflict,
+        installation_unavailable,
+      }
+    })
+    .collect();
+  CatalogResult { store_url, applets }
+}
+
+async fn installed_detail_origin(
+  host: &Host,
+  store_url: &str,
+  applet_id: &str,
+) -> Result<String, String> {
+  let origin = normalize_store_url(store_url)?;
+  let saved = installed_applet(host, applet_id).await?;
+  authorize_installed_source(Some(&saved), &origin, applet_id)?;
+  Ok(origin)
+}
+
 pub async fn dispatch(
   app: AppHandle,
   host: &Host,
@@ -260,29 +318,42 @@ pub async fn dispatch(
     "store.catalog" => {
       let request: StoreQuery = input(params)?;
       let store_url = configured(host, &request.store_url).await?;
+      let observation = host.store_browse_cache.observe(&store_url, None);
       let catalog = store_client(host, &store_url)?.catalog().await?;
+      if let Some(observation) = observation {
+        observation
+          .remember(host, browse_cache::Metadata::Catalog(catalog.clone()))
+          .await;
+      }
       let installed = installed(host).await?;
-      let applets = catalog
-        .applets
-        .into_iter()
-        .map(|applet| {
-          let review = review_install(&installed, &store_url, &applet.applet_id);
-          let installation_unavailable = review.blocked.is_some();
-          let source_conflict = installation_unavailable || review.switch_snapshot.is_some();
-          let update_available = !source_conflict
-            && review
-              .installed
-              .is_some_and(|saved| has_update(&applet, saved));
-          CatalogItem {
-            applet,
-            installed: review.installed.cloned(),
-            update_available,
-            source_conflict,
-            installation_unavailable,
-          }
-        })
-        .collect();
-      output(CatalogResult { store_url, applets })
+      output(catalog_result(store_url, catalog, &installed, true))
+    }
+    "store.saved_catalog" => {
+      let request: StoreQuery = input(params)?;
+      let store_url = configured(host, &request.store_url).await?;
+      let Some(catalog) = browse_cache::saved_catalog(host, &store_url).await else {
+        return Ok(Value::Null);
+      };
+      let installed = installed(host).await?;
+      configured(host, &store_url).await?;
+      output(catalog_result(store_url, catalog, &installed, false))
+    }
+    "store.saved_detail" => {
+      let request: SavedDetailQuery = input(params)?;
+      let origin = || async {
+        if request.installed_source {
+          installed_detail_origin(host, &request.store_url, &request.applet_id).await
+        } else {
+          configured(host, &request.store_url).await
+        }
+      };
+      let store_url = origin().await?;
+      let Some(detail) = browse_cache::saved_detail(host, &store_url, &request.applet_id).await
+      else {
+        return Ok(Value::Null);
+      };
+      origin().await?;
+      output(SavedDetailResult { store_url, detail })
     }
     "store.saved_updates" => output(updates::saved(host).await?),
     "store.updates" => output(updates::check(host).await?),
@@ -296,13 +367,19 @@ pub async fn dispatch(
         review_pending_download(&app, host, identity).await?;
         store_url
       } else if request.installed_source {
-        let store_url = normalize_store_url(&request.store_url)?;
-        let saved = installed_applet(host, &request.applet_id).await?;
-        authorize_installed_source(Some(&saved), &store_url, &request.applet_id)?;
-        store_url
+        installed_detail_origin(host, &request.store_url, &request.applet_id).await?
       } else {
         configured(host, &request.store_url).await?
       };
+      let observation = request
+        .pending_download
+        .is_none()
+        .then(|| {
+          host
+            .store_browse_cache
+            .observe(&store_url, Some(&request.applet_id))
+        })
+        .flatten();
       let detail = store_client(host, &store_url)?
         .detail(&request.applet_id)
         .await?;
@@ -310,6 +387,11 @@ pub async fn dispatch(
       let review = review_install(&installed, &store_url, &request.applet_id);
       if request.installed_source {
         authorize_installed_source(review.installed, &store_url, &request.applet_id)?;
+      }
+      if let Some(observation) = observation {
+        observation
+          .remember(host, browse_cache::Metadata::Detail(detail.clone()))
+          .await;
       }
       let pending = match &request.pending_download {
         Some(identity) => Some(review_pending_download(&app, host, identity).await?),

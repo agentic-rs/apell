@@ -189,7 +189,9 @@ export function StoreDetailView({
               <strong>Release {release.version}</strong>
             ) : (
               <p className="store-action-reason">
-                No release is available on the installed channel.
+                {fresh
+                  ? 'No release is available on the installed channel.'
+                  : 'No saved release on the installed channel.'}
               </p>
             )
           ) : (
@@ -332,7 +334,7 @@ export function StoreDetailView({
           {!fresh && (
             <p className="store-action-reason" role="status">
               {refreshing
-                ? 'Checking this applet’s current releases…'
+                ? 'Showing saved details while checking current releases…'
                 : 'Showing saved details. Refresh to check what can be installed.'}
             </p>
           )}
@@ -341,24 +343,24 @@ export function StoreDetailView({
           <div className="store-release-details">
             {release.release_notes && (
               <section>
-                <h3>What’s new</h3>
+                <h3>{fresh ? 'What’s new' : 'Saved release notes'}</h3>
                 <p className="store-release-notes">{release.release_notes}</p>
               </section>
             )}
             <section>
-              <h3>Declared access</h3>
+              <h3>{fresh ? 'Declared access' : 'Saved access declarations'}</h3>
               <ul className="store-permissions">
                 {release.permissions.map((permission) => (
                   <li key={permission}>
                     {permissionName(permission)}
-                    {detail.installed && !detail.installed.permissions.includes(permission) && (
-                      <small>New</small>
-                    )}
+                    {fresh &&
+                      detail.installed &&
+                      !detail.installed.permissions.includes(permission) && <small>New</small>}
                   </li>
                 ))}
                 <li>
                   {release.network ? 'Network access' : 'Network disabled'}
-                  {detail.installed && release.network && !detail.installed.network && (
+                  {fresh && detail.installed && release.network && !detail.installed.network && (
                     <small>New</small>
                   )}
                 </li>
