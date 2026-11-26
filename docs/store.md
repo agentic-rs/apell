@@ -44,6 +44,10 @@ previous rows visible as **Saved result** while it checks for updates. Saved
 results that match the installed package, Store, and channel are also available
 after a restart or when offline. Only current results count toward the Updates
 badge. Open a saved result to check the release before installing it.
+Leaving Updates keeps its current check running. Returning within one minute
+of a successful check reuses the result. Refresh Updates to check again. If an
+installation changes during a check, Apell checks the new state when Updates is
+visible and the current request has finished.
 Review an update's permissions, including newly declared access, then choose
 **Update**. Updates are manual, and existing applet data is retained.
 For an applet installed from the Store you are viewing, open **Device permissions**

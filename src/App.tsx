@@ -13,6 +13,7 @@ import {
 import type { AppletSession } from './lib/types';
 import { Icon } from './components/Icon';
 import { useStoreDownloads } from './components/store/useStoreDownloads';
+import { useStoreUpdates } from './components/store/useStoreUpdates';
 import { useViewportHeight } from './lib/useViewportHeight';
 import { BackNavigation, useBackAction, useBackNavigation } from './lib/backNavigation';
 
@@ -35,6 +36,7 @@ function Shell() {
   const [session, setSession] = useState<AppletSession | null>(null);
   const [starting, setStarting] = useState(nativeAvailable());
   const downloads = useStoreDownloads();
+  const store_updates = useStoreUpdates();
   const [downloads_request, setDownloadsRequest] = useState(0);
   const back = useBackNavigation();
   const scroll = useRef<Record<ShellTab, number>>({ library: 0, store: 0, settings: 0 });
@@ -175,6 +177,7 @@ function Shell() {
                       onLaunch={launch}
                       onBusyChange={setBusy}
                       downloads={downloads}
+                      updates={store_updates}
                       downloads_request={downloads_request}
                       onReturnToLibrary={(store_scroll) => changeTab('library', store_scroll)}
                     />

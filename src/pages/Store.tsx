@@ -18,6 +18,7 @@ import { StoreDownloadsView } from '../components/store/StoreDownloadsView';
 import { storeDownloadId } from '../components/store/StorePendingDownloadNotice';
 import { useStore } from '../components/store/useStore';
 import type { StoreDownloads } from '../components/store/useStoreDownloads';
+import type { StoreUpdates } from '../components/store/useStoreUpdates';
 import './store.css';
 
 type RepairDownload = StorePendingDownload & { restore_snapshot: StoreSwitchSnapshot };
@@ -39,12 +40,14 @@ export function Store({
   onLaunch,
   onBusyChange,
   downloads,
+  updates,
   downloads_request,
   onReturnToLibrary,
 }: {
   onLaunch: (session: AppletSession) => void;
   onBusyChange: (busy: boolean) => void;
   downloads: StoreDownloads;
+  updates: StoreUpdates;
   downloads_request: number;
   onReturnToLibrary: (store_scroll: number) => void;
 }) {
@@ -56,7 +59,7 @@ export function Store({
   const [permission_applet, setPermissionApplet] = useState<InstalledApplet>();
   const downloads_request_handled = useRef(0);
   const downloads_requested = downloads_request > downloads_request_handled.current;
-  const state = useStore(onLaunch, onBusyChange, downloads.refresh, {
+  const state = useStore(onLaunch, onBusyChange, downloads.refresh, updates, {
     downloads_open,
     downloads_requested,
   });

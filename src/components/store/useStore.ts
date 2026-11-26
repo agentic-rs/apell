@@ -3,19 +3,16 @@ import {
   discardStoreDownload,
   getSavedStoreCatalog,
   getSavedStoreDetail,
-  getSavedStoreUpdates,
   getStoreCatalog,
   getStoreConfig,
   getStoreDetail,
   getStoreDownloadDetail,
-  getStoreUpdates,
   installStoreRelease,
   launchApplet,
   listApplets,
   message,
   onAppletInstallationChanged,
   restartApplet,
-  retryStoreUpdates,
   setStoreUrl,
 } from '../../lib/tauri';
 import type {
@@ -28,8 +25,6 @@ import type {
   StorePendingDownload,
   StoreReleaseOption,
   StoreSource,
-  StoreUpdateResults,
-  StoreUpdateSource,
 } from '../../lib/types';
 import {
   installedStoreChannel,
@@ -48,6 +43,7 @@ import {
   type StoreBrowsePreferences,
 } from './cache';
 import { useStoreTransfer } from './useStoreTransfer';
+import type { StoreUpdates } from './useStoreUpdates';
 
 type StoreOperation = 'save' | 'install' | 'open' | 'restart' | 'discard';
 interface DetailTarget {
@@ -63,6 +59,7 @@ export function useStore(
   onLaunch: (session: AppletSession) => void,
   onBusyChange: (busy: boolean) => void,
   refreshDownloads: () => void,
+  store_updates: StoreUpdates,
   {
     downloads_open,
     downloads_requested,
@@ -71,7 +68,6 @@ export function useStore(
   const [config, setConfig] = useState<StoreConfig>();
   const [browse, setBrowse] = useState(DEFAULT_BROWSE);
   const [catalog, setCatalog] = useState<StoreCatalog>();
-  const [updates, setUpdates] = useState<StoreUpdateResults>();
   const [updates_query, setUpdatesQuery] = useState('');
   const [detail, setDetail] = useState<StoreDetail>();
   const [local_installation, setLocalInstallation] = useState<AppletInstallResult>();
@@ -81,14 +77,10 @@ export function useStore(
   const [list_refresh, setListRefresh] = useState(0);
   const [detail_refresh, setDetailRefresh] = useState(0);
   const [catalog_loading, setCatalogLoading] = useState(false);
-  const [updates_loading, setUpdatesLoading] = useState(false);
-  const [retrying_store, setRetryingStore] = useState<string>();
-  const [updates_notice, setUpdatesNotice] = useState('');
   const [detail_loading, setDetailLoading] = useState(false);
   const [detail_fresh, setDetailFresh] = useState(false);
   const [config_error, setConfigError] = useState('');
   const [catalog_error, setCatalogError] = useState('');
-  const [updates_error, setUpdatesError] = useState('');
   const [detail_error, setDetailError] = useState('');
   const [status, setStatus] = useState('');
   const [action_error, setActionError] = useState('');
@@ -98,11 +90,10 @@ export function useStore(
     alive: false,
     config: 0,
     catalog: 0,
-    updates: 0,
     detail: 0,
     operation: '',
   });
-  const list_checked = useRef({ catalog: false, updates: false });
+  const catalog_checked = useRef(false);
   const current_url = useRef<string | null>(null);
   const selection = useRef<DetailSelection | undefined>(undefined);
   const fresh = useRef<StoreDetail>(undefined);
@@ -122,7 +113,7 @@ export function useStore(
     if (current_url.current === store_url) return;
     current_url.current = store_url;
     scope.current.catalog++;
-    list_checked.current.catalog = false;
+    catalog_checked.current = false;
     const preferences = store_url ? readStorePreferences(store_url) : DEFAULT_BROWSE;
     setBrowse((current) => {
       return current.updates_only ? { ...preferences, updates_only: true } : preferences;
@@ -149,42 +140,15 @@ export function useStore(
 
   const clearCatalogReview = () => setCatalog((current) => current && reviewSavedCatalog(current));
 
-  const markUpdatesSaved = (changed_applet_id?: string) =>
-    setUpdates(
-      (current) =>
-        current && {
-          fresh: false,
-          sources: changed_applet_id
-            ? current.sources.map((source) => ({
-                ...source,
-                updates: source.updates.filter(
-                  ({ applet }) => applet.applet_id !== changed_applet_id,
-                ),
-                saved_updates: source.saved_updates.filter(
-                  ({ applet }) => applet.applet_id !== changed_applet_id,
-                ),
-                unresolved_applets: source.unresolved_applets.filter(
-                  ({ applet }) => applet.applet_id !== changed_applet_id,
-                ),
-              }))
-            : current.sources,
-        },
-    );
-
-  const invalidateLists = (changed_applet_id?: string) => {
+  const invalidateCatalog = () => {
     scope.current.catalog++;
-    scope.current.updates++;
-    list_checked.current = { catalog: false, updates: false };
+    catalog_checked.current = false;
     setCatalogLoading(false);
-    setUpdatesLoading(false);
-    setRetryingStore(undefined);
-    setUpdatesNotice('');
     clearCatalogReview();
-    markUpdatesSaved(changed_applet_id);
   };
 
   const loadCatalog = async (store_url: string) => {
-    list_checked.current.catalog = true;
+    catalog_checked.current = true;
     const request = ++scope.current.catalog;
     setCatalogLoading(true);
     setCatalogError('');
@@ -207,89 +171,6 @@ export function useStore(
       if (isCurrentCatalog(store_url, request)) setCatalogError(message(error));
     } finally {
       if (isCurrentCatalog(store_url, request)) setCatalogLoading(false);
-    }
-  };
-
-  const loadUpdates = async () => {
-    list_checked.current.updates = true;
-    const request = ++scope.current.updates;
-    const isCurrent = () => scope.current.alive && scope.current.updates === request;
-    setUpdatesLoading(true);
-    setRetryingStore(undefined);
-    setUpdatesNotice('');
-    setUpdatesError('');
-    markUpdatesSaved();
-    let checked = false;
-    const saved = (async () => {
-      try {
-        const result = await getSavedStoreUpdates();
-        if (isCurrent() && !checked) setUpdates({ ...result, fresh: false });
-      } catch {
-        // A saved result is optional. The live check still runs.
-      }
-    })();
-    try {
-      const result = await getStoreUpdates();
-      checked = true;
-      if (isCurrent()) setUpdates({ ...result, fresh: true });
-    } catch (error) {
-      await saved;
-      if (!isCurrent()) return;
-      setUpdatesError(message(error));
-    } finally {
-      if (isCurrent()) setUpdatesLoading(false);
-    }
-  };
-
-  const retryUpdateSource = async (store_url: string) => {
-    if (scope.current.operation || updates_loading || retrying_store || !updates?.fresh) return;
-    const previous = updates.sources.find((source) => source.store_url === store_url);
-    if (!previous || (!previous.error && previous.checked_count === previous.installed_count))
-      return;
-    const request = ++scope.current.updates;
-    const isCurrent = () => scope.current.alive && scope.current.updates === request;
-    const replace = (source: StoreUpdateSource | null) => {
-      setUpdates(
-        (current) =>
-          current && {
-            ...current,
-            sources: current.sources.flatMap((entry) =>
-              entry.store_url === store_url ? (source ? [source] : []) : [entry],
-            ),
-          },
-      );
-    };
-    setRetryingStore(store_url);
-    setUpdatesNotice('');
-    try {
-      const source = await retryStoreUpdates(store_url);
-      if (!isCurrent()) return;
-      if (source && source.store_url !== store_url)
-        throw new Error('Could not verify this Store’s update check.');
-      replace(source);
-      if (!source) setUpdatesNotice('No installed applets use this Store.');
-      else if (!source.error && source.checked_count === source.installed_count) {
-        setUpdatesNotice(
-          source.updates.length
-            ? `Checked updates from ${store_url}.`
-            : `No updates available from ${store_url}.`,
-        );
-      }
-    } catch (error) {
-      if (!isCurrent()) return;
-      replace({
-        ...previous,
-        checked_count: 0,
-        updates: [],
-        saved_updates: [...previous.updates, ...previous.saved_updates],
-        unresolved_applets: previous.unresolved_applets.map(({ applet }) => ({
-          applet,
-          reason: 'not_checked',
-        })),
-        error: message(error),
-      });
-    } finally {
-      if (isCurrent()) setRetryingStore(undefined);
     }
   };
 
@@ -387,7 +268,7 @@ export function useStore(
   useLayoutEffect(() => {
     scope.current.alive = true;
     markFresh();
-    invalidateLists();
+    invalidateCatalog();
     if (selection.current) {
       setLocalInstallation(undefined);
       setDetailLoading(true);
@@ -398,7 +279,6 @@ export function useStore(
       fresh.current = undefined;
       scope.current.config++;
       scope.current.catalog++;
-      scope.current.updates++;
       scope.current.detail++;
       deferred_detail.current = undefined;
     };
@@ -410,7 +290,7 @@ export function useStore(
     let open = true;
     const subscription = onAppletInstallationChanged((applet_id) => {
       if (!open || !scope.current.alive) return;
-      invalidateLists(applet_id);
+      invalidateCatalog();
       setListRefresh((revision) => revision + 1);
       const target = selection.current?.target;
       if (target?.applet_id !== applet_id) return;
@@ -429,20 +309,20 @@ export function useStore(
   }, []);
 
   // The Library shortcut can replace the previously visible Store route on reveal.
-  const show_list =
-    config_check !== undefined &&
-    !address_open &&
-    !detail_selection &&
-    !downloads_open &&
-    !downloads_requested;
+  const show_list = !address_open && !detail_selection && !downloads_open && !downloads_requested;
   const show_updates = show_list && browse.updates_only;
+  const watchUpdates = store_updates.watch;
   const discover_url =
-    show_list && !browse.updates_only && !config_error ? config?.store_url : null;
+    show_list && !browse.updates_only && config_check !== undefined && !config_error
+      ? config?.store_url
+      : null;
+  useLayoutEffect(() => {
+    if (show_updates) return watchUpdates();
+  }, [show_updates, watchUpdates]);
   useEffect(() => {
     if (scope.current.config !== config_check) return;
-    if (show_updates && !list_checked.current.updates) void loadUpdates();
-    if (discover_url && !list_checked.current.catalog) void loadCatalog(discover_url);
-  }, [show_updates, discover_url, config_check, list_refresh]);
+    if (discover_url && !catalog_checked.current) void loadCatalog(discover_url);
+  }, [discover_url, config_check, list_refresh]);
 
   const configured_detail =
     !detail_selection?.target.installed_source && !detail_selection?.pending_download;
@@ -636,7 +516,8 @@ export function useStore(
         markFresh();
         setLocalInstallation(installed);
         selectDetail(next_selection);
-        invalidateLists(installed.applet.applet_id);
+        invalidateCatalog();
+        store_updates.invalidate(installed.applet.applet_id);
       } catch (error) {
         if (has_checkpoint && scope.current.alive && scope.current.detail === review_revision) {
           void loadDetail(requested);
@@ -687,7 +568,7 @@ export function useStore(
     browse,
     updateBrowse,
     catalog,
-    updates,
+    updates: store_updates.report,
     updates_query,
     setUpdatesQuery,
     detail: displayed_detail,
@@ -713,15 +594,15 @@ export function useStore(
     address_open,
     setAddressOpen,
     initial_loading: config_check === undefined && !config,
-    catalog_loading: catalog_loading || (!!discover_url && !list_checked.current.catalog),
-    updates_loading,
-    retrying_store,
-    updates_notice,
+    catalog_loading: catalog_loading || (!!discover_url && !catalog_checked.current),
+    updates_loading: store_updates.loading,
+    retrying_store: store_updates.retrying_store,
+    updates_notice: store_updates.notice,
     detail_loading,
     detail_fresh,
     config_error,
     catalog_error,
-    updates_error,
+    updates_error: store_updates.error,
     detail_error,
     status,
     action_error,
@@ -755,15 +636,16 @@ export function useStore(
     refreshCatalog: () => {
       if (scope.current.operation || scope.current.config !== config_check) return;
       if (!config || config_error) {
-        list_checked.current.catalog = false;
+        catalog_checked.current = false;
         void loadConfig();
       } else if (current_url.current) void loadCatalog(current_url.current);
     },
     refreshUpdates: () => {
-      if (scope.current.operation || retrying_store) return;
-      void loadUpdates();
+      if (!scope.current.operation) void store_updates.refresh();
     },
-    retryUpdateSource,
+    retryUpdateSource: (store_url: string) => {
+      if (!scope.current.operation) void store_updates.retrySource(store_url);
+    },
     retryDetail: () => {
       if (!selection.current || scope.current.operation) return;
       void loadDetail(selection.current);
