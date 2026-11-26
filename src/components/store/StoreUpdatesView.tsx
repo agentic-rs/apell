@@ -50,18 +50,22 @@ export function StoreUpdatesView({
     source,
     unchecked: fresh ? source.installed_count - source.checked_count : 0,
     check_error: fresh ? source.error : undefined,
-    matching: [
+    rows: [
       ...source.updates.map((entry) => ({ ...entry, saved: !fresh })),
       ...source.saved_updates.map((entry) => ({ ...entry, saved: true })),
+      ...(fresh ? source.unresolved_applets : []),
     ].filter(({ applet }) => applet.name.toLocaleLowerCase().includes(search)),
   }));
   const visible = groups.filter(
-    ({ check_error, unchecked, matching }) => unchecked > 0 || check_error || matching.length > 0,
+    ({ check_error, unchecked, rows }) => unchecked > 0 || check_error || rows.length > 0,
   );
   const no_installations = groups.every(({ source }) => source.installed_count === 0);
   const has_updates = groups.some(
     ({ source }) => source.updates.length || source.saved_updates.length,
   );
+  const has_unresolved = fresh && groups.some(({ source }) => source.unresolved_applets.length);
+  const no_matches =
+    search !== '' && (has_updates || has_unresolved) && groups.every(({ rows }) => !rows.length);
   return (
     <>
       {(loading || (!fresh && !error)) && (
@@ -86,25 +90,23 @@ export function StoreUpdatesView({
           {notice}
         </p>
       )}
-      {!loading && !error && fresh && !visible.length && (
+      {no_matches && (
         <div className="store-empty">
-          <h2>
-            {no_installations
-              ? 'No Store applets installed'
-              : has_updates
-                ? 'No matching updates'
-                : 'No updates available'}
-          </h2>
+          <h2>No matching applets</h2>
+          <p>Try another name or clear your search.</p>
+        </div>
+      )}
+      {!loading && !error && fresh && !visible.length && !no_matches && (
+        <div className="store-empty">
+          <h2>{no_installations ? 'No Store applets installed' : 'No updates available'}</h2>
           <p>
             {no_installations
               ? 'Applets installed from a Store will be checked here.'
-              : has_updates
-                ? 'Try another name or clear your search.'
-                : 'Apell checked each installed Store applet on its current channel.'}
+              : 'Apell checked each installed Store applet on its current channel.'}
           </p>
         </div>
       )}
-      {visible.map(({ source, check_error, unchecked, matching }) => (
+      {visible.map(({ source, check_error, unchecked, rows }) => (
         <section
           className="store-update-group"
           key={source.store_url}
@@ -137,12 +139,20 @@ export function StoreUpdatesView({
               </button>
             </div>
           )}
-          {!!matching.length && (
+          {!!rows.length && (
             <ul className="store-list">
-              {matching.map(({ applet, version, saved }) => {
+              {rows.map((row) => {
+                const { applet } = row;
                 const installed_source = applet.source;
                 if (installed_source?.kind !== 'store') return null;
+                const channel = storeChannelName(installed_source.channel);
                 const version_id = `store-update-version-${applet.applet_id}`;
+                const action =
+                  'reason' in row
+                    ? 'View installed'
+                    : row.saved
+                      ? 'Check saved release for'
+                      : 'Review update for';
                 return (
                   <li key={applet.applet_id}>
                     <button
@@ -153,7 +163,7 @@ export function StoreUpdatesView({
                         installed_source.channel,
                       ])}
                       onClick={(event) => onSelect(installed_source, event.currentTarget)}
-                      aria-label={`${saved ? 'Check saved release' : 'Review update'} for ${applet.name}`}
+                      aria-label={`${action} ${applet.name}`}
                       aria-describedby={version_id}
                     >
                       <span className="store-icon" aria-hidden="true">
@@ -162,13 +172,24 @@ export function StoreUpdatesView({
                       <span className="store-card-copy">
                         <strong>{applet.name}</strong>
                         <span className="store-card-meta" id={version_id}>
-                          <span className="store-badge">
-                            {storeChannelName(installed_source.channel)}
-                          </span>
-                          {saved && (
-                            <span className="store-badge store-badge-muted">Saved result</span>
+                          <span className="store-badge">{channel}</span>
+                          {'reason' in row ? (
+                            <>
+                              <span>Installed {applet.version}</span>
+                              <span>
+                                {row.reason === 'release_unavailable'
+                                  ? `No ${channel} release`
+                                  : 'Update status unknown'}
+                              </span>
+                            </>
+                          ) : (
+                            <>
+                              {row.saved && (
+                                <span className="store-badge store-badge-muted">Saved result</span>
+                              )}
+                              {applet.version} → {row.version}
+                            </>
                           )}
-                          {applet.version} → {version}
                         </span>
                       </span>
                       <span className="store-card-arrow" aria-hidden="true">

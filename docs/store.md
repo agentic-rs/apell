@@ -35,8 +35,11 @@ Open an applet to choose its release channel and see that channel’s version
 history. Apell recommends Stable for new installs when available. **Updates**
 checks each installed Store applet against its recorded Store and channel. It
 works when no Store is configured for Discover. If a source cannot be checked,
-Apell still shows updates from the other sources. Choose **Retry this Store**
-to recheck that source while keeping the other results visible. The Updates page keeps
+Apell still shows updates from the other sources. Updates shows which installed
+applets could not be checked or have no release listed on their channel. Open
+an installed row to see its version and manage its device permissions offline.
+Choose **Retry this Store** to recheck that source while keeping the other
+results visible. The Updates page keeps
 previous rows visible as **Saved result** while it checks for updates. Saved
 results that match the installed package, Store, and channel are also available
 after a restart or when offline. Only current results count toward the Updates

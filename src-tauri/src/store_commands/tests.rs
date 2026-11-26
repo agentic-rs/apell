@@ -1,5 +1,8 @@
 use super::{
-  updates::{cache_projection, check_updates, read_cache, write_cache, SavedUpdate, SavedUpdates},
+  updates::{
+    cache_projection, check_updates, read_cache, saved_report, write_cache, SavedUpdate,
+    SavedUpdates, UnresolvedReason,
+  },
   *,
 };
 use apell_core::{
@@ -270,6 +273,7 @@ async fn updates_fetch_only_distinct_canonical_installed_origins() {
   );
   assert_eq!(first.updates.len(), 1);
   assert_eq!(first.updates[0].applet.manifest.applet_id, "alpha");
+  assert!(first.unresolved_applets.is_empty());
   assert_eq!(
     (
       &*second.store_url,
@@ -279,6 +283,7 @@ async fn updates_fetch_only_distinct_canonical_installed_origins() {
     (bravo, 1, 1)
   );
   assert!(second.updates.is_empty());
+  assert!(second.unresolved_applets.is_empty());
 }
 
 #[tokio::test]
@@ -326,6 +331,7 @@ async fn updates_keep_successful_results_when_an_origin_fails() {
   assert!(sources[0]["updates"][0].get("release").is_none());
   assert!(sources[0].get("error").is_none());
   assert!(sources[0]["saved_updates"].as_array().unwrap().is_empty());
+  assert_eq!(sources[0]["unresolved_applets"], json!([]));
   assert_eq!(sources[1]["store_url"], unavailable);
   assert_eq!(sources[1]["installed_count"], 2);
   assert_eq!(sources[1]["checked_count"], 0);
@@ -336,6 +342,10 @@ async fn updates_keep_successful_results_when_an_origin_fails() {
   assert_eq!(saved.len(), 1);
   assert_eq!(saved[0]["applet"]["applet_id"], "other");
   assert_eq!(saved[0]["version"], "2.0.0");
+  let unresolved = sources[1]["unresolved_applets"].as_array().unwrap();
+  assert_eq!(unresolved.len(), 1);
+  assert_eq!(unresolved[0]["applet"]["applet_id"], "nightly");
+  assert_eq!(unresolved[0]["reason"], "not_checked");
 }
 
 #[tokio::test]
@@ -383,6 +393,21 @@ async fn updates_follow_each_installed_channel_and_keep_local_artwork() {
     Some("data:image/png;base64,aW5zdGFsbGVk")
   );
   assert_eq!(update.version, "2.0.0-beta.1");
+  assert_eq!(
+    source
+      .unresolved_applets
+      .iter()
+      .map(|entry| (entry.applet.manifest.applet_id.as_str(), &entry.reason))
+      .collect::<Vec<_>>(),
+    [
+      ("missing-channel", &UnresolvedReason::ReleaseUnavailable),
+      ("unlisted", &UnresolvedReason::ReleaseUnavailable),
+    ]
+  );
+  assert_eq!(
+    output(&source.unresolved_applets[0]).unwrap()["reason"],
+    "release_unavailable"
+  );
 }
 
 #[tokio::test]
@@ -592,17 +617,61 @@ async fn update_cache_revalidates_installations_changed_during_the_network_check
   };
   assert_eq!((online.installed_count, online.checked_count), (2, 1));
   assert!(online.updates.is_empty() && online.saved_updates.is_empty());
+  assert_eq!(online.unresolved_applets.len(), 1);
+  assert_eq!(
+    online.unresolved_applets[0].applet.manifest.applet_id,
+    "missing"
+  );
+  assert_eq!(
+    online.unresolved_applets[0].reason,
+    UnresolvedReason::ReleaseUnavailable
+  );
   assert_eq!((offline.installed_count, offline.checked_count), (3, 0));
   assert_eq!(offline.saved_updates.len(), 1);
   assert_eq!(offline.saved_updates[0].applet.manifest.applet_id, "match");
   assert_eq!(moved.store_url, foreign);
   assert!(moved.saved_updates.is_empty());
+  assert_eq!(moved.unresolved_applets.len(), 1);
+  assert_eq!(
+    moved.unresolved_applets[0].applet.manifest.applet_id,
+    "moved"
+  );
+  assert_eq!(
+    moved.unresolved_applets[0].reason,
+    UnresolvedReason::NotChecked
+  );
   assert_eq!(
     cache_projection(&result, None)
       .into_keys()
       .collect::<Vec<_>>(),
     ["match"]
   );
+}
+
+#[test]
+fn saved_update_report_keeps_matching_hints_without_reporting_unchecked_applets() {
+  let origin = "https://store.example";
+  let mut report = empty_report();
+  report.applets = vec![
+    store_installation("sample", origin, "1.0.0", StoreChannel::Stable),
+    store_installation("neighbor", origin, "1.0.0", StoreChannel::Stable),
+    store_installation(
+      "foreign",
+      "https://other.example",
+      "1.0.0",
+      StoreChannel::Stable,
+    ),
+  ];
+  let saved = SavedUpdates::from([("sample".into(), hint(&report.applets[0], "2.0.0"))]);
+  let result = saved_report(report, &saved);
+  let [source] = result.sources.as_slice() else {
+    panic!("expected only the source with a matching saved update");
+  };
+  assert_eq!(source.store_url, origin);
+  assert_eq!((source.installed_count, source.checked_count), (2, 0));
+  assert_eq!(source.saved_updates.len(), 1);
+  assert_eq!(source.saved_updates[0].applet.manifest.applet_id, "sample");
+  assert!(source.updates.is_empty() && source.unresolved_applets.is_empty());
 }
 
 #[tokio::test]

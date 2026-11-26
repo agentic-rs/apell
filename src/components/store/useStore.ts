@@ -163,6 +163,9 @@ export function useStore(
                 saved_updates: source.saved_updates.filter(
                   ({ applet }) => applet.applet_id !== changed_applet_id,
                 ),
+                unresolved_applets: source.unresolved_applets.filter(
+                  ({ applet }) => applet.applet_id !== changed_applet_id,
+                ),
               }))
             : current.sources,
         },
@@ -279,6 +282,10 @@ export function useStore(
         checked_count: 0,
         updates: [],
         saved_updates: [...previous.updates, ...previous.saved_updates],
+        unresolved_applets: previous.unresolved_applets.map(({ applet }) => ({
+          applet,
+          reason: 'not_checked',
+        })),
         error: message(error),
       });
     } finally {

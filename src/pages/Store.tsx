@@ -380,6 +380,11 @@ export function Store({
                         {installed_source?.kind === 'store' &&
                           ` · ${storeChannelName(installed_source.channel)}`}
                       </p>
+                      {state.installed_source && installed_source?.kind === 'store' && (
+                        <p>
+                          <bdi>{installed_source.store_url}</bdi>
+                        </p>
+                      )}
                     </div>
                   </div>
                   <div className="store-install-actions">

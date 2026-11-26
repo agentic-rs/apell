@@ -152,12 +152,17 @@ export interface StoreUpdateEntry {
   applet: InstalledApplet;
   version: string;
 }
+export interface StoreUnresolvedUpdate {
+  applet: InstalledApplet;
+  reason: 'not_checked' | 'release_unavailable';
+}
 export interface StoreUpdateSource {
   store_url: string;
   installed_count: number;
   checked_count: number;
   updates: StoreUpdateEntry[];
   saved_updates: StoreUpdateEntry[];
+  unresolved_applets: StoreUnresolvedUpdate[];
   error?: string;
 }
 export interface StoreUpdatesReport {

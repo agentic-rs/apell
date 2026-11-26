@@ -35,6 +35,7 @@ pub(super) struct UpdateSource {
   pub(super) checked_count: usize,
   pub(super) updates: Vec<AppletUpdate>,
   pub(super) saved_updates: Vec<AppletUpdate>,
+  pub(super) unresolved_applets: Vec<UnresolvedUpdate>,
   #[serde(skip_serializing_if = "Option::is_none")]
   error: Option<String>,
 }
@@ -43,6 +44,19 @@ pub(super) struct UpdateSource {
 pub(super) struct AppletUpdate {
   pub(super) applet: InstalledApplet,
   pub(super) version: String,
+}
+
+#[derive(Serialize)]
+pub(super) struct UnresolvedUpdate {
+  pub(super) applet: InstalledApplet,
+  pub(super) reason: UnresolvedReason,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum UnresolvedReason {
+  NotChecked,
+  ReleaseUnavailable,
 }
 
 #[derive(Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -56,16 +70,25 @@ pub(super) struct SavedUpdate {
 pub(super) type SavedUpdates = BTreeMap<String, SavedUpdate>;
 type Catalogs = BTreeMap<String, Result<StoreCatalog, String>>;
 
+enum ReportMode {
+  Live,
+  Saved,
+}
+
 pub(super) async fn saved(host: &Host) -> Result<UpdatesResult, String> {
   let saved = read_saved(host).await;
   if saved.is_empty() {
     return Ok(UpdatesResult { sources: vec![] });
   }
-  let mut report = update_report(installed(host).await?, Catalogs::new(), &saved);
+  Ok(saved_report(installed(host).await?, &saved))
+}
+
+pub(super) fn saved_report(report: AppletListReport, saved: &SavedUpdates) -> UpdatesResult {
+  let mut report = update_report(report, Catalogs::new(), saved, ReportMode::Saved);
   report
     .sources
     .retain(|source| !source.saved_updates.is_empty());
-  Ok(report)
+  report
 }
 
 pub(super) async fn check(host: &Host) -> Result<UpdatesResult, String> {
@@ -130,7 +153,12 @@ where
     .map(|source| source.store_url.clone())
     .collect();
   if origins.is_empty() {
-    return Ok(update_report(initial, Catalogs::new(), saved));
+    return Ok(update_report(
+      initial,
+      Catalogs::new(),
+      saved,
+      ReportMode::Live,
+    ));
   }
   let fetch_catalog = &fetch_catalog;
   let catalogs = stream::iter(origins)
@@ -143,7 +171,12 @@ where
     .await;
   // Installations can change while a Store responds. Compare against the
   // current source, package, and channel before reporting or saving a result.
-  Ok(update_report(read_installed().await?, catalogs, saved))
+  Ok(update_report(
+    read_installed().await?,
+    catalogs,
+    saved,
+    ReportMode::Live,
+  ))
 }
 
 fn installed_by_store(report: AppletListReport) -> BTreeMap<String, Vec<InstalledApplet>> {
@@ -175,6 +208,7 @@ fn update_report(
   report: AppletListReport,
   mut catalogs: Catalogs,
   saved: &SavedUpdates,
+  mode: ReportMode,
 ) -> UpdatesResult {
   let sources = installed_by_store(report)
     .into_iter()
@@ -186,6 +220,7 @@ fn update_report(
         checked_count: 0,
         updates: Vec::new(),
         saved_updates: Vec::new(),
+        unresolved_applets: Vec::new(),
         error: None,
       };
       match check {
@@ -200,6 +235,10 @@ fn update_report(
               .get(applet.manifest.applet_id.as_str())
               .and_then(|listing| installed_channel_release(listing, &applet))
             else {
+              source.unresolved_applets.push(UnresolvedUpdate {
+                applet,
+                reason: UnresolvedReason::ReleaseUnavailable,
+              });
               continue;
             };
             source.checked_count += 1;
@@ -213,10 +252,19 @@ fn update_report(
         }
         failed => {
           source.error = failed.and_then(Result::err);
-          source.saved_updates = applets
-            .into_iter()
-            .filter_map(|applet| restore_hint(applet, saved))
-            .collect();
+          for applet in applets {
+            if let Some(version) = saved_update_version(&applet, saved) {
+              source.saved_updates.push(AppletUpdate {
+                applet,
+                version: version.to_owned(),
+              });
+            } else if matches!(mode, ReportMode::Live) {
+              source.unresolved_applets.push(UnresolvedUpdate {
+                applet,
+                reason: UnresolvedReason::NotChecked,
+              });
+            }
+          }
         }
       }
       source
@@ -225,8 +273,8 @@ fn update_report(
   UpdatesResult { sources }
 }
 
-fn restore_hint(applet: InstalledApplet, saved: &SavedUpdates) -> Option<AppletUpdate> {
-  let source = store_source(&applet)?;
+fn saved_update_version<'a>(applet: &InstalledApplet, saved: &'a SavedUpdates) -> Option<&'a str> {
+  let source = store_source(applet)?;
   let hint = saved.get(&applet.manifest.applet_id)?;
   if &hint.source != source || hint.sha256 != applet.sha256 || hint.version.len() > 80 {
     return None;
@@ -235,10 +283,7 @@ fn restore_hint(applet: InstalledApplet, saved: &SavedUpdates) -> Option<AppletU
   let installed = Version::parse(&applet.manifest.version).ok()?;
   (source.channel == StoreChannel::from_prerelease(!version.pre.is_empty())
     && version.cmp_precedence(&installed).is_gt())
-  .then(|| AppletUpdate {
-    applet,
-    version: hint.version.clone(),
-  })
+  .then_some(hint.version.as_str())
 }
 
 pub(super) fn cache_projection(report: &UpdatesResult, store_url: Option<&str>) -> SavedUpdates {

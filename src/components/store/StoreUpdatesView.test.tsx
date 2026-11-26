@@ -30,9 +30,10 @@ const saved = {
   checked_count: 0,
   updates: [],
   saved_updates: [offer('journal', first_store)],
+  unresolved_applets: [],
 };
 
-function render(updates?: StoreUpdateResults, loading = false, error = '') {
+function render(updates?: StoreUpdateResults, loading = false, error = '', query = '') {
   const noop = () => {};
   return renderToStaticMarkup(
     <StoreCatalogView
@@ -41,7 +42,7 @@ function render(updates?: StoreUpdateResults, loading = false, error = '') {
       download_count={0}
       loading={loading}
       error={error}
-      query=""
+      query={query}
       updates_only
       onQuery={noop}
       onFilter={noop}
@@ -72,6 +73,7 @@ describe('Store update check results', () => {
         checked_count: 1,
         updates: [offer('canvas', second_store)],
         saved_updates: [],
+        unresolved_applets: [],
       },
     ];
     const checking = render({ fresh: false, sources }, true);
@@ -90,13 +92,21 @@ describe('Store update check results', () => {
     const html = render({
       fresh: true,
       sources: [
-        { ...saved, error: 'This Store is unavailable.' },
+        {
+          ...saved,
+          installed_count: 2,
+          unresolved_applets: [
+            { applet: offer('reader', first_store).applet, reason: 'not_checked' },
+          ],
+          error: 'This Store is unavailable.',
+        },
         {
           store_url: second_store,
           installed_count: 1,
           checked_count: 1,
           updates: [offer('canvas', second_store)],
           saved_updates: [],
+          unresolved_applets: [],
         },
       ],
     });
@@ -104,9 +114,42 @@ describe('Store update check results', () => {
     expect(html).toContain(`aria-label="Retry updates from ${first_store}"`);
     expect(html).not.toContain(`aria-label="Retry updates from ${second_store}"`);
     expect(html).toContain('Check saved release for journal');
+    expect(html).toContain('View installed reader');
+    expect(html).toContain('Installed 1.0.0');
+    expect(html).toContain('Update status unknown');
     expect(html).toContain('Review update for canvas');
     expect(html).toContain('Updates (1)');
     expect(html).not.toContain('Updates (2)');
+  });
+
+  it('lets you find an installed applet with no release on its current channel', () => {
+    const applet = { ...offer('reader', first_store).applet, version: '1.0.0-nightly.1' };
+    applet.source = {
+      kind: 'store',
+      store_url: first_store,
+      applet_id: 'reader',
+      channel: 'nightly',
+    };
+    const report: StoreUpdateResults = {
+      fresh: true,
+      sources: [
+        {
+          ...saved,
+          saved_updates: [],
+          unresolved_applets: [{ applet, reason: 'release_unavailable' }],
+        },
+      ],
+    };
+    const html = render(report, false, '', 'Reade');
+    expect(html).toContain('View installed reader');
+    expect(html).toContain('Installed 1.0.0-nightly.1');
+    expect(html).toContain('No Nightly release');
+    expect(html).not.toContain('Updates (');
+    const filtered = render(report, false, '', 'canvas');
+    expect(filtered).toContain('No matching applets');
+    expect(filtered).not.toContain('View installed reader');
+    expect(filtered).not.toContain('No updates available');
+    expect(render({ ...report, fresh: false }, true)).not.toContain('No Nightly release');
   });
 
   it('distinguishes a failed whole check from a result with no updates', () => {

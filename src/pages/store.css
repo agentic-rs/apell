@@ -213,6 +213,7 @@
 }
 .store-card-meta {
   margin-top: 4px;
+  overflow-wrap: anywhere;
 }
 .store-badge {
   display: inline-block;
