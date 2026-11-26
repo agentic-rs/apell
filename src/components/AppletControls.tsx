@@ -10,6 +10,7 @@ import { Icon } from './Icon';
 import { Sheet } from './Sheet';
 import { AppletChannel } from './AppletChannel';
 import { OperationScope } from './providers/state';
+import './AppletControls.css';
 
 function PermissionAccess({
   session,
@@ -62,11 +63,13 @@ function PermissionAccess({
     <div>
       <dt id={label_id}>{managed_permission_labels[permission]}</dt>
       <dd>
-        {read_only || mode === 'unavailable' ? (
-          mode && mode !== 'unavailable' ? (
+        {mode === 'unavailable' ? (
+          'Unavailable on this platform'
+        ) : read_only ? (
+          mode ? (
             permission_mode_labels[mode]
           ) : (
-            'Unavailable'
+            'Not checked'
           )
         ) : mode ? (
           <select
@@ -122,6 +125,13 @@ export function AppletControls({
   const { manifest } = session;
   const [panel, setPanel] = useState<'menu' | 'about' | null>(null);
   const read_only = disabled || Boolean(stopped);
+  const device_access_id = useId();
+  const package_access_id = useId();
+  const rows = appletPermissionRows({ ...manifest, has_lib: session.has_lib });
+  const device_rows = rows.filter((row) => row.kind === 'managed' || row.key === 'photos');
+  const package_rows = rows
+    .filter((row) => row.kind === 'fixed')
+    .filter((row) => row.key !== 'photos');
   return (
     <>
       <div className="applet-controls" role="group" aria-label="Applet controls">
@@ -181,6 +191,33 @@ export function AppletControls({
             <div className="applet-about">
               <h3>{manifest.name}</h3>
               <p>Version {manifest.version}</p>
+              {device_rows.length > 0 && (
+                <section aria-labelledby={device_access_id}>
+                  <h4 id={device_access_id}>Device access</h4>
+                  {device_rows.some((row) => row.kind === 'managed' && !row.unavailable_reason) && (
+                    <p className="applet-about-device-note">
+                      Apell’s approvals still depend on your system permissions.
+                    </p>
+                  )}
+                  <dl className="applet-access">
+                    {device_rows.map((row) =>
+                      row.kind === 'managed' && !row.unavailable_reason ? (
+                        <PermissionAccess
+                          key={`${session.view_id}-${row.key}`}
+                          session={session}
+                          permission={row.key}
+                          read_only={read_only}
+                        />
+                      ) : (
+                        <div key={row.key}>
+                          <dt>{row.label}</dt>
+                          <dd>{row.kind === 'fixed' ? row.status : row.unavailable_reason}</dd>
+                        </div>
+                      ),
+                    )}
+                  </dl>
+                </section>
+              )}
               <AppletChannel
                 session={session}
                 onInstalling={onInstallingChannel}
@@ -189,24 +226,17 @@ export function AppletControls({
                   onRestart();
                 }}
               />
-              <h4>Permissions</h4>
-              <dl className="applet-access">
-                {appletPermissionRows({ ...manifest, has_lib: session.has_lib }).map((row) =>
-                  row.kind === 'managed' && !row.unavailable_reason ? (
-                    <PermissionAccess
-                      key={`${session.view_id}-${row.key}`}
-                      session={session}
-                      permission={row.key}
-                      read_only={read_only}
-                    />
-                  ) : (
+              <section aria-labelledby={package_access_id}>
+                <h4 id={package_access_id}>Package access</h4>
+                <dl className="applet-access">
+                  {package_rows.map((row) => (
                     <div key={row.key}>
                       <dt>{row.label}</dt>
-                      <dd>{row.kind === 'fixed' ? row.status : row.unavailable_reason}</dd>
+                      <dd>{row.status}</dd>
                     </div>
-                  ),
-                )}
-              </dl>
+                  ))}
+                </dl>
+              </section>
             </div>
           )}
         </Sheet>
