@@ -379,6 +379,7 @@ pub(super) async fn save(app: AppHandle, host: &Host, input: SaveDraft) -> Resul
   })
   .await?;
   crate::key_sync::kick(&app);
+  crate::config_sync::kick(&app);
   blocking(move || Ok(connection.public(credential_status(&app, &connection)))).await
 }
 

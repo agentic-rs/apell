@@ -145,6 +145,14 @@ impl Snapshot {
     })
   }
 
+  pub(super) fn conflicts_with_destination(&self, current: &Settings) -> bool {
+    self.connections.iter().any(|entry| {
+      current
+        .connection(&entry.connection_id)
+        .is_ok_and(|old| entry.conflicts_with_destination(old))
+    })
+  }
+
   pub fn settings(&self, current: &Settings) -> Result<(Settings, Vec<String>), String> {
     let mut next = current.clone();
     next.connections.retain(|connection| !eligible(connection));
@@ -163,7 +171,7 @@ impl Snapshot {
     for entry in &self.connections {
       let mut connection = entry.connection()?;
       if let Ok(old) = current.connection(&entry.connection_id) {
-        if !eligible(old) || old.provider_id != entry.provider_id {
+        if entry.conflicts_with_destination(old) {
           return Err("A synced connection conflicts with a local provider or endpoint.".into());
         }
         connection.credential = old.credential.clone();
@@ -211,6 +219,10 @@ impl Snapshot {
 }
 
 impl Selection {
+  fn conflicts_with_destination(&self, local: &Connection) -> bool {
+    !eligible(local) || local.provider_id != self.provider_id
+  }
+
   fn connection(&self) -> Result<Connection, String> {
     let endpoint = built_in_endpoint(&self.provider_id)
       .ok_or("Update Apell to use the synced provider, or keep this device's settings.")?;
@@ -323,6 +335,7 @@ mod tests {
     let mut remote = Snapshot::capture(&local, Some("fixture"));
     remote.connections[0].model_id = "updated-model".into();
     assert!(remote.validate().is_ok());
+    assert!(!remote.conflicts_with_destination(&local));
     let (next, removed) = remote.settings(&local).unwrap();
     assert!(removed.is_empty());
     assert_eq!(next.active(), Some(&private));
@@ -337,7 +350,12 @@ mod tests {
 
     remote.connections[0].provider_id = "codex".into();
     assert!(built_in_endpoint("codex").is_some());
+    assert!(remote.conflicts_with_destination(&local));
     assert!(remote.settings(&local).is_err());
+    remote.connections[0]
+      .connection_id
+      .clone_from(&private.connection_id);
+    assert!(remote.conflicts_with_destination(&local));
     remote.connections[0].connection_id = "new-connection".into();
     remote.active_connection_id = "new-connection".into();
     let (next, removed) = remote.settings(&local).unwrap();

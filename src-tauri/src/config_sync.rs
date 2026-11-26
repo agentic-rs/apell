@@ -1,4 +1,7 @@
+mod automatic;
 mod snapshot;
+
+pub(crate) use automatic::{clear_activity, kick, start};
 
 use crate::{
   account::Access,
@@ -9,12 +12,13 @@ use crate::{
   settings::{Connection, Settings, LEGACY_DEMO_CONNECTION_ID},
 };
 use apell_core::bundles::{atomic_write, digest};
+use automatic::{Automatic, SyncStop};
 use reqwest::{Method, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use snapshot::Snapshot;
 use std::{collections::HashSet, io::Read, path::PathBuf, time::Duration};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 use uuid::Uuid;
 
 const HEAD_PATH: &str = "/api/v1/config-sync/head";
@@ -22,7 +26,9 @@ const MAX_REPLY_BYTES: usize = 64 * 1024;
 
 #[derive(Default)]
 pub struct ConfigSync {
-  gate: tokio::sync::Mutex<()>,
+  pub(crate) gate: tokio::sync::Mutex<()>,
+  toggle: tokio::sync::Mutex<()>,
+  automatic: Automatic,
 }
 
 #[derive(Default, Deserialize, Serialize)]
@@ -30,9 +36,11 @@ pub struct ConfigSync {
 struct DeviceState {
   enabled: bool,
   cursor: Option<Cursor>,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pending_conflict_id: Option<String>,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct Cursor {
   revision_id: String,
@@ -62,6 +70,12 @@ struct ComparedSettings {
   local: Snapshot,
   local_active: Option<String>,
   local_hash: String,
+  conflicting_destination: bool,
+}
+
+struct SyncOptions<'a> {
+  stop: &'a SyncStop,
+  automatic: bool,
 }
 
 #[derive(Deserialize)]
@@ -93,37 +107,33 @@ pub async fn dispatch(
   let method = method.to_owned();
   finish_snapshot(async move {
     let host = app.state::<Host>();
-    if method == "sync.status" {
-      let Some(key) = host.account.account_key(&app).await? else {
-        return Ok(status(None, false));
-      };
-      // Cursor files are replaced atomically. A remote sync can hold the
-      // mutation gate while this local state remains available to Settings.
-      let state = load_state(&host, &key).await?;
-      let result = local_status(&host, &state).await?;
-      if host.account.account_key(&app).await?.as_deref() != Some(key.as_str()) {
-        return Err("The signed-in Account changed. Check sync again.".into());
-      }
-      return Ok(result);
-    }
-    let _gate = host.config_sync.gate.lock().await;
-    let account_key = host.account.account_key(&app).await?;
+    let stop = SyncStop::manual(host.key_sync.background_stop());
+    let account_key = stop.wait(host.account.account_key(&app)).await??;
     match method.as_str() {
-      "sync.set_enabled" => {
-        let input: Enable = input(params)?;
-        let key = account_key.ok_or("Sign in to Apell Account to enable sync.")?;
-        let mut state = load_state(&host, &key).await?;
-        state.enabled = input.enabled;
-        let result = local_status(&host, &state).await?;
-        save_state(&host, &key, state).await?;
-        if input.enabled {
-          crate::key_sync::kick(&app);
+      "sync.status" => {
+        let Some(key) = account_key else {
+          return Ok(status(None, false));
+        };
+        // Cursor files are replaced atomically. Reads do not queue behind a remote request.
+        let state = stop.wait(load_state(&host, &key)).await??;
+        let mut result = stop.wait(local_status(&host, &state)).await??;
+        if state.enabled {
+          let activity = host.config_sync.automatic.activity(&key).await;
+          result["syncing"] = json!(activity.syncing);
+          result["sync_error"] = json!(activity.error);
         }
+        require_identity(&app, &host, &key, &stop).await?;
         Ok(result)
+      }
+      "sync.set_enabled" => {
+        let enabled = input::<Enable>(params)?.enabled;
+        let key = account_key.ok_or("Sign in to Apell Account to enable sync.")?;
+        set_enabled(&app, &host, &key, enabled, &stop).await
       }
       "sync.run" | "sync.review" => {
         let key = account_key.ok_or("Sign in to Apell Account to sync settings.")?;
-        let state = load_state(&host, &key).await?;
+        let _gate = stop.wait(host.config_sync.gate.lock()).await?;
+        let mut state = stop.wait(load_state(&host, &key)).await??;
         if !state.enabled {
           return Err("Turn on config sync first.".into());
         }
@@ -135,21 +145,75 @@ pub async fn dispatch(
         if review_only && request.resolution.is_some() {
           return Err("A read-only sync review cannot choose settings.".into());
         }
-        let access = host.account.access(&app).await?;
+        let access = stop.access(&app, &host).await?;
         if access.account_key != key {
           return Err("The signed-in Account changed. Try syncing again.".into());
         }
-        let compared = compare_settings(&app, &host, &access, &state).await?;
+        let compared = compare_settings(&app, &host, &access, &state, &stop).await?;
         if review_only {
-          require_account(&app, &host, &access).await?;
-          return Ok(review_settings(&access.account_key, &state, &compared));
+          require_identity(&app, &host, &key, &stop).await?;
+          let mut result = review_settings(&key, &state, &compared);
+          let pending = result["conflict_id"].as_str().map(str::to_owned);
+          if state.pending_conflict_id != pending {
+            result["status"]["pending_conflict_id"] = json!(pending);
+            state.pending_conflict_id = pending;
+            save_state(&host, &key, state).await?;
+          }
+          return Ok(result);
         }
-        synchronize(&app, &host, &access, state, request, compared).await
+        let result = synchronize(
+          &app,
+          &host,
+          &access,
+          state,
+          request,
+          compared,
+          SyncOptions {
+            stop: &stop,
+            automatic: false,
+          },
+        )
+        .await?;
+        clear_activity(&app, &host).await;
+        Ok(result)
       }
       _ => Err("Unknown config sync operation.".into()),
     }
   })
   .await
+}
+
+async fn set_enabled(
+  app: &AppHandle,
+  host: &Host,
+  account: &str,
+  enabled: bool,
+  stop: &SyncStop,
+) -> Result<Value, String> {
+  let _toggle = stop.wait(host.config_sync.toggle.lock()).await?;
+  // Signal first so opting out stops an automatic network wait without
+  // interrupting local settings or cursor writes already in progress.
+  let pause = (!enabled).then(|| host.config_sync.automatic.pause());
+  let result = async {
+    let _gate = stop.wait(host.config_sync.gate.lock()).await?;
+    let mut state = stop.wait(load_state(host, account)).await??;
+    require_identity(app, host, account, stop).await?;
+    state.enabled = enabled;
+    let result = stop.wait(local_status(host, &state)).await??;
+    stop.check()?;
+    save_state(host, account, state).await?;
+    clear_activity(app, host).await;
+    Ok(result)
+  }
+  .await;
+  drop(pause);
+  if enabled || result.is_err() {
+    kick(app);
+  }
+  if enabled && result.is_ok() {
+    crate::key_sync::kick(app);
+  }
+  result
 }
 
 fn input<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, String> {
@@ -158,12 +222,16 @@ fn input<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, String> {
 
 fn status(state: Option<&DeviceState>, local_changes: bool) -> Value {
   let Some(state) = state else {
-    return json!({"state":"disabled","last_synced_at":null,"local_changes":false});
+    return json!({"state":"disabled","last_synced_at":null,"local_changes":false,
+      "pending_conflict_id":null,"syncing":false,"sync_error":null});
   };
   json!({
     "state": if state.enabled { "ready" } else { "off" },
     "last_synced_at": state.cursor.as_ref().map(|cursor| &cursor.updated_at),
     "local_changes": local_changes,
+    "pending_conflict_id": if state.enabled { state.pending_conflict_id.as_ref() } else { None },
+    "syncing": false,
+    "sync_error": null,
   })
 }
 
@@ -239,12 +307,17 @@ fn saved_selection(id: &str) -> Option<&str> {
 }
 
 fn pending_preference<'a>(state: &'a DeviceState, settings: &Settings) -> Option<&'a str> {
-  if !state.enabled || settings.active_connection_id.is_some() {
+  if !state.enabled
+    || state.pending_conflict_id.is_some()
+    || settings.active().is_some_and(snapshot::device_only)
+  {
     return None;
   }
   let cursor = state.cursor.as_ref()?;
   let preferred = saved_selection(&cursor.remote_active)?;
-  if saved_selection(&cursor.local_active).is_some()
+  let current = settings.active_connection_id.as_deref();
+  if current == Some(preferred)
+    || current != saved_selection(&cursor.local_active)
     || capture(settings, state).fingerprint().ok()? != cursor.snapshot_hash
   {
     return None;
@@ -257,14 +330,20 @@ async fn compare_settings(
   host: &Host,
   access: &Access,
   state: &DeviceState,
+  stop: &SyncStop,
 ) -> Result<ComparedSettings, String> {
-  let head = request_head(host, access, Method::GET, None).await?;
-  require_account(app, host, access).await?;
-  let (mut local, local_active) = {
-    let settings = host.settings.lock().await;
+  let head = stop
+    .wait(request_head(host, access, Method::GET, None))
+    .await??;
+  require_identity(app, host, &access.account_key, stop).await?;
+  let (mut local, local_active, conflicting_destination) = {
+    let settings = stop.wait(host.settings.lock()).await?;
     (
       capture(&settings, state),
       settings.active_connection_id.clone(),
+      head
+        .as_ref()
+        .is_some_and(|head| head.snapshot.conflicts_with_destination(&settings)),
     )
   };
   local.validate()?;
@@ -274,6 +353,7 @@ async fn compare_settings(
     local,
     local_active,
     local_hash,
+    conflicting_destination,
   })
 }
 
@@ -317,23 +397,27 @@ async fn synchronize(
   mut state: DeviceState,
   input: Run,
   compared: ComparedSettings,
+  options: SyncOptions<'_>,
 ) -> Result<Value, String> {
+  let SyncOptions { stop, automatic } = options;
   let ComparedSettings {
     head,
     local,
     local_active,
     local_hash,
+    conflicting_destination,
   } = compared;
   let result = match head {
     None if input.resolution.is_some() => {
       return Err("The model settings changed. Refresh the review.".into())
     }
-    None if state.cursor.is_some() => {
-      return Err("The saved cloud revision is missing. Local settings were kept.".into())
+    None if !first_upload_required(&state, &local)? => {
+      require_identity(app, host, &access.account_key, stop).await?;
+      return Ok(json!({"state":"current", "status":status(Some(&state), false)}));
     }
     None => (
       "uploaded",
-      upload(host, access, &local, None).await?,
+      stop.wait(upload(host, access, &local, None)).await??,
       local_active,
     ),
     Some(remote) => {
@@ -341,47 +425,84 @@ async fn synchronize(
       if input.conflict_id.as_ref().is_some_and(|id| *id != conflict) {
         return Err("The model settings changed. Refresh the review.".into());
       }
-      match decide(
+      let allow_removals = matches!(input.resolution, Some(Resolution::UseCloud));
+      let action = decide_sync(
         &local,
         &local_hash,
         &remote,
-        state.cursor.as_ref(),
+        &state,
         input.resolution,
-      ) {
+        conflicting_destination,
+      );
+      match action {
         Action::Current => ("current", remote, local_active),
         Action::Upload => {
-          let revision = upload(host, access, &local, Some(remote.revision_id)).await?;
+          let revision = stop
+            .wait(upload(host, access, &local, Some(remote.revision_id)))
+            .await??;
           ("uploaded", revision, local_active)
         }
         Action::Download => {
-          let active =
-            apply_remote(app, host, access, &state, &local_hash, &remote.snapshot).await?;
+          let active = apply_remote(
+            app,
+            host,
+            access,
+            &state,
+            &local_hash,
+            &remote.snapshot,
+            options,
+            allow_removals,
+          )
+          .await?;
+          if automatic {
+            let _ = app.emit_to("main", "apell-llm-settings-changed", ());
+          }
           ("downloaded", remote, active)
         }
         Action::Conflict => {
-          return Ok(conflict_result(
+          require_identity(app, host, &access.account_key, stop).await?;
+          let changed = state.pending_conflict_id.as_deref() != Some(conflict.as_str());
+          state.pending_conflict_id = Some(conflict.clone());
+          let output = conflict_result(
             &state,
             conflict,
             &local,
             &remote.snapshot,
             has_local_changes(&state, &local, &local_hash),
-          ))
+          );
+          if changed {
+            save_state(host, &access.account_key, state).await?;
+          }
+          return Ok(output);
         }
       }
     }
   };
-  require_account(app, host, access).await?;
   let (outcome, revision, local_active) = result;
-  state.cursor = Some(Cursor {
+  // A completed local apply includes its cursor write even if sign-out began
+  // during credential storage. Other outcomes can still stop before a commit.
+  if outcome == "downloaded" {
+    require_account(app, host, access).await?;
+  } else {
+    require_identity(app, host, &access.account_key, stop).await?;
+  }
+  let cursor = Cursor {
     snapshot_hash: revision.snapshot.fingerprint()?,
     revision_id: revision.revision_id,
     remote_active: revision.snapshot.active_connection_id,
     local_active: local_active.unwrap_or_else(|| LEGACY_DEMO_CONNECTION_ID.to_owned()),
     updated_at: revision.updated_at,
-  });
+  };
+  let changed = state.cursor.as_ref() != Some(&cursor) || state.pending_conflict_id.is_some();
+  state.cursor = Some(cursor);
+  state.pending_conflict_id = None;
   let output = json!({"state": outcome, "status": local_status(host, &state).await?});
-  save_state(host, &access.account_key, state).await?;
-  crate::key_sync::kick(app);
+  if changed {
+    save_state(host, &access.account_key, state).await?;
+  }
+  if changed || outcome != "current" {
+    crate::key_sync::kick(app);
+  }
   Ok(output)
 }
 
@@ -390,6 +511,33 @@ enum Action {
   Upload,
   Download,
   Conflict,
+}
+
+fn first_upload_required(state: &DeviceState, local: &Snapshot) -> Result<bool, String> {
+  if state.cursor.is_some() {
+    return Err("The saved cloud revision is missing. Local settings were kept.".into());
+  }
+  if state.pending_conflict_id.is_some() {
+    return Err("The reviewed cloud revision is missing. Refresh the review.".into());
+  }
+  Ok(!local.is_empty())
+}
+
+fn decide_sync(
+  local: &Snapshot,
+  hash: &str,
+  remote: &Revision,
+  state: &DeviceState,
+  resolution: Option<Resolution>,
+  conflicting_destination: bool,
+) -> Action {
+  if resolution.is_none()
+    && *local != remote.snapshot
+    && (state.pending_conflict_id.is_some() || conflicting_destination)
+  {
+    return Action::Conflict;
+  }
+  decide(local, hash, remote, state.cursor.as_ref(), resolution)
 }
 
 fn decide(
@@ -428,6 +576,18 @@ async fn require_account(app: &AppHandle, host: &Host, access: &Access) -> Resul
   Ok(())
 }
 
+async fn require_identity(
+  app: &AppHandle,
+  host: &Host,
+  key: &str,
+  stop: &SyncStop,
+) -> Result<(), String> {
+  if stop.wait(host.account.account_key(app)).await??.as_deref() != Some(key) {
+    return Err("The signed-in Account changed. Try syncing again.".into());
+  }
+  stop.check()
+}
+
 async fn apply_remote(
   app: &AppHandle,
   host: &Host,
@@ -435,29 +595,30 @@ async fn apply_remote(
   state: &DeviceState,
   local_hash: &str,
   remote: &Snapshot,
+  options: SyncOptions<'_>,
+  allow_removals: bool,
 ) -> Result<Option<String>, String> {
-  let _gate = host.credential_gate.lock().await;
-  let mut current = host.settings.lock().await;
-  require_account(app, host, access).await?;
+  let SyncOptions { stop, automatic } = options;
+  let _gate = stop.wait(host.credential_gate.lock()).await?;
+  let mut current = stop.wait(host.settings.lock()).await?;
+  require_identity(app, host, &access.account_key, stop).await?;
   if capture(&current, state).fingerprint()? != local_hash {
     return Err("Provider settings changed during sync. Run sync again.".into());
   }
   let (mut next, removals) = remote.settings(&current)?;
+  if !allow_removals && !removals.is_empty() {
+    return Err("Review the model settings before removing a local connection.".into());
+  }
   let app = app.clone();
   let root = host.root.clone();
   let previous_active = current.active_connection_id.clone();
+  let local_only = current.active().is_some_and(snapshot::device_only);
+  stop.check()?;
   let next = blocking(move || {
-    // Keep a usable local default until credentials are entered on this device.
-    if let Some(selected) = next.active() {
-      if !can_activate(&app, selected)? {
-        let previous = previous_active
-          .as_deref()
-          .and_then(|id| next.connection(id).ok());
-        next.active_connection_id = match previous {
-          Some(connection) if can_activate(&app, connection)? => previous_active,
-          _ => None,
-        };
-      }
+    if !local_only {
+      retain_usable_active(&mut next, previous_active, automatic, |connection| {
+        can_activate(&app, connection)
+      })?;
     }
     commit_settings(
       &app,
@@ -473,6 +634,27 @@ async fn apply_remote(
   Ok(active)
 }
 
+fn retain_usable_active(
+  next: &mut Settings,
+  previous_active: Option<String>,
+  preserve_unspecified: bool,
+  usable: impl Fn(&Connection) -> Result<bool, String>,
+) -> Result<(), String> {
+  match next.active() {
+    Some(selected) if usable(selected)? => return Ok(()),
+    None if !preserve_unspecified => return Ok(()),
+    _ => {}
+  }
+  let previous = previous_active
+    .as_deref()
+    .and_then(|id| next.connection(id).ok());
+  next.active_connection_id = match previous {
+    Some(connection) if usable(connection)? => previous_active,
+    _ => None,
+  };
+  Ok(())
+}
+
 pub(crate) async fn add_credential_connections(
   app: &AppHandle,
   host: &Host,
@@ -484,8 +666,8 @@ pub(crate) async fn add_credential_connections(
   if ids.is_empty() {
     return Ok(false);
   }
-  let _sync_gate = stop.wait(host.config_sync.gate.lock()).await?;
-  if !load_state(host, &access.account_key).await?.enabled {
+  let initial = stop.wait(load_state(host, &access.account_key)).await??;
+  if !initial.enabled || initial.pending_conflict_id.is_some() {
     return Ok(false);
   }
   let Some(head) = stop
@@ -494,6 +676,14 @@ pub(crate) async fn add_credential_connections(
   else {
     return Ok(false);
   };
+  let _sync_gate = stop.wait(host.config_sync.gate.lock()).await?;
+  let current_sync = stop.wait(load_state(host, &access.account_key)).await??;
+  if !current_sync.enabled
+    || current_sync.pending_conflict_id.is_some()
+    || current_sync.cursor != initial.cursor
+  {
+    return Ok(false);
+  }
   let _credential_gate = stop.wait(host.credential_gate.lock()).await?;
   let mut current = stop.wait(host.settings.lock()).await?;
   require_account(app, host, access).await?;
@@ -666,6 +856,36 @@ mod tests {
   }
 
   #[test]
+  fn restoring_a_key_can_replace_only_the_fallback_from_the_last_model_sync() {
+    let (mut settings, _) = snapshot("fixture-model")
+      .settings(&Settings::default())
+      .unwrap();
+    let mut fallback = settings.connections[0].clone();
+    fallback.connection_id = "fallback".into();
+    fallback.credential = credential_ref("fallback");
+    settings.connections.push(fallback);
+    settings.active_connection_id = Some("fallback".into());
+    let cloud = Snapshot::capture(&settings, Some("fixture"));
+    let mut state = DeviceState {
+      enabled: true,
+      pending_conflict_id: None,
+      cursor: Some(Cursor {
+        revision_id: "fixture-revision".into(),
+        snapshot_hash: cloud.fingerprint().unwrap(),
+        remote_active: "fixture".into(),
+        local_active: "fallback".into(),
+        updated_at: String::new(),
+      }),
+    };
+    assert_eq!(pending_preference(&state, &settings), Some("fixture"));
+    settings.active_connection_id = None;
+    assert_eq!(pending_preference(&state, &settings), None);
+    settings.active_connection_id = Some("fallback".into());
+    state.pending_conflict_id = Some("fixture-conflict".into());
+    assert_eq!(pending_preference(&state, &settings), None);
+  }
+
+  #[test]
   fn local_change_status_tracks_only_changes_since_the_saved_cloud_revision() {
     let original = snapshot("original-model");
     let original_hash = original.fingerprint().unwrap();
@@ -704,6 +924,7 @@ mod tests {
     local.active_connection_id = None;
     let mut state = DeviceState {
       enabled: true,
+      pending_conflict_id: None,
       cursor: Some(Cursor {
         revision_id: "fixture-revision".into(),
         snapshot_hash: cloud.fingerprint().unwrap(),
@@ -743,6 +964,7 @@ mod tests {
     let cloud = snapshot("cloud-edit");
     let state = DeviceState {
       enabled: true,
+      pending_conflict_id: None,
       cursor: Some(Cursor {
         revision_id: "cloud-head".into(),
         snapshot_hash: cloud.fingerprint().unwrap(),
@@ -768,6 +990,7 @@ mod tests {
       local,
       local_active: None,
       local_hash,
+      conflicting_destination: false,
     };
     let status_before = serde_json::to_value(&state).unwrap();
     let reviewed = review_settings("fixture-account", &state, &compared);
@@ -844,6 +1067,91 @@ mod tests {
     assert!(matches!(
       decide(&local, &hash, &remote, Some(&cursor), None),
       Action::Conflict
+    ));
+  }
+
+  #[test]
+  fn first_publish_requires_a_nonempty_snapshot_and_an_unreviewed_account() {
+    let empty = Snapshot::capture(&Settings::default(), None);
+    let mut opted_in: DeviceState =
+      serde_json::from_value(json!({"enabled":true,"cursor":null})).unwrap();
+    assert!(!first_upload_required(&opted_in, &empty).unwrap());
+    assert!(first_upload_required(&opted_in, &snapshot("configured-model")).unwrap());
+    opted_in.pending_conflict_id = Some("reviewed".into());
+    assert!(first_upload_required(&opted_in, &snapshot("configured-model")).is_err());
+  }
+
+  #[test]
+  fn automatic_download_keeps_a_usable_active_model_when_cloud_has_no_preference() {
+    let cloud = snapshot("cloud-model");
+    let (mut next, _) = cloud.settings(&Settings::default()).unwrap();
+    assert!(next.active_connection_id.is_none());
+    retain_usable_active(&mut next, Some("fixture".into()), true, |_| Ok(true)).unwrap();
+    assert_eq!(next.active_connection_id.as_deref(), Some("fixture"));
+    let state = DeviceState {
+      enabled: true,
+      cursor: Some(Cursor {
+        revision_id: "cloud-head".into(),
+        snapshot_hash: cloud.fingerprint().unwrap(),
+        remote_active: cloud.active_connection_id.clone(),
+        local_active: "fixture".into(),
+        updated_at: String::new(),
+      }),
+      pending_conflict_id: None,
+    };
+    assert!(capture(&next, &state) == cloud);
+
+    next.active_connection_id = None;
+    retain_usable_active(&mut next, Some("fixture".into()), true, |_| Ok(false)).unwrap();
+    assert!(next.active_connection_id.is_none());
+    retain_usable_active(&mut next, Some("fixture".into()), false, |_| Ok(true)).unwrap();
+    assert!(next.active_connection_id.is_none());
+  }
+
+  #[test]
+  fn automatic_decision_keeps_differing_reviews_and_provider_swaps_pending() {
+    let local = snapshot("local-model");
+    let hash = local.fingerprint().unwrap();
+    let remote = Revision {
+      revision_id: "cloud-head".into(),
+      parent_revision_ids: vec!["ancestor".into()],
+      snapshot: snapshot("cloud-model"),
+      updated_at: String::new(),
+    };
+    let mut state = DeviceState {
+      enabled: true,
+      cursor: Some(Cursor {
+        revision_id: "ancestor".into(),
+        snapshot_hash: hash.clone(),
+        remote_active: LEGACY_DEMO_CONNECTION_ID.into(),
+        local_active: LEGACY_DEMO_CONNECTION_ID.into(),
+        updated_at: String::new(),
+      }),
+      pending_conflict_id: None,
+    };
+    assert!(matches!(
+      decide_sync(&local, &hash, &remote, &state, None, false),
+      Action::Download
+    ));
+    assert!(matches!(
+      decide_sync(&local, &hash, &remote, &state, None, true),
+      Action::Conflict
+    ));
+    state.pending_conflict_id = Some("reviewed".into());
+    assert!(matches!(
+      decide_sync(&local, &hash, &remote, &state, None, false),
+      Action::Conflict
+    ));
+    assert!(matches!(
+      decide_sync(
+        &local,
+        &hash,
+        &remote,
+        &state,
+        Some(Resolution::UseCloud),
+        false
+      ),
+      Action::Download
     ));
   }
 }

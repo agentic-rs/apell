@@ -239,6 +239,9 @@ export interface ConfigSyncStatus {
   state: 'disabled' | 'off' | 'ready';
   last_synced_at: string | null;
   local_changes: boolean;
+  pending_conflict_id: string | null;
+  syncing: boolean;
+  sync_error: string | null;
 }
 export interface ConfigSyncConnection {
   connection_id: string;

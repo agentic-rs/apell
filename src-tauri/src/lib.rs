@@ -101,6 +101,7 @@ pub fn run() {
       #[cfg(target_os = "ios")]
       ios::configure_webview(&_window, ios_back_setup)?;
       key_sync::start(app.handle());
+      config_sync::start(app.handle());
       let handle = app.handle().clone();
       tauri::async_runtime::spawn(async move {
         loop {
@@ -117,6 +118,7 @@ pub fn run() {
     .on_window_event(|window, event| {
       if window.label() == "main" && matches!(event, tauri::WindowEvent::Focused(true)) {
         key_sync::kick(window.app_handle());
+        config_sync::kick(window.app_handle());
         permissions::publish_device_change(window.app_handle());
       }
     })
@@ -129,6 +131,7 @@ pub fn run() {
     .run(|_app, _event| {
       if matches!(_event, tauri::RunEvent::Resumed) {
         key_sync::kick(_app);
+        config_sync::kick(_app);
         permissions::publish_device_change(_app);
       }
       #[cfg(target_os = "macos")]

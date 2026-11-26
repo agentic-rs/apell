@@ -64,7 +64,7 @@ impl BackgroundStop {
     }
   }
 
-  async fn access(
+  pub(crate) async fn access(
     &self,
     app: &AppHandle,
     host: &Host,
@@ -187,6 +187,10 @@ impl KeySync {
       managed: managed::Managed::default(),
       automatic: automatic::Automatic::default(),
     }
+  }
+
+  pub(crate) fn background_stop(&self) -> BackgroundStop {
+    BackgroundStop(self.signing_out.subscribe())
   }
 
   async fn request(
@@ -471,15 +475,18 @@ pub(crate) async fn sign_out(app: AppHandle) -> Result<Value, String> {
     let _sign_out = sync.sign_out.lock().await;
     let pause = PauseBackground::new(&sync.signing_out);
     let _gate = sync.gate.lock().await;
+    let _config = host.config_sync.gate.lock().await;
     let result = crate::account::dispatch(app.clone(), &host.account, "account.sign_out").await;
     if result.is_ok() {
       sync.managed.clear().await;
       sync.automatic.publish_health(&app, None).await;
+      crate::config_sync::clear_activity(&app, &host).await;
     }
     // Resume the worker before releasing its gate, including on a failed sign-out.
     drop(pause);
     if result.is_err() {
       kick(&app);
+      crate::config_sync::kick(&app);
     }
     result
   })

@@ -261,10 +261,6 @@ impl Account {
     )
   }
 
-  pub async fn access(&self, app: &AppHandle) -> Result<Access, String> {
-    self.access_for(app, false, None).await
-  }
-
   pub fn key_exchange_available(&self) -> bool {
     self
       .config
@@ -594,6 +590,7 @@ impl Account {
     changed(app);
     drop(state);
     crate::key_sync::kick(app);
+    crate::config_sync::kick(app);
   }
 }
 

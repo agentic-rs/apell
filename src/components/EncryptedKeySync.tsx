@@ -318,6 +318,7 @@ function Approvals({
 interface Props {
   disabled: boolean;
   model_sync_enabled?: boolean;
+  model_review_needed: boolean;
   onApplied: () => void;
   onBusyChange: (busy: boolean) => void;
 }
@@ -332,7 +333,21 @@ const sync_labels = {
   paused: 'Sync paused on this device',
 } satisfies Record<Extract<KeySyncStatus, { state: 'verified' }>['sync_state'], string>;
 
-function ModelSettingsRecovery({ enabled }: { enabled?: boolean }) {
+function ModelSettingsRecovery({
+  enabled,
+  review_needed,
+}: {
+  enabled?: boolean;
+  review_needed: boolean;
+}) {
+  if (review_needed) {
+    return (
+      <p>
+        Choose <strong>Review changes</strong> above to check the provider connections for these
+        keys.
+      </p>
+    );
+  }
   if (enabled === false) {
     return (
       <p>
@@ -344,8 +359,8 @@ function ModelSettingsRecovery({ enabled }: { enabled?: boolean }) {
   if (enabled === true) {
     return (
       <p>
-        On the device that has these connections, choose <strong>Sync now</strong> under Model
-        settings. Then return here and retry key sync.
+        Check <strong>Model settings</strong> on the device with these connections. Turn on sync
+        there and review any pending changes. Then retry key sync here.
       </p>
     );
   }
@@ -360,7 +375,13 @@ async function cancelRequest(flow: Flow | undefined) {
   }
 }
 
-export function EncryptedKeySync({ disabled, model_sync_enabled, onApplied, onBusyChange }: Props) {
+export function EncryptedKeySync({
+  disabled,
+  model_sync_enabled,
+  model_review_needed,
+  onApplied,
+  onBusyChange,
+}: Props) {
   const [status, setStatus] = useState<KeySyncStatus>();
   const [flow, setFlow] = useState<Flow>();
   const active_flow = useRef<Flow | undefined>(undefined);
@@ -525,7 +546,10 @@ export function EncryptedKeySync({ disabled, model_sync_enabled, onApplied, onBu
             {!status_error && <span role="status"> · {sync_labels[status.sync_state]}</span>}
           </p>
           {!status_error && status.sync_state === 'waiting_for_model_settings' && (
-            <ModelSettingsRecovery enabled={model_sync_enabled} />
+            <ModelSettingsRecovery
+              enabled={model_sync_enabled}
+              review_needed={model_review_needed}
+            />
           )}
           {!status_error && status.sync_state === 'conflict' && (
             <p>

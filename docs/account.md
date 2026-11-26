@@ -200,14 +200,19 @@ settings namespace.
 
 In **Settings → Apell Account**, choose **Sign in** to see the browser address
 and code. Enter the code on the sign-in page on this or another device. When
-Apell shows the signed-in account, turn on **Sync model settings**. The first
-sync starts automatically. Apell shows changes on this device that haven’t
-synced yet. Use **Sync now** to publish those changes or check for cloud changes.
+Apell shows the signed-in account, turn on **Sync model settings**. Apell
+publishes local changes and checks for cloud changes while it runs. Use **Sync
+now** to check immediately. Apell shows changes on this device that are still
+waiting to sync.
 Model settings sync includes connection labels, built-in provider and model
 selections, and the preferred active model. API keys can be synced separately
-through **Encrypted API keys**.
-When two devices saved different settings, Apell shows the changed connections
-and the preferred synced connection on each side. Choose which copy to use.
+through **Encrypted API keys**. A usable local model can serve as a fallback
+until the preferred model’s key arrives. Apell activates the restored model
+while the settings still match the last sync.
+When devices make conflicting edits, or the cloud copy removes a connection
+from this device, Apell keeps the local settings and shows **Review changes**.
+This remains available after restarting Apell. Open it to compare the changed
+connections and preferred model, then choose which copy to use.
 Applying the cloud copy removes any local-only connections listed in the review
 and their saved credentials. **Refresh review** fetches a new comparison so you
 can review it again before choosing. The Store records each version with its
@@ -239,8 +244,9 @@ through Account verification and keep its existing encrypted backups.
 
 Eligible static API keys sync automatically on verified devices. Enable **Sync
 model settings** to bring missing built-in provider connections onto a new
-device. If Apell is waiting for a provider connection, use **Sync now** on the
-device where you added it, then **Retry key sync** on the waiting device. The
+device. If Apell is waiting for a provider connection, check **Model settings**
+on the device where you added it and resolve any pending review there. Use
+**Retry key sync** on the waiting device to check again immediately. The
 **Encrypted API keys** section shows checking, waiting, and sync errors
 separately from device verification. An unverified device shows **Check again**
 if Apell cannot reach the service to determine how to verify it.

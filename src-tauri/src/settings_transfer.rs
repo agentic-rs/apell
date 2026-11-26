@@ -382,6 +382,7 @@ async fn apply_archive(app: AppHandle, archive: Archive) -> Result<Value, String
         .await?;
       *current = plan.settings;
       crate::key_sync::kick(&app);
+      crate::config_sync::kick(&app);
     }
     Ok(json!({"added": plan.added, "skipped": skipped}))
   })

@@ -598,6 +598,13 @@ svg {
   color: var(--muted);
   font-size: 14px;
 }
+.account-model-sync-state {
+  margin-inline-start: auto;
+  text-align: end;
+}
+.account-model-sync p.account-model-sync-error {
+  color: var(--danger);
+}
 .account-model-sync h3,
 .account-key-sync h3 {
   margin: 0;

@@ -171,6 +171,8 @@ export const cancelAccountSignIn = () => shellCall<AccountStatus>('account.cance
 export const signOutOfAccount = () => shellCall<AccountStatus>('account.sign_out');
 export const onAccountChanged = (handler: () => void) => listen('apell-account-changed', handler);
 export const getConfigSyncStatus = () => shellCall<ConfigSyncStatus>('sync.status');
+export const onConfigSyncChanged = (handler: () => void) =>
+  listen('apell-config-sync-changed', handler);
 export const setConfigSyncEnabled = (enabled: boolean) =>
   shellCall<ConfigSyncStatus>('sync.set_enabled', { enabled });
 export const syncConfig = (resolution?: ConfigSyncResolution) =>

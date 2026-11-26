@@ -443,6 +443,7 @@ pub async fn dispatch(
       let persist = next.clone();
       blocking(move || persist.persist(&root)).await?;
       *current = next;
+      crate::config_sync::kick(&app);
       Ok(Value::Null)
     }
     "llm.delete_connection" => {
@@ -468,6 +469,7 @@ pub async fn dispatch(
       *current = next;
       drafts::invalidate_source(&host.provider_jobs, id, None);
       crate::key_sync::kick(&app);
+      crate::config_sync::kick(&app);
       Ok(Value::Null)
     }
     "llm.test_connection" => {

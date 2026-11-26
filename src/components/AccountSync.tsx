@@ -5,6 +5,7 @@ import {
   getConfigSyncStatus,
   message,
   onAccountChanged,
+  onConfigSyncChanged,
   onLlmSettingsChanged,
   openAccountSignIn,
   reviewConfigSync,
@@ -29,10 +30,25 @@ import { Sheet } from './Sheet';
 type Action = 'sign_in' | 'open_sign_in' | 'cancel' | 'sign_out' | 'toggle' | 'sync' | 'review';
 
 const sync_messages = {
-  current: 'Settings are up to date.',
+  current: '',
   uploaded: 'Settings saved to your account.',
   downloaded: 'Synced settings applied to this device.',
 };
+
+function modelSyncLabel(
+  sync: ConfigSyncStatus | undefined,
+  busy: Action | undefined,
+  status_error: boolean,
+) {
+  if (busy === 'toggle') return 'Updating…';
+  if (sync?.state !== 'ready') return 'Off';
+  if (busy === 'sync' || sync.syncing) return 'Syncing…';
+  if (sync.pending_conflict_id) return 'Review needed';
+  if (status_error) return 'Status unavailable';
+  if (sync.sync_error) return 'Couldn’t sync';
+  if (sync.local_changes) return 'Waiting to sync';
+  return sync.last_synced_at ? 'Up to date' : 'On';
+}
 
 interface AccountSyncProps {
   providers: LlmProvider[];
@@ -49,6 +65,7 @@ export function AccountSync({
 }: AccountSyncProps) {
   const [account, setAccount] = useState<AccountStatus>();
   const [sync, setSync] = useState<ConfigSyncStatus>();
+  const latest_sync = useRef<ConfigSyncStatus | undefined>(undefined);
   const [busy, setBusy] = useState<Action>();
   const [keys_busy, setKeysBusy] = useState(false);
   const [conflict, setConflict] = useState<ConfigSyncConflict>();
@@ -69,6 +86,18 @@ export function AccountSync({
     [onSyncBusyChange],
   );
 
+  function updateSync(next?: ConfigSyncStatus) {
+    latest_sync.current = next;
+    setSync(next);
+    if (next?.state !== 'ready') clearConflict();
+  }
+
+  function acceptActionStatus(next: ConfigSyncStatus) {
+    read_version.current += 1;
+    updateSync(next);
+    setReadError('');
+  }
+
   async function refresh() {
     const version = ++read_version.current;
     try {
@@ -77,8 +106,7 @@ export function AccountSync({
       const email = current.state === 'signed_in' ? current.email : undefined;
       if (sync_account.current?.email !== email) {
         sync_account.current = email === undefined ? undefined : { email };
-        setSync(undefined);
-        clearConflict();
+        updateSync();
         setOutcome('');
         setActionError('');
       }
@@ -86,8 +114,7 @@ export function AccountSync({
       if (current.state === 'signed_in') {
         const synced = await getConfigSyncStatus();
         if (read_version.current !== version) return;
-        setSync(synced);
-        if (synced.state !== 'ready') clearConflict();
+        updateSync(synced);
       }
       setReadError('');
     } catch (error) {
@@ -104,7 +131,11 @@ export function AccountSync({
     };
     reload();
     window.addEventListener('focus', reload);
-    for (const subscription of [onAccountChanged(reload), onLlmSettingsChanged(reload)]) {
+    for (const subscription of [
+      onAccountChanged(reload),
+      onConfigSyncChanged(reload),
+      onLlmSettingsChanged(reload),
+    ]) {
       void subscription.then(
         (unlisten) => {
           if (!active) unlisten();
@@ -173,16 +204,16 @@ export function AccountSync({
     return perform('toggle', async (isCurrent) => {
       const next = await setConfigSyncEnabled(enabled);
       if (!isCurrent()) return;
-      setSync(next);
-      if (next.state !== 'ready') clearConflict();
-      if (enabled && next.state === 'ready' && !next.last_synced_at) {
-        setBusy('sync');
-        await syncSettings(isCurrent);
-      }
+      acceptActionStatus(next);
+      if (enabled) void refresh();
     });
   }
 
   function runSync(resolution?: ConfigSyncResolution) {
+    if (resolution && latest_sync.current?.pending_conflict_id !== resolution.conflict_id) {
+      setReviewStale(true);
+      return;
+    }
     return perform('sync', async (isCurrent) => {
       try {
         await syncSettings(isCurrent, resolution);
@@ -197,16 +228,41 @@ export function AccountSync({
     return perform('review', async (isCurrent) => {
       const result = await reviewConfigSync();
       if (!isCurrent()) return;
-      setSync(result.status);
-      if (result.state === 'conflict') showConflict(result);
+      if (result.state === 'conflict') await showFreshConflict(result, isCurrent);
       else {
+        acceptActionStatus(result.status);
         clearConflict();
-        setOutcome('No differences to review. Use Sync now to check for changes.');
+        setOutcome('No changes need review.');
+        void refresh();
       }
     });
   }
 
-  function showConflict(result: ConfigSyncConflict) {
+  async function showFreshConflict(result: ConfigSyncConflict, isCurrent: () => boolean) {
+    // Check local status again before showing the comparison. A background pass
+    // or a local edit may have replaced the conflict while the review loaded.
+    const before = latest_sync.current;
+    let fresh: ConfigSyncStatus;
+    try {
+      fresh = await getConfigSyncStatus();
+    } catch (error) {
+      if (isCurrent()) setReviewStale(true);
+      throw error;
+    }
+    if (!isCurrent()) return;
+    const observed = latest_sync.current;
+    const superseded =
+      (observed?.state !== before?.state ||
+        observed?.pending_conflict_id !== before?.pending_conflict_id) &&
+      (observed?.state !== fresh.state ||
+        observed?.pending_conflict_id !== fresh.pending_conflict_id);
+    if (!superseded) acceptActionStatus(fresh);
+    if (superseded || fresh.state !== 'ready' || fresh.pending_conflict_id !== result.conflict_id) {
+      setReviewStale(true);
+      setActionError('Model settings changed. Check the latest changes before choosing a copy.');
+      void refresh();
+      return;
+    }
     setConflict(result);
     setReviewStale(false);
     setReviewing(visible.current);
@@ -218,21 +274,27 @@ export function AccountSync({
     // connection list independently of the panel's transient feedback.
     if (result.state === 'downloaded') onApplied();
     if (!isCurrent()) return;
-    setSync(result.status);
     if (result.state === 'conflict') {
-      showConflict(result);
+      await showFreshConflict(result, isCurrent);
       return;
     }
+    acceptActionStatus(result.status);
     clearConflict();
     setOutcome(sync_messages[result.state]);
+    void refresh();
   }
 
   const last_sync = sync?.last_synced_at ? new Date(sync.last_synced_at) : null;
   const last_sync_label =
     last_sync && Number.isFinite(last_sync.getTime()) ? last_sync.toLocaleString() : undefined;
   const error = action_error || read_error || account?.error;
-  const pending_conflict = account?.state === 'signed_in' && sync?.state === 'ready' && conflict;
-  const review_open = !!pending_conflict && reviewing;
+  const ready = account?.state === 'signed_in' && sync?.state === 'ready';
+  const pending_conflict = ready && !!sync.pending_conflict_id;
+  const review_conflict = ready && conflict;
+  const review_open = !!review_conflict && reviewing;
+  const review_outdated =
+    review_stale || !!read_error || sync?.pending_conflict_id !== conflict?.conflict_id;
+  const syncing = busy === 'sync' || !!sync?.syncing;
 
   return (
     <section
@@ -287,26 +349,24 @@ export function AccountSync({
                     Sync model settings
                   </label>
                   <span className="account-model-sync-state" role="status">
-                    {busy === 'sync'
-                      ? 'Syncing…'
-                      : busy === 'toggle'
-                        ? 'Updating…'
-                        : sync.state === 'ready'
-                          ? 'On'
-                          : 'Off'}
+                    {modelSyncLabel(sync, busy, !!read_error)}
                   </span>
                 </div>
                 <p>
-                  Sync built-in provider connections and model choices. Verified devices use these
-                  connections to restore their API keys.
+                  Automatically sync built-in provider connections and model choices. Verified
+                  devices use these connections to restore their API keys.
                 </p>
               </>
             )}
             {sync?.state === 'ready' && (
               <>
-                {pending_conflict && <p role="status">Model settings need review.</p>}
-                {sync.local_changes && !pending_conflict && !busy && (
+                {sync.local_changes && !pending_conflict && !syncing && !sync.sync_error && (
                   <p role="status">Changes on this device haven’t synced yet.</p>
+                )}
+                {!syncing && sync.sync_error && (
+                  <p className="account-model-sync-error" role="alert">
+                    {sync.sync_error}
+                  </p>
                 )}
                 <div className="account-sync-actions">
                   {pending_conflict && (
@@ -314,14 +374,14 @@ export function AccountSync({
                       type="button"
                       className="primary"
                       disabled={disabled || !!busy || keys_busy}
-                      onClick={() => setReviewing(true)}
+                      onClick={() => void refreshReview()}
                     >
-                      Review changes
+                      {busy === 'review' ? 'Checking changes…' : 'Review changes'}
                     </button>
                   )}
                   <button
                     type="button"
-                    disabled={disabled || !!busy || keys_busy}
+                    disabled={disabled || !!busy || keys_busy || syncing}
                     onClick={() => void runSync()}
                   >
                     Sync now
@@ -335,13 +395,14 @@ export function AccountSync({
                 )}
               </>
             )}
-            {outcome && (
+            {outcome && !pending_conflict && !syncing && !sync?.sync_error && (
               <p className="status" role="status">
                 {outcome}
               </p>
             )}
           </section>
           <EncryptedKeySync
+            model_review_needed={pending_conflict}
             model_sync_enabled={
               sync?.state === 'disabled' ? undefined : sync && sync.state === 'ready'
             }
@@ -369,29 +430,29 @@ export function AccountSync({
           Check again
         </button>
       )}
-      {pending_conflict && review_open && (
+      {review_conflict && review_open && (
         <Sheet
           open
           title="Choose which model settings to use"
           onClose={() => {
-            setReviewing(false);
+            clearConflict();
             setActionError('');
           }}
           dismissible={!busy}
         >
           <ConfigSyncReview
-            conflict={pending_conflict}
+            conflict={review_conflict}
             providers={providers}
             busy={!!busy}
             disabled={disabled || keys_busy}
-            stale={review_stale}
-            error={error ?? ''}
+            stale={review_outdated}
+            error={error || (review_outdated ? 'Model settings changed. Refresh the review.' : '')}
             onRefresh={() => void refreshReview()}
             onKeepLocal={() =>
-              void runSync({ resolution: 'keep_local', conflict_id: pending_conflict.conflict_id })
+              void runSync({ resolution: 'keep_local', conflict_id: review_conflict.conflict_id })
             }
             onUseCloud={() =>
-              void runSync({ resolution: 'use_cloud', conflict_id: pending_conflict.conflict_id })
+              void runSync({ resolution: 'use_cloud', conflict_id: review_conflict.conflict_id })
             }
           />
         </Sheet>
