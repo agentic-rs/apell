@@ -54,11 +54,6 @@ pub fn run() {
         .build(),
     )
     .setup(move |app| {
-      #[cfg(all(feature = "local-dev", target_os = "macos", debug_assertions))]
-      if app.config().identifier != tauri_plugin_apell_credentials::LOCAL_BUNDLE_IDENTIFIER {
-        let message = "Use pnpm dev:local shell to run Apell Local with its own bundle ID.";
-        return Err(std::io::Error::other(message).into());
-      }
       let root = app.path().app_data_dir()?;
       let host = host::Host::new(root).map_err(std::io::Error::other)?;
       #[cfg(all(target_os = "ios", debug_assertions))]
@@ -85,11 +80,9 @@ pub fn run() {
           })
           .on_navigation(move |url| navigation::allowed(url, &origins));
       #[cfg(all(feature = "local-dev", target_os = "macos", debug_assertions))]
-      let window = if let Some(lease) = local_device {
-        app.manage(lease);
+      let window = {
+        app.manage(local_device);
         window.incognito(true)
-      } else {
-        window
       };
       // On iOS an explicit inner size becomes the actual native view frame.
       // Mobile must inherit the device bounds for responsive CSS and safe areas.

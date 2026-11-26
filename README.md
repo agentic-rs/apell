@@ -22,6 +22,10 @@ pnpm install --frozen-lockfile
 pnpm desktop:dev
 ```
 
+For local testing with synthetic credentials, use [Apell Local](docs/local-development.md#run-the-macos-test-app).
+It stores credentials in private files under the checkout, so you can iterate
+without macOS Keychain prompts.
+
 The development and production builds compile Companion's Rust guest for `wasm32-unknown-unknown`, bundle its TypeScript and CSS, and pack the result with the Rust CLI. Rust emits the guest module directly.
 
 1. Open **Settings**, choose a provider, enter its API key or complete sign-in, select a model, then **Save connection**.

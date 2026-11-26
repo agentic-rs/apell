@@ -66,13 +66,14 @@ pnpm dev:local shell
 ```
 
 **Apell Local** runs the macOS shell with hot reload, its own app data, and the
-local Store configured by default. Its mock credential store uses owner-only
-files and persists across app restarts without accessing macOS Keychain. If
-you used an earlier local build, sign in again to start a session in the mock
-store. Its native connections to the Store, Account, and encrypted relay trust
-the generated development CA. To approve a device code or test browser
-recovery, open the approval page in the test browser that trusts the
-development CA.
+local Store configured by default. Running `shell` without a device name uses
+the `default` profile in this checkout. Its mock credential store saves Account
+sessions, provider keys, and applet secrets in owner-only files across app
+restarts. WebView data is temporary. If you used an unnamed profile on an
+earlier local build, sign in again and add your test connections to the new
+profile. Native connections to the Store, Account, and encrypted relay trust
+the generated development CA. Open device approval and recovery pages in a
+test browser that trusts this CA.
 
 The fictional account can test first verification and encrypted API key sync.
 Use fictional model settings and API keys. If the fixture restarts while a
@@ -87,10 +88,9 @@ pnpm dev:local peer device-b
 ```
 
 The peer shares the first shell's frontend server. Restart it after Rust changes.
-Each named device has its own app files and mock credentials under
+Each device profile has its own app files and mock credentials under
 `deploy/local/.state/devices/`. The devices use the same fictional Account.
-WebView storage is temporary for named devices. Use different names for
-simultaneously running instances.
+Use different names for simultaneously running instances.
 
 For a fresh local vault, sign both devices in, then save a fictional API key
 and type a model ID on the first device. Select that connection, enable model
