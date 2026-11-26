@@ -176,7 +176,8 @@ function Verification({
 
 function Approvals({ onBusyChange }: { onBusyChange: (busy: boolean) => void }) {
   const [pairs, setPairs] = useState<KeySyncPairing[]>();
-  const [error, setError] = useState('');
+  const [poll_error, setPollError] = useState('');
+  const [approval_error, setApprovalError] = useState('');
   const [busy, setBusy] = useState<string>();
   const [approved, setApproved] = useState(false);
   const scope = useRef(new OperationScope());
@@ -204,10 +205,10 @@ function Approvals({ onBusyChange }: { onBusyChange: (busy: boolean) => void }) 
                   !dismissed.current.has(pair.pair_id),
               ),
             );
-            setError('');
+            setPollError('');
           }
         } catch (error) {
-          if (active && !pending.current) setError(message(error));
+          if (active && !pending.current) setPollError(message(error));
         }
       }
       if (active) timer = window.setTimeout(() => void refresh(), poll_interval);
@@ -228,7 +229,7 @@ function Approvals({ onBusyChange }: { onBusyChange: (busy: boolean) => void }) 
   async function approve(pair: KeySyncPairing) {
     if (hasExpired(pair.expires_at)) {
       dismissPair(pair.pair_id);
-      setError(expired_approval_error);
+      setApprovalError(expired_approval_error);
       return;
     }
     const operation = scope.current.start();
@@ -236,7 +237,7 @@ function Approvals({ onBusyChange }: { onBusyChange: (busy: boolean) => void }) 
     pending.current = true;
     setBusy(pair.pair_id);
     onBusyChange(true);
-    setError('');
+    setApprovalError('');
     try {
       await approveKeySyncPairing(pair.pair_id, pair.approval_nonce);
       if (!operation.isCurrent()) return;
@@ -246,7 +247,7 @@ function Approvals({ onBusyChange }: { onBusyChange: (busy: boolean) => void }) 
       if (operation.isCurrent()) {
         const text = message(error);
         if (text === expired_request_error) dismissPair(pair.pair_id);
-        setError(text === expired_request_error ? expired_approval_error : text);
+        setApprovalError(text === expired_request_error ? expired_approval_error : text);
       }
     } finally {
       pending.current = false;
@@ -258,6 +259,7 @@ function Approvals({ onBusyChange }: { onBusyChange: (busy: boolean) => void }) 
     }
   }
 
+  const error = approval_error || poll_error;
   return (
     <>
       <p>
