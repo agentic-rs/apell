@@ -20,12 +20,38 @@ const main = document.querySelector<HTMLElement>('#main')!;
 let request: AbortController | undefined;
 let navigation_id = 0;
 let session: Session | undefined;
+const scroll_positions = new Map<string, number>();
+let scroll_target: number | undefined;
+let scroll_entry = currentScrollEntry();
+history.scrollRestoration = 'manual';
 
-function navigate(path: string): void {
+function currentScrollEntry(): string {
+  const saved = history.state?.scroll_entry;
+  if (typeof saved === 'string') return saved;
+  const entry = crypto.getRandomValues(new Uint32Array(2)).join('-');
+  history.replaceState({ ...history.state, scroll_entry: entry }, '');
+  return entry;
+}
+
+function rememberScroll(): void {
+  // Ignore the scroll offset of a loading view whose destination has not rendered.
+  if (scroll_target === undefined) scroll_positions.set(scroll_entry, window.scrollY);
+}
+
+function restoreScroll(): void {
+  if (scroll_target === undefined) return;
+  window.scrollTo(0, scroll_target);
+  scroll_target = undefined;
+}
+
+function navigate(path: string, returning_to_catalog = false): void {
   const current = new URL(location.href);
   const destination = new URL(path, current.origin);
   if (destination.href === current.href) return;
-  history.pushState(catalogEntry(current, destination), '', destination);
+  rememberScroll();
+  scroll_target = returning_to_catalog ? catalogReturn(history.state).scroll_y : 0;
+  history.pushState(catalogEntry(current, destination, window.scrollY), '', destination);
+  scroll_entry = currentScrollEntry();
   window.scrollTo(0, 0);
   void renderRoute(true);
 }
@@ -86,6 +112,7 @@ async function renderRoute(focus = false, force = false): Promise<void> {
         () => current_id === navigation_id,
         () => void renderRoute(false, true),
         force,
+        restoreScroll,
       );
     } else if (
       path === '/account' ||
@@ -159,9 +186,14 @@ async function renderRoute(focus = false, force = false): Promise<void> {
       button('Try again', () => void renderRoute(), 'button secondary'),
     );
     const back = catalogReturn(history.state);
-    main.replaceChildren(routeLink(back.label, back.href, 'back-link'), state);
+    const back_link = routeLink(back.label, back.href, 'back-link');
+    if (location.pathname.startsWith('/applets/')) back_link.dataset.catalogReturn = '';
+    main.replaceChildren(back_link, state);
   } finally {
-    if (current_id === navigation_id) main.removeAttribute('aria-busy');
+    if (current_id === navigation_id) {
+      main.removeAttribute('aria-busy');
+      restoreScroll();
+    }
   }
 }
 
@@ -187,9 +219,15 @@ document.addEventListener('click', (event) => {
   )
     return;
   event.preventDefault();
-  navigate(target.href);
+  navigate(target.href, target.hasAttribute('data-catalog-return'));
 });
-window.addEventListener('popstate', () => void renderRoute());
+window.addEventListener('popstate', () => {
+  rememberScroll();
+  scroll_entry = currentScrollEntry();
+  scroll_target = scroll_positions.get(scroll_entry) ?? 0;
+  window.scrollTo(0, 0);
+  void renderRoute();
+});
 window.addEventListener(PUBLIC_INVALIDATED, () => {
   if (location.pathname === '/' || location.pathname.startsWith('/applets/'))
     void renderRoute(false, true);

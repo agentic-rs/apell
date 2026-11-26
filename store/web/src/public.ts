@@ -233,6 +233,7 @@ export function renderDetails(
   document.title = `${applet.name} · Apell Store`;
   const back = link('← All applets', '/', 'back-link');
   back.dataset.route = '';
+  back.dataset.catalogReturn = '';
   const heading = element('section', 'detail-heading');
   const title_group = element('div', 'detail-title');
   const title_text = element('div');

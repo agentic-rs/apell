@@ -21,6 +21,7 @@ export async function renderPublicRoute(
   isCurrent: () => boolean,
   retry: () => void,
   force = false,
+  onDisplay?: () => void,
 ): Promise<void> {
   function display(data: PublicData): void {
     const value = JSON.stringify(data);
@@ -61,12 +62,16 @@ export async function renderPublicRoute(
     main.replaceChildren(loading);
     main.setAttribute('aria-busy', 'true');
   }
-  if (active?.path === path) main.removeAttribute('aria-busy');
+  if (active?.path === path) {
+    main.removeAttribute('aria-busy');
+    onDisplay?.();
+  }
   try {
     const data = await publicCache.load(path, force);
     if (!isCurrent()) return;
     display(data);
     main.querySelector('[data-cache-status]')?.remove();
+    onDisplay?.();
   } catch (error) {
     if (!isCurrent()) return;
     if (error instanceof DOMException && error.name === 'AbortError') return;
