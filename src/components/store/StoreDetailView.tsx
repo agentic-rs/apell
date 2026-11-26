@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react';
 import type {
+  InstalledApplet,
   InstallProgress,
   StoreChannel,
   StoreDetail,
   StoreReleaseOption,
 } from '../../lib/types';
 import {
+  installedStoreChannel,
   newStoreAccess,
   permissionName,
   recommendedStoreRelease,
@@ -19,14 +21,42 @@ import { Icon } from '../Icon';
 import { Sheet } from '../Sheet';
 import { StoreIcon } from './StoreIcon';
 
+export function StoreOpenButton({
+  restart_required,
+  busy,
+  opening,
+  primary = true,
+  onOpen,
+}: {
+  restart_required: boolean;
+  busy: boolean;
+  opening: boolean;
+  primary?: boolean;
+  onOpen: () => void;
+}) {
+  return (
+    <button className={primary ? 'store-primary' : ''} disabled={busy} onClick={onOpen}>
+      {restart_required
+        ? opening
+          ? 'Restarting…'
+          : 'Restart applet'
+        : opening
+          ? 'Opening…'
+          : 'Open applet'}
+    </button>
+  );
+}
+
 export function StoreDetailView({
   detail,
+  installed,
+  restart_required,
   selected_version,
   fresh,
   refreshing,
   busy,
   installing,
-  restarting,
+  opening,
   progress,
   onVersion,
   onInstall,
@@ -35,12 +65,14 @@ export function StoreDetailView({
   onBack,
 }: {
   detail: StoreDetail;
+  installed?: InstalledApplet | null;
+  restart_required: boolean;
   selected_version: string;
   fresh: boolean;
   refreshing: boolean;
   busy: boolean;
   installing: boolean;
-  restarting: boolean;
+  opening: boolean;
   progress?: InstallProgress;
   onVersion: (version: string) => void;
   onInstall: (release: StoreReleaseOption, confirmed_channel_switch?: boolean) => void;
@@ -62,6 +94,9 @@ export function StoreDetailView({
     if (storeReleaseChannel(latest) === next) onVersion(latest.version);
   };
   const new_access = release ? newStoreAccess(release, detail.installed) : [];
+  const installed_channel = fresh
+    ? detail.installed_channel
+    : installedStoreChannel(detail.store_url, detail.applet.applet_id, installed ?? null);
   const previous = detail.switch_snapshot;
   const previous_source = previous ? storeSourceLabel(previous.source) : null;
   const can_switch_source = release?.action === 'switch_source' && !!previous;
@@ -95,8 +130,8 @@ export function StoreDetailView({
         <div>
           <h2>{detail.applet.name}</h2>
           <p>
-            {detail.installed
-              ? `Installed · ${detail.installed.version}${detail.installed_channel ? ` · ${storeChannelName(detail.installed_channel)}` : ''}${previous_source ? ` · From ${previous_source}` : ''}`
+            {installed
+              ? `Installed · ${installed.version}${installed_channel ? ` · ${storeChannelName(installed_channel)}` : ''}${previous_source && fresh ? ` · From ${previous_source}` : ''}`
               : previous_source
                 ? `Saved data from ${previous_source}`
                 : 'An applet for Apell'}
@@ -104,6 +139,16 @@ export function StoreDetailView({
         </div>
       </div>
       <p className="store-description">{detail.applet.description}</p>
+      {installed && !fresh && (
+        <div className="store-form-actions store-description">
+          <StoreOpenButton
+            restart_required={restart_required}
+            busy={busy}
+            opening={opening}
+            onOpen={onOpen}
+          />
+        </div>
+      )}
       <div className="store-detail-layout">
         <div className="store-download-panel">
           <label>
@@ -184,20 +229,14 @@ export function StoreDetailView({
                               : 'Install applet'}
                   </button>
                 )}
-                {detail.installed && (
-                  <button
-                    className={can_install ? '' : 'store-primary'}
-                    disabled={busy || !fresh}
-                    onClick={onOpen}
-                  >
-                    {detail.restart_required
-                      ? restarting
-                        ? 'Restarting…'
-                        : 'Restart applet'
-                      : busy && !installing
-                        ? 'Opening…'
-                        : 'Open applet'}
-                  </button>
+                {installed && fresh && (
+                  <StoreOpenButton
+                    restart_required={restart_required}
+                    busy={busy}
+                    opening={opening}
+                    primary={!can_install}
+                    onOpen={onOpen}
+                  />
                 )}
                 {fresh && !detail.installed && !can_install && (
                   <button disabled>
@@ -235,7 +274,7 @@ export function StoreDetailView({
               {release.action_reason && (
                 <p className="store-action-reason">{release.action_reason}</p>
               )}
-              {release.action === 'installed' && (
+              {fresh && release.action === 'installed' && (
                 <p className="store-action-reason">
                   {detail.restart_required
                     ? 'Restart the applet to use the installed version.'

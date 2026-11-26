@@ -1,9 +1,10 @@
 import { useLayoutEffect, useRef } from 'react';
 import type { AppletSession } from '../lib/types';
 import { useBackAction } from '../lib/backNavigation';
+import { AppletIcon } from '../components/AppletIcon';
 import { StoreAddress } from '../components/store/StoreAddress';
 import { StoreCatalogView } from '../components/store/StoreCatalogView';
-import { StoreDetailView } from '../components/store/StoreDetailView';
+import { StoreDetailView, StoreOpenButton } from '../components/store/StoreDetailView';
 import { useStore } from '../components/store/useStore';
 import './store.css';
 
@@ -16,6 +17,7 @@ export function Store({
 }) {
   const state = useStore(onLaunch, onBusyChange);
   const { query, updates_only } = state.browse;
+  const opening = state.operation === 'open' || state.operation === 'restart';
   const page = state.address_open ? 'address' : state.selected_id ? 'detail' : 'catalog';
   const previous_page = useRef(page);
   const previous_origin = useRef(state.config?.store_url);
@@ -77,11 +79,14 @@ export function Store({
           {state.status}
         </p>
       )}
-      {!state.detail && state.restart_after_install && (
+      {!state.detail && !state.installed && state.restart_after_install && (
         <div className="store-form-actions">
-          <button className="store-primary" disabled={!!state.operation} onClick={state.openApplet}>
-            {state.operation === 'restart' ? 'Restarting…' : 'Restart applet'}
-          </button>
+          <StoreOpenButton
+            restart_required
+            busy={!!state.operation}
+            opening={opening}
+            onOpen={state.openApplet}
+          />
         </div>
       )}
       {state.action_error && (
@@ -102,12 +107,14 @@ export function Store({
         state.detail ? (
           <StoreDetailView
             detail={state.detail}
+            installed={state.installed}
+            restart_required={state.restart_required}
             selected_version={state.selected_version}
             fresh={state.detail_fresh}
             refreshing={state.detail_loading}
             busy={!!state.operation}
             installing={state.operation === 'install'}
-            restarting={state.operation === 'restart'}
+            opening={opening}
             progress={state.progress}
             onVersion={state.setSelectedVersion}
             onInstall={state.install}
@@ -117,16 +124,39 @@ export function Store({
           />
         ) : (
           <section className="store-detail-loading" aria-busy={state.detail_loading}>
-            <button disabled={!!state.operation} onClick={state.closeDetail}>
+            <button className="store-back" disabled={!!state.operation} onClick={state.closeDetail}>
               Back to applets
             </button>
+            {state.installed && (
+              <div className="store-download-panel">
+                <div className="store-detail-heading">
+                  <span className="store-icon store-icon-large" aria-hidden="true">
+                    <AppletIcon applet={state.installed} />
+                  </span>
+                  <div>
+                    <h2>{state.installed.name}</h2>
+                    <p>Installed · {state.installed.version}</p>
+                  </div>
+                </div>
+                <div className="store-install-actions">
+                  <StoreOpenButton
+                    restart_required={state.restart_required}
+                    busy={!!state.operation}
+                    opening={opening}
+                    onOpen={state.openApplet}
+                  />
+                </div>
+              </div>
+            )}
             {state.detail_loading ? (
               <p className="status" role="status">
                 Loading applet…
               </p>
             ) : (
               <div className="store-feedback" role="alert">
-                <h2>Couldn’t load this applet</h2>
+                <h2>
+                  {state.installed ? 'Couldn’t load Store releases' : 'Couldn’t load this applet'}
+                </h2>
                 <p>{state.detail_error}</p>
                 <button onClick={state.retryDetail}>Try again</button>
               </div>

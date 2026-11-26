@@ -5,6 +5,7 @@ import {
   getStoreDetail,
   installStoreRelease,
   launchApplet,
+  listApplets,
   message,
   onInstallProgress,
   restartApplet,
@@ -12,6 +13,7 @@ import {
 } from '../../lib/tauri';
 import type {
   AppletSession,
+  InstalledApplet,
   InstallProgress,
   StoreCatalog,
   StoreChannel,
@@ -54,6 +56,7 @@ export function useStore(
   const [browse, setBrowse] = useState(DEFAULT_BROWSE);
   const [catalog, setCatalog] = useState<StoreCatalog>();
   const [detail, setDetail] = useState<StoreDetail>();
+  const [local_installation, setLocalInstallation] = useState<InstalledApplet>();
   const [selected_id, setSelectedId] = useState<string>();
   const [selected_version, setSelectedVersion] = useState('');
   const [address_open, setAddressOpen] = useState(false);
@@ -95,6 +98,7 @@ export function useStore(
     setSelectedId(undefined);
     setSelectedVersion('');
     setDetail(undefined);
+    setLocalInstallation(undefined);
     setDetailError('');
     setDetailLoading(false);
     setRestartAfterInstall(undefined);
@@ -139,18 +143,27 @@ export function useStore(
 
   const loadDetail = async (store_url: string, applet_id: string) => {
     const request = ++scope.current.detail;
+    const isCurrent = () =>
+      scope.current.alive &&
+      scope.current.detail === request &&
+      current_url.current === store_url &&
+      selection.current?.applet_id === applet_id;
     markFresh(false);
     setDetailLoading(true);
     setDetailError('');
+    setLocalInstallation(undefined);
+    void listApplets().then(
+      (report) => {
+        if (isCurrent()) {
+          setLocalInstallation(report.applets.find((applet) => applet.applet_id === applet_id));
+        }
+      },
+      () => {},
+    );
     try {
       const result = await getStoreDetail(store_url, applet_id);
-      if (
-        scope.current.alive &&
-        scope.current.detail === request &&
-        current_url.current === store_url &&
-        selection.current?.applet_id === applet_id
-      ) {
-        const requested = selection.current;
+      const requested = selection.current;
+      if (isCurrent() && requested) {
         const explicit =
           result.releases.find((option) => option.version === requested.version) ??
           rememberedStoreRelease(result, requested.remembered_version);
@@ -172,9 +185,9 @@ export function useStore(
         }
       }
     } catch (error) {
-      if (scope.current.alive && scope.current.detail === request) setDetailError(message(error));
+      if (isCurrent()) setDetailError(message(error));
     } finally {
-      if (scope.current.alive && scope.current.detail === request) setDetailLoading(false);
+      if (isCurrent()) setDetailLoading(false);
     }
   };
 
@@ -253,6 +266,7 @@ export function useStore(
     markFresh(false);
     setSelectedId(undefined);
     setDetail(undefined);
+    setLocalInstallation(undefined);
     setDetailError('');
     setDetailLoading(false);
     setActionError('');
@@ -344,12 +358,23 @@ export function useStore(
       if (scope.current.alive) onLaunch(session);
     });
 
+  const installed = detail_fresh ? detail?.installed : local_installation;
+  const restart_required = detail_fresh
+    ? Boolean(detail?.restart_required)
+    : Boolean(
+        installed &&
+        (restart_after_install === installed.applet_id ||
+          (detail?.restart_required && detail.installed?.sha256 === installed.sha256)),
+      );
+
   return {
     config,
     browse,
     updateBrowse,
     catalog,
     detail,
+    installed,
+    restart_required,
     selected_id,
     selected_version,
     setSelectedVersion: (version: string) => {
@@ -417,6 +442,8 @@ export function useStore(
     openApplet: () => {
       if (fresh.current && detail?.installed) {
         openInstalled(detail.applet.applet_id, detail.restart_required);
+      } else if (installed && selection.current?.applet_id === installed.applet_id) {
+        openInstalled(installed.applet_id, restart_required);
       } else if (restart_after_install) openInstalled(restart_after_install, true);
     },
   };
