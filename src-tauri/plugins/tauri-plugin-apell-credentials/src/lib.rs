@@ -13,6 +13,12 @@ mod local;
 
 const MAX_CREDENTIAL_BYTES: usize = 128 * 1024;
 
+pub const USES_MOCK_CREDENTIALS: bool = cfg!(all(
+  target_os = "macos",
+  debug_assertions,
+  feature = "local-dev"
+));
+
 #[cfg(target_os = "android")]
 struct AndroidStore<R: Runtime>(tauri::plugin::PluginHandle<R>);
 

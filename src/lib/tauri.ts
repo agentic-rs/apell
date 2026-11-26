@@ -61,10 +61,14 @@ declare global {
   interface Window {
     readonly __APELL_HOST_KEY__?: string;
     readonly __APELL_PLATFORM__?: string;
+    readonly __APELL_MOCK_CREDENTIALS__?: boolean;
   }
 }
 
 export const nativeAvailable = isTauri;
+export const usesMockCredentials = () =>
+  nativeAvailable() && !!window.__APELL_HOST_KEY__ && window.__APELL_MOCK_CREDENTIALS__ === true;
+
 function hostKey(): string {
   if (!window.__APELL_HOST_KEY__)
     throw new Error('Open Apell in its native shell to use host services.');

@@ -67,8 +67,9 @@ pnpm desktop:dev
 
 **Apell Local** runs the macOS shell with hot reload and uses the `default`
 device profile in this checkout. Its mock credential store saves Account
-sessions, provider keys, and applet secrets in owner-only files across app
-restarts. It runs without macOS Keychain or Docker. WebView data is temporary.
+sessions, provider keys, and applet secrets in unencrypted, owner-only files
+across app restarts. Settings identifies Apell Local and reminds you to use test
+credentials. It runs without macOS Keychain or Docker. WebView data is temporary.
 `pnpm dev:local shell` opens the same app. Use `pnpm tauri dev` to run the
 regular macOS app with real credentials and pass native Tauri development flags.
 If you used an unnamed profile on an earlier local build, sign in again and

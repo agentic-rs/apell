@@ -13,6 +13,7 @@ import {
   signInToAccount,
   signOutOfAccount,
   syncConfig,
+  usesMockCredentials,
 } from '../lib/tauri';
 import type {
   AccountStatus,
@@ -412,6 +413,12 @@ export function AccountSync({
       >
         Apell Account
       </h2>
+      {usesMockCredentials() && (
+        <p className="notice">
+          Use the local test account. This profile saves its sign-in and any synced API keys in
+          unencrypted files.
+        </p>
+      )}
       {!account && !read_error && <p role="status">Checking sign-in…</p>}
       {account?.state === 'unavailable' && <p>Account sign-in is unavailable in this build.</p>}
       {account?.state === 'signed_out' && (

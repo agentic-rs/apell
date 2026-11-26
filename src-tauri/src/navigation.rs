@@ -35,16 +35,29 @@ pub fn allowed(url: &Url, origins: &[String]) -> bool {
 
 pub fn bootstrap(host_key: &str, origins: &[String]) -> Result<String, serde_json::Error> {
   Ok(format!(
-    "if(window===window.top && {}.includes(location.protocol+'//'+location.host)){{Object.defineProperties(window,{{__APELL_HOST_KEY__:{{value:{}}},__APELL_PLATFORM__:{{value:{}}}}});}}",
+    "if(window===window.top && {}.includes(location.protocol+'//'+location.host)){{Object.defineProperties(window,{{__APELL_HOST_KEY__:{{value:{}}},__APELL_PLATFORM__:{{value:{}}},__APELL_MOCK_CREDENTIALS__:{{value:{}}}}});}}",
     serde_json::to_string(origins)?,
     serde_json::to_string(host_key)?,
     serde_json::to_string(std::env::consts::OS)?,
+    tauri_plugin_apell_credentials::USES_MOCK_CREDENTIALS,
   ))
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn bootstrap_reports_the_compiled_credential_store() {
+    let mock = cfg!(all(
+      target_os = "macos",
+      debug_assertions,
+      feature = "local-dev"
+    ));
+    let script = bootstrap("fixture", &trusted_origins(None)).unwrap();
+    assert!(script.contains(&format!("__APELL_MOCK_CREDENTIALS__:{{value:{mock}}}")));
+  }
+
   #[test]
   fn navigation_binds_authority_to_exact_origins() {
     let origins = trusted_origins(Some(&Url::parse("http://localhost:1420/").unwrap()));

@@ -610,6 +610,13 @@ svg {
   border-radius: 12px;
   color: var(--muted);
 }
+.settings-profile-notice {
+  display: grid;
+  gap: 4px;
+}
+.settings-profile-notice strong {
+  color: var(--text);
+}
 .settings .primary {
   justify-self: stretch;
 }

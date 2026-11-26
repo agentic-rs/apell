@@ -47,6 +47,7 @@ import {
 interface EditorProps {
   connection?: LlmConnection;
   providers: LlmProvider[];
+  mock_credentials: boolean;
   active_connection_id: string | null;
   back_label?: string;
   onSaved: (connection: LlmConnection, previous_id?: string) => void;
@@ -97,6 +98,19 @@ export function ConnectionEditor(props: EditorProps) {
   useBackAction(25, true, goBack);
   const provider = props.providers.find((item) => item.provider_id === draft.provider_id);
   const device_login = provider?.auth_methods.includes('device_code') ?? false;
+  const sign_in_copy = props.mock_credentials
+    ? {
+        start: 'Use a test account. Apell Local saves sign-ins in unencrypted files.',
+        staged: 'Signed in for this setup. Saving keeps this sign-in in an unencrypted file.',
+        saved: 'Sign-in saved in an unencrypted test file.',
+        unavailable: 'The local credential store is unavailable.',
+      }
+    : {
+        start: 'Sign in with your account using a one-time code.',
+        staged: 'Signed in for this setup. Save to keep this account.',
+        saved: 'Signed in securely.',
+        unavailable: 'The secure credential store is unavailable.',
+      };
   const accepts_key = provider?.auth_methods.includes('api_key') ?? false;
   const changed_destination = destinationChanged(draft, saved);
   const dirty = hasChanges(draft, saved, staged_login);
@@ -394,6 +408,7 @@ export function ConnectionEditor(props: EditorProps) {
           {accepts_key && (
             <ApiKeyField
               credential_status={credential_status}
+              mock_credentials={props.mock_credentials}
               optional={provider?.auth_methods.includes('none') ?? false}
               value={draft.api_key}
               removing={draft.remove_credential}
@@ -417,12 +432,12 @@ export function ConnectionEditor(props: EditorProps) {
                 {staged_login
                   ? draft.remove_credential
                     ? 'This sign-in will be discarded when you save.'
-                    : 'Signed in for this setup. Save to keep this account.'
+                    : sign_in_copy.staged
                   : credential_status === 'present'
-                    ? 'Signed in securely.'
+                    ? sign_in_copy.saved
                     : credential_status === 'unavailable'
-                      ? 'The secure credential store is unavailable.'
-                      : 'Sign in with your account using a one-time code.'}
+                      ? sign_in_copy.unavailable
+                      : sign_in_copy.start}
               </p>
               <button type="button" disabled={!!busy} onClick={signIn}>
                 {sign_in_expired || credential_status === 'present' ? 'Sign in again' : 'Sign in'}

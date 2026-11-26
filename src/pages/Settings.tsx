@@ -7,6 +7,7 @@ import {
   onAccountChanged,
   onLlmSettingsChanged,
   saved_connection_changed,
+  usesMockCredentials,
 } from '../lib/tauri';
 import { connectionReadiness } from '../lib/modelChoice';
 import type { LlmConnection, LlmSettings } from '../lib/types';
@@ -27,6 +28,7 @@ interface AccountConnectionVisit {
 }
 
 export function Settings() {
+  const mock_credentials = usesMockCredentials();
   const [section, setSection] = useState<SettingsSection | null>(null);
   const [visited_permissions, setVisitedPermissions] = useState(false);
   const [settings, setSettings] = useState<LlmSettings>();
@@ -205,6 +207,7 @@ export function Settings() {
             : undefined
       }
       providers={settings.providers}
+      mock_credentials={mock_credentials}
       active_connection_id={settings.active_connection_id}
       onBack={(refresh) => {
         setEditor(undefined);
@@ -342,15 +345,25 @@ export function Settings() {
   return (
     <>
       {section === null && (
-        <SettingsMenu
-          settings={settings}
-          loading={loading}
-          onOpen={(next) => {
-            menu_scroll.current = window.scrollY;
-            if (next === 'permissions') setVisitedPermissions(true);
-            setSection(next);
-          }}
-        />
+        <>
+          {mock_credentials && (
+            <aside className="panel notice settings-profile-notice" aria-label="Apell Local">
+              <strong>Apell Local</strong>
+              <p>
+                Use test credentials. This profile saves keys and sign-ins in unencrypted files.
+              </p>
+            </aside>
+          )}
+          <SettingsMenu
+            settings={settings}
+            loading={loading}
+            onOpen={(next) => {
+              menu_scroll.current = window.scrollY;
+              if (next === 'permissions') setVisitedPermissions(true);
+              setSection(next);
+            }}
+          />
+        </>
       )}
       {section === 'default-model' &&
         (connections_editor || (

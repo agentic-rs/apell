@@ -8,6 +8,7 @@ import {
   saveSettingsTransferFile,
   scanSettingsTransferQr,
   showSettingsTransferQr,
+  usesMockCredentials,
 } from '../lib/tauri';
 import type {
   LlmConnection,
@@ -503,12 +504,19 @@ function TransferSheet({
           onRetry={onRetry}
         />
       ) : (
-        <ImportForm
-          {...form_props}
-          providers={providers}
-          onImported={onImported}
-          onClose={onClose}
-        />
+        <>
+          {usesMockCredentials() && (
+            <p className="notice">
+              Import test backups only. Imported API keys are saved in unencrypted files.
+            </p>
+          )}
+          <ImportForm
+            {...form_props}
+            providers={providers}
+            onImported={onImported}
+            onClose={onClose}
+          />
+        </>
       )}
       {pending && (
         <p className="status" role="status">
