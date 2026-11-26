@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
   installBundle,
   updateApplet,
   launchApplet,
   listApplets,
   message,
+  onAppletInstallationChanged,
   onInstallProgress,
   removeApplet,
   restartApplet,
@@ -65,50 +66,106 @@ export function Library({
   const [restart_required, setRestartRequired] = useState<string[]>([]);
   const [restart_offer_id, setRestartOfferId] = useState<string>();
   const [action, setAction] = useState<AppletAction>();
+  const [installation_change, setInstallationChange] = useState(0);
   const pending = useRef(false);
   const progress_filter = useRef<Pick<InstallProgress, 'operation_id'>>(undefined);
   const list_revision = useRef(0);
+  const latest_change = useRef(0);
+  const checked_change = useRef(0);
   const library = useRef<HTMLElement>(null);
   const library_focus = useRef<{ applet_id?: string }>(undefined);
+  const focused_before_report = useRef<{ element: Element; applet_id?: string }>(undefined);
   const restart_offer = applets.find(
     (applet) =>
       applet.applet_id === restart_offer_id && restart_required.includes(applet.applet_id),
   );
   const action_applet = applets.find((applet) => applet.applet_id === action?.applet_id);
 
-  const applyReport = (report: AppletListReport) => {
+  const applyReport = useCallback((report: AppletListReport) => {
+    const element = document.activeElement;
+    focused_before_report.current =
+      element && library.current?.contains(element)
+        ? {
+            element,
+            applet_id: element.closest<HTMLElement>('[data-library-applet]')?.dataset.libraryApplet,
+          }
+        : undefined;
     setApplets(report.applets);
     setUnavailable(report.unavailable);
     setRestartRequired(report.restart_required ?? []);
     setLoadError('');
-  };
+  }, []);
 
   useEffect(() => {
-    if (busy || !library_focus.current) return;
-    const { applet_id } = library_focus.current;
+    if (busy || action || installOpen) return;
+    const previous = focused_before_report.current;
+    focused_before_report.current = undefined;
+    const target =
+      library_focus.current ??
+      (previous && !previous.element.isConnected && document.activeElement === document.body
+        ? previous
+        : undefined);
+    if (!target) return;
     library_focus.current = undefined;
-    const tile = applet_id ? document.getElementById(`library-open-${applet_id}`) : null;
-    (tile ?? library.current?.querySelector('button'))?.focus({ preventScroll: true });
-  }, [busy, action]);
+    const { applet_id } = target;
+    const applet = applet_id
+      ? (document.getElementById(`library-open-${applet_id}`) ??
+        document.getElementById(`library-permissions-${applet_id}`))
+      : null;
+    (applet ?? library.current?.querySelector('button:not(:disabled)') ?? library.current)?.focus({
+      preventScroll: true,
+    });
+  }, [applets, unavailable, busy, action, installOpen]);
+
+  const refresh = useCallback(
+    async (accept: () => boolean = () => true) => {
+      const revision = ++list_revision.current;
+      const change = latest_change.current;
+      const isCurrent = () => revision === list_revision.current && accept();
+      try {
+        const report = await listApplets();
+        if (isCurrent()) {
+          checked_change.current = change;
+          applyReport(report);
+          return report;
+        }
+      } catch (error) {
+        if (isCurrent()) throw error;
+      } finally {
+        if (isCurrent()) setLoading(false);
+      }
+    },
+    [applyReport],
+  );
 
   useEffect(() => {
-    let disposed = false;
-    const revision = ++list_revision.current;
-    const isCurrent = () => !disposed && revision === list_revision.current;
-    listApplets()
-      .then((report) => {
-        if (isCurrent()) applyReport(report);
-      })
-      .catch((error) => {
-        if (isCurrent()) setLoadError(message(error));
-      })
-      .finally(() => {
-        if (isCurrent()) setLoading(false);
-      });
+    let active = true;
+    const request = () => {
+      if (active) setInstallationChange(++latest_change.current);
+    };
+    const subscription = onAppletInstallationChanged(request).catch(() => undefined);
+    void subscription.then(request);
     return () => {
-      disposed = true;
+      active = false;
+      list_revision.current++;
+      void subscription.then((stop) => stop?.());
     };
   }, []);
+  const list_blocked = busy || installOpen || !!action;
+  useLayoutEffect(() => {
+    // An open sheet keeps its original trigger and review until it closes.
+    if (list_blocked || pending.current || installation_change === checked_change.current) return;
+    let active = true;
+    const accept = () => active && installation_change === latest_change.current;
+    void refresh(accept).catch((error) => {
+      if (!accept()) return;
+      checked_change.current = installation_change;
+      setLoadError(message(error));
+    });
+    return () => {
+      active = false;
+    };
+  }, [installation_change, list_blocked, refresh]);
   useEffect(() => {
     let stop: (() => void) | undefined;
     let disposed = false;
@@ -153,18 +210,6 @@ export function Library({
       onBusyChange(false);
       setBusy(false);
       setLaunchingId('');
-    }
-  };
-  const refresh = async () => {
-    const revision = ++list_revision.current;
-    try {
-      const report = await listApplets();
-      if (revision === list_revision.current) {
-        applyReport(report);
-        return report;
-      }
-    } catch (error) {
-      if (revision === list_revision.current) throw error;
     }
   };
   const reloadLibrary = () =>
@@ -316,7 +361,7 @@ export function Library({
             </button>
           </div>
           {unavailable.map(({ applet_id, error, can_remove, restore_snapshot }) => (
-            <div className="unavailable-applet" key={applet_id}>
+            <div className="unavailable-applet" key={applet_id} data-library-applet={applet_id}>
               <strong>{applet_id}</strong>
               <p>{error}</p>
               <div className="button-row">
@@ -340,6 +385,7 @@ export function Library({
                 )}
                 <button
                   type="button"
+                  id={`library-permissions-${applet_id}`}
                   disabled={busy}
                   aria-label={`Device permissions for ${applet_id}`}
                   aria-haspopup="dialog"

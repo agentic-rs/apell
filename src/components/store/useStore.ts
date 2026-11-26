@@ -13,6 +13,7 @@ import {
   launchApplet,
   listApplets,
   message,
+  onAppletInstallationChanged,
   restartApplet,
   setStoreUrl,
 } from '../../lib/tauri';
@@ -75,6 +76,8 @@ export function useStore(
   const [detail_selection, setDetailSelection] = useState<DetailSelection>();
   const [address_open, setAddressOpen] = useState(false);
   const [config_check, setConfigCheck] = useState<number>();
+  const [list_refresh, setListRefresh] = useState(0);
+  const [detail_refresh, setDetailRefresh] = useState(0);
   const [catalog_loading, setCatalogLoading] = useState(false);
   const [updates_loading, setUpdatesLoading] = useState(false);
   const [detail_loading, setDetailLoading] = useState(false);
@@ -99,6 +102,7 @@ export function useStore(
   const current_url = useRef<string | null>(null);
   const selection = useRef<DetailSelection | undefined>(undefined);
   const fresh = useRef<StoreDetail>(undefined);
+  const deferred_detail = useRef<DetailTarget>(undefined);
 
   const selectDetail = (next?: DetailSelection) => {
     selection.current = next;
@@ -333,10 +337,32 @@ export function useStore(
       scope.current.catalog++;
       scope.current.updates++;
       scope.current.detail++;
+      deferred_detail.current = undefined;
     };
   }, []);
   useEffect(() => {
     void loadConfig();
+  }, []);
+  useEffect(() => {
+    let open = true;
+    const subscription = onAppletInstallationChanged((applet_id) => {
+      if (!open || !scope.current.alive) return;
+      invalidateLists(applet_id);
+      setListRefresh((revision) => revision + 1);
+      const target = selection.current?.target;
+      if (target?.applet_id !== applet_id) return;
+      scope.current.detail++;
+      markFresh();
+      setLocalInstallation(undefined);
+      setDetailLoading(true);
+      setDetailError('');
+      if (scope.current.operation) deferred_detail.current = target;
+      else setDetailRefresh((revision) => revision + 1);
+    }).catch(() => undefined);
+    return () => {
+      open = false;
+      void subscription.then((unlisten) => unlisten?.());
+    };
   }, []);
 
   // The Library shortcut can replace the previously visible Store route on reveal.
@@ -353,7 +379,7 @@ export function useStore(
     if (scope.current.config !== config_check) return;
     if (show_updates && !list_checked.current.updates) void loadUpdates();
     if (discover_url && !list_checked.current.catalog) void loadCatalog(discover_url);
-  }, [show_updates, discover_url, config_check]);
+  }, [show_updates, discover_url, config_check, list_refresh]);
 
   const configured_detail =
     !detail_selection?.target.installed_source && !detail_selection?.pending_download;
@@ -370,7 +396,7 @@ export function useStore(
     if (!selected || selected.target !== visible_detail) return;
     if (configured_detail && scope.current.config !== detail_config_check) return;
     void loadDetail(selected);
-  }, [visible_detail, detail_config_check]);
+  }, [visible_detail, detail_config_check, detail_refresh]);
 
   const run = async (kind: StoreOperation, action: (id: string) => Promise<void>) => {
     if (scope.current.operation) return;
@@ -387,6 +413,11 @@ export function useStore(
     } finally {
       if (scope.current.operation === id) {
         scope.current.operation = '';
+        const target = deferred_detail.current;
+        deferred_detail.current = undefined;
+        if (target && target === selection.current?.target) {
+          setDetailRefresh((revision) => revision + 1);
+        }
         onBusyChange(false);
         setOperation(undefined);
       }
@@ -477,6 +508,7 @@ export function useStore(
     if (switching && !snapshot.switch_snapshot) return;
     if (switching_channel && (!confirmed_channel_switch || !snapshot.channel_snapshot)) return;
     if (!switching && !switching_channel && !['install', 'update'].includes(release.action)) return;
+    const review_revision = scope.current.detail;
     void run('install', async (operation_id) => {
       try {
         const installed = await transfer.run(operation_id, async () => {
@@ -503,16 +535,18 @@ export function useStore(
             );
             return;
           }
-          const paused = {
-            ...snapshot,
-            releases: snapshot.releases.map((option) =>
-              option === release
-                ? { ...option, downloaded_bytes: installed.received_bytes || undefined }
-                : option,
-            ),
-          };
-          setDetail(paused);
-          markFresh(paused);
+          if (scope.current.detail === review_revision) {
+            const paused = {
+              ...snapshot,
+              releases: snapshot.releases.map((option) =>
+                option === release
+                  ? { ...option, downloaded_bytes: installed.received_bytes || undefined }
+                  : option,
+              ),
+            };
+            setDetail(paused);
+            markFresh(paused);
+          }
           setStatus(
             installed.received_bytes > 0
               ? 'Download paused. Continue when you’re ready.'
@@ -541,7 +575,9 @@ export function useStore(
         selectDetail(next_selection);
         invalidateLists(installed.applet.applet_id);
       } catch (error) {
-        if (has_checkpoint && scope.current.alive) void loadDetail(requested);
+        if (has_checkpoint && scope.current.alive && scope.current.detail === review_revision) {
+          void loadDetail(requested);
+        }
         throw error;
       } finally {
         refreshDownloads();

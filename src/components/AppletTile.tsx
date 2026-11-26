@@ -62,7 +62,7 @@ export function AppletTile({
   };
 
   return (
-    <div className="applet-tile">
+    <div className="applet-tile" data-library-applet={applet.applet_id}>
       <button
         className="applet-icon-button"
         id={`library-open-${applet.applet_id}`}
