@@ -1,22 +1,49 @@
+import { useLayoutEffect, useRef, type RefObject } from 'react';
 import { storeChannelName } from '../../lib/storeState';
 import type { StoreSource, StoreUpdateResults } from '../../lib/types';
 import { AppletIcon } from '../AppletIcon';
 
 export function StoreUpdatesView({
   report,
+  retrying_store,
+  notice,
   loading,
   error,
   query,
   onRefresh,
+  onRetrySource,
+  updates_tab,
   onSelect,
 }: {
   report?: StoreUpdateResults;
+  retrying_store?: string;
+  notice?: string;
   loading: boolean;
   error: string;
   query: string;
   onRefresh: () => void;
+  onRetrySource: (store_url: string) => void;
+  updates_tab: RefObject<HTMLButtonElement | null>;
   onSelect: (source: StoreSource, trigger: HTMLButtonElement) => void;
 }) {
+  const retry_focus = useRef<{ button: HTMLButtonElement; heading?: HTMLElement | null }>(
+    undefined,
+  );
+  useLayoutEffect(() => {
+    const previous = retry_focus.current;
+    if (retrying_store || !previous) return;
+    retry_focus.current = undefined;
+    if (document.activeElement !== document.body && document.activeElement !== previous.button)
+      return;
+    const { button, heading } = previous;
+    const target =
+      button.isConnected && !button.disabled
+        ? button
+        : heading?.isConnected
+          ? heading
+          : updates_tab.current;
+    target?.focus();
+  }, [retrying_store, report, loading, updates_tab]);
   const search = query.trim().toLocaleLowerCase();
   const fresh = report?.fresh === true;
   const groups = (report?.sources ?? []).map((source) => ({
@@ -54,6 +81,11 @@ export function StoreUpdatesView({
           </button>
         </div>
       )}
+      {notice && (
+        <p className="store-feedback store-success" role="status">
+          {notice}
+        </p>
+      )}
       {!loading && !error && fresh && !visible.length && (
         <div className="store-empty">
           <h2>
@@ -73,8 +105,12 @@ export function StoreUpdatesView({
         </div>
       )}
       {visible.map(({ source, check_error, unchecked, matching }) => (
-        <section className="store-update-group" key={source.store_url}>
-          <h2>{source.store_url}</h2>
+        <section
+          className="store-update-group"
+          key={source.store_url}
+          aria-busy={retrying_store === source.store_url || undefined}
+        >
+          <h2 tabIndex={-1}>{source.store_url}</h2>
           {(unchecked > 0 || check_error) && (
             <div className="store-feedback" role="status">
               <strong>
@@ -83,6 +119,22 @@ export function StoreUpdatesView({
                   : `Couldn’t check ${unchecked} applets`}
               </strong>
               {check_error && <p>{check_error}</p>}
+              <button
+                type="button"
+                aria-label={`Retry updates from ${source.store_url}`}
+                disabled={loading || !!retrying_store}
+                onClick={(event) => {
+                  const button = event.currentTarget;
+                  button.focus({ preventScroll: true });
+                  retry_focus.current = {
+                    button,
+                    heading: button.closest('section')?.querySelector('h2'),
+                  };
+                  onRetrySource(source.store_url);
+                }}
+              >
+                {retrying_store === source.store_url ? 'Checking this Store…' : 'Retry this Store'}
+              </button>
             </div>
           )}
           {!!matching.length && (

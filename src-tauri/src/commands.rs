@@ -176,6 +176,7 @@ pub async fn shell_command(
     | "store.saved_detail"
     | "store.saved_updates"
     | "store.updates"
+    | "store.retry_updates"
     | "store.detail"
     | "store.icon"
     | "store.pending_downloads"

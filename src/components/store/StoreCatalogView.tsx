@@ -1,4 +1,4 @@
-import type { Ref } from 'react';
+import { useRef, type Ref } from 'react';
 import type { StoreCatalog, StoreSource, StoreUpdateResults } from '../../lib/types';
 import {
   installedStoreChannel,
@@ -15,6 +15,8 @@ export function StoreCatalogView({
   catalog,
   store_url,
   updates,
+  retrying_store,
+  updates_notice,
   download_count,
   loading,
   error,
@@ -24,6 +26,7 @@ export function StoreCatalogView({
   onQuery,
   onFilter,
   onRefresh,
+  onRetryUpdateSource,
   onAddress,
   onSelect,
   onSelectUpdate,
@@ -32,6 +35,8 @@ export function StoreCatalogView({
   catalog?: StoreCatalog;
   store_url?: string | null;
   updates?: StoreUpdateResults;
+  retrying_store?: string;
+  updates_notice?: string;
   download_count: number;
   loading: boolean;
   error: string;
@@ -41,11 +46,13 @@ export function StoreCatalogView({
   onQuery: (value: string) => void;
   onFilter: (value: boolean) => void;
   onRefresh: () => void;
+  onRetryUpdateSource: (store_url: string) => void;
   onAddress: (trigger: HTMLButtonElement) => void;
   onSelect: (applet_id: string, trigger: HTMLButtonElement) => void;
   onSelectUpdate: (source: StoreSource, trigger: HTMLButtonElement) => void;
   onOpenDownloads: () => void;
 }) {
+  const updates_tab = useRef<HTMLButtonElement>(null);
   const update_count = updates?.fresh
     ? updates.sources.reduce((count, source) => count + source.updates.length, 0)
     : 0;
@@ -69,7 +76,7 @@ export function StoreCatalogView({
               className="icon-button"
               aria-label={refresh_label}
               title={refresh_label}
-              disabled={loading}
+              disabled={loading || (updates_only && !!retrying_store)}
               onClick={onRefresh}
             >
               <Icon name="reload" />
@@ -103,7 +110,7 @@ export function StoreCatalogView({
         <button aria-pressed={!updates_only} onClick={() => onFilter(false)}>
           Discover
         </button>
-        <button aria-pressed={updates_only} onClick={() => onFilter(true)}>
+        <button ref={updates_tab} aria-pressed={updates_only} onClick={() => onFilter(true)}>
           Updates{update_count ? ` (${update_count})` : ''}
         </button>
         <button id="store-open-downloads" type="button" onClick={onOpenDownloads}>
@@ -113,10 +120,14 @@ export function StoreCatalogView({
       {updates_only ? (
         <StoreUpdatesView
           report={updates}
+          retrying_store={retrying_store}
+          notice={updates_notice}
           query={query}
           loading={loading}
           error={error}
           onRefresh={onRefresh}
+          onRetrySource={onRetryUpdateSource}
+          updates_tab={updates_tab}
           onSelect={onSelectUpdate}
         />
       ) : (

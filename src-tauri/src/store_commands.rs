@@ -386,6 +386,11 @@ pub async fn dispatch(
     }
     "store.saved_updates" => output(updates::saved(host).await?),
     "store.updates" => output(updates::check(host).await?),
+    "store.retry_updates" => {
+      let request: StoreQuery = input(params)?;
+      let store_url = normalize_store_url(&request.store_url)?;
+      output(updates::retry(host, &store_url).await?)
+    }
     "store.detail" => {
       let request: DetailQuery = input(params)?;
       let store_url = if let Some(identity) = &request.pending_download {

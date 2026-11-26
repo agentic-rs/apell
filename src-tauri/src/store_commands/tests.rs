@@ -247,6 +247,7 @@ async fn updates_fetch_only_distinct_canonical_installed_origins() {
       std::future::ready(Ok(StoreCatalog { applets }))
     },
     &SavedUpdates::new(),
+    None,
   )
   .await
   .unwrap();
@@ -310,6 +311,7 @@ async fn updates_keep_successful_results_when_an_origin_fails() {
       }
     },
     &saved,
+    None,
   )
   .await
   .unwrap();
@@ -362,6 +364,7 @@ async fn updates_follow_each_installed_channel_and_keep_local_artwork() {
       })
     },
     &SavedUpdates::new(),
+    None,
   )
   .await
   .unwrap();
@@ -377,6 +380,151 @@ async fn updates_follow_each_installed_channel_and_keep_local_artwork() {
     Some("data:image/png;base64,aW5zdGFsbGVk")
   );
   assert_eq!(update.version, "2.0.0-beta.1");
+}
+
+#[tokio::test]
+async fn retry_checks_only_the_installed_origin_and_retains_other_valid_saved_hints() {
+  let origin = "https://a.example";
+  let other = "https://b.example";
+  let missing = "https://missing.example";
+  let mut report = empty_report();
+  report.applets = vec![
+    store_installation("sample", origin, "1.0.0", StoreChannel::Stable),
+    store_installation("neighbor", other, "1.0.0", StoreChannel::Stable),
+  ];
+  let saved = SavedUpdates::from([
+    ("sample".into(), hint(&report.applets[0], "2.0.0")),
+    ("neighbor".into(), hint(&report.applets[1], "2.0.0")),
+  ]);
+  let skipped = check_updates(
+    || std::future::ready(Ok(report.clone())),
+    |_| async { panic!("a retry must not fetch an origin without a Store installation") },
+    &saved,
+    Some(missing),
+  )
+  .await
+  .unwrap();
+  assert!(skipped
+    .sources
+    .iter()
+    .all(|source| source.store_url != missing));
+  assert_eq!(cache_projection(&skipped, Some(missing)), saved);
+
+  let result = check_updates(
+    || std::future::ready(Ok(report.clone())),
+    |requested| async move {
+      assert_eq!(requested, origin);
+      Ok(StoreCatalog {
+        applets: vec![listing("sample", "1.0.0", None)],
+      })
+    },
+    &saved,
+    Some(origin),
+  )
+  .await
+  .unwrap();
+  assert_eq!(result.sources[0].checked_count, 1);
+  assert!(result.sources[0].updates.is_empty());
+  assert_eq!(result.sources[1].checked_count, 0);
+  assert_eq!(result.sources[1].saved_updates.len(), 1);
+  assert_eq!(
+    cache_projection(&result, Some(origin)),
+    SavedUpdates::from([("neighbor".into(), hint(&report.applets[1], "2.0.0"))]),
+  );
+}
+
+#[tokio::test]
+async fn retry_revalidates_target_and_unrelated_installations_after_network_wait() {
+  let origin = "https://a.example";
+  let other = "https://b.example";
+  let mut initial = empty_report();
+  initial.applets = vec![
+    store_installation("moved", origin, "1.0.0", StoreChannel::Stable),
+    store_installation("neighbor", other, "1.0.0", StoreChannel::Stable),
+    store_installation("changed", other, "1.0.0", StoreChannel::Stable),
+  ];
+  let saved = initial
+    .applets
+    .iter()
+    .map(|applet| (applet.manifest.applet_id.clone(), hint(applet, "2.0.0")))
+    .collect();
+  let mut current = initial.clone();
+  current.applets[0] = store_installation("moved", other, "1.0.0", StoreChannel::Stable);
+  current.applets[2].sha256 = "b".repeat(64);
+  let received = std::cell::Cell::new(false);
+  let result = check_updates(
+    || {
+      std::future::ready(Ok(if received.get() {
+        current.clone()
+      } else {
+        initial.clone()
+      }))
+    },
+    |requested| {
+      assert_eq!(requested, origin);
+      received.set(true);
+      std::future::ready(Err("Offline".into()))
+    },
+    &saved,
+    Some(origin),
+  )
+  .await
+  .unwrap();
+  assert!(received.get());
+  let [unrelated] = &result.sources[..] else {
+    panic!("the original source no longer has installations");
+  };
+  assert_eq!(
+    (unrelated.store_url.as_str(), unrelated.installed_count),
+    (other, 3)
+  );
+  assert_eq!(
+    cache_projection(&result, Some(origin)),
+    SavedUpdates::from([("neighbor".into(), hint(&current.applets[1], "2.0.0"))]),
+  );
+}
+
+#[tokio::test]
+async fn retry_reports_a_new_update_without_evicting_unrelated_saved_hints() {
+  let origin = "https://a.example";
+  let other = "https://b.example";
+  let mut report = empty_report();
+  report.applets = (0..256)
+    .map(|index| {
+      store_installation(
+        &format!("neighbor-{index}"),
+        other,
+        "1.0.0",
+        StoreChannel::Stable,
+      )
+    })
+    .collect();
+  let earlier = report
+    .applets
+    .iter()
+    .map(|applet| (applet.manifest.applet_id.clone(), hint(applet, "2.0.0")))
+    .collect();
+  report.applets.push(store_installation(
+    "sample",
+    origin,
+    "1.0.0",
+    StoreChannel::Stable,
+  ));
+  let result = check_updates(
+    || std::future::ready(Ok(report.clone())),
+    |requested| async move {
+      assert_eq!(requested, origin);
+      Ok(StoreCatalog {
+        applets: vec![listing("sample", "2.0.0", None)],
+      })
+    },
+    &earlier,
+    Some(origin),
+  )
+  .await
+  .unwrap();
+  assert_eq!(result.sources[0].updates[0].version, "2.0.0");
+  assert_eq!(cache_projection(&result, Some(origin)), earlier);
 }
 
 #[tokio::test]
@@ -432,6 +580,7 @@ async fn update_cache_revalidates_installations_changed_during_the_network_check
       })
     },
     &earlier,
+    None,
   )
   .await
   .unwrap();
@@ -446,7 +595,9 @@ async fn update_cache_revalidates_installations_changed_during_the_network_check
   assert_eq!(moved.store_url, foreign);
   assert!(moved.saved_updates.is_empty());
   assert_eq!(
-    cache_projection(&result).into_keys().collect::<Vec<_>>(),
+    cache_projection(&result, None)
+      .into_keys()
+      .collect::<Vec<_>>(),
     ["match"]
   );
 }
@@ -472,10 +623,11 @@ async fn update_cache_stores_only_binding_and_version_and_ignores_invalid_local_
       })
     },
     &SavedUpdates::new(),
+    None,
   )
   .await
   .unwrap();
-  let cache = cache_projection(&result);
+  let cache = cache_projection(&result, None);
   write_cache(root.path(), &cache);
   assert_eq!(read_cache(root.path()), cache);
   let path = root.path().join("store-updates-v1.json");

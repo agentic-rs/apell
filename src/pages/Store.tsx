@@ -402,6 +402,8 @@ export function Store({
           catalog={state.catalog}
           store_url={state.config?.store_url}
           updates={state.updates}
+          retrying_store={state.retrying_store}
+          updates_notice={state.updates_notice}
           download_count={downloads.entries.length}
           loading={updates_only ? state.updates_loading : state.catalog_loading}
           error={updates_only ? state.updates_error : state.config_error || state.catalog_error}
@@ -414,6 +416,7 @@ export function Store({
             state.updateBrowse({ updates_only: next });
           }}
           onRefresh={updates_only ? state.refreshUpdates : state.refreshCatalog}
+          onRetryUpdateSource={(store_url) => void state.retryUpdateSource(store_url)}
           onAddress={(trigger) => {
             rememberBrowse(trigger);
             state.setAddressOpen(true);

@@ -8,7 +8,14 @@ use apell_core::{
 use futures_util::{stream, StreamExt};
 use semver::Version;
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, fs, future::Future, io::Read, path::Path, time::Duration};
+use std::{
+  collections::{BTreeMap, BTreeSet},
+  fs,
+  future::Future,
+  io::Read,
+  path::Path,
+  time::Duration,
+};
 
 const MAX_UPDATE_REQUESTS: usize = 4;
 const UPDATE_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
@@ -62,6 +69,20 @@ pub(super) async fn saved(host: &Host) -> Result<UpdatesResult, String> {
 }
 
 pub(super) async fn check(host: &Host) -> Result<UpdatesResult, String> {
+  check_scope(host, None).await
+}
+
+pub(super) async fn retry(host: &Host, store_url: &str) -> Result<Option<UpdateSource>, String> {
+  Ok(
+    check_scope(host, Some(store_url))
+      .await?
+      .sources
+      .into_iter()
+      .find(|source| source.store_url == store_url),
+  )
+}
+
+async fn check_scope(host: &Host, store_url: Option<&str>) -> Result<UpdatesResult, String> {
   // Serialize checks through cache publication. Installations and saved reads
   // use different gates and can continue during the network wait.
   let check = host.store_updates_gate.clone().lock_owned().await;
@@ -75,9 +96,10 @@ pub(super) async fn check(host: &Host) -> Result<UpdatesResult, String> {
         .map_err(|_| "The store took too long to respond. Try again shortly.")?
     },
     &earlier,
+    store_url,
   )
   .await?;
-  let next = cache_projection(&result);
+  let next = cache_projection(&result, store_url);
   if next != earlier {
     let root = host.root.clone();
     let _ = tauri::async_runtime::spawn_blocking(move || {
@@ -93,17 +115,25 @@ pub(super) async fn check_updates<F, R>(
   read_installed: impl Fn() -> R,
   fetch_catalog: impl Fn(String) -> F,
   saved: &SavedUpdates,
+  store_url: Option<&str>,
 ) -> Result<UpdatesResult, String>
 where
   F: Future<Output = Result<StoreCatalog, String>>,
   R: Future<Output = Result<AppletListReport, String>>,
 {
-  let initial = installed_by_store(read_installed().await?);
-  if initial.is_empty() {
-    return Ok(UpdatesResult { sources: vec![] });
+  let initial = read_installed().await?;
+  let origins: BTreeSet<_> = initial
+    .applets
+    .iter()
+    .filter_map(store_source)
+    .filter(|source| store_url.is_none_or(|url| source.store_url == url))
+    .map(|source| source.store_url.clone())
+    .collect();
+  if origins.is_empty() {
+    return Ok(update_report(initial, Catalogs::new(), saved));
   }
   let fetch_catalog = &fetch_catalog;
-  let catalogs = stream::iter(initial.into_keys())
+  let catalogs = stream::iter(origins)
     .map(|origin| async move {
       let check = fetch_catalog(origin.clone()).await;
       (origin, check)
@@ -211,10 +241,15 @@ fn restore_hint(applet: InstalledApplet, saved: &SavedUpdates) -> Option<AppletU
   })
 }
 
-pub(super) fn cache_projection(report: &UpdatesResult) -> SavedUpdates {
+pub(super) fn cache_projection(report: &UpdatesResult, store_url: Option<&str>) -> SavedUpdates {
+  let is_retry_source = |source: &&UpdateSource| Some(source.store_url.as_str()) == store_url;
   report
     .sources
     .iter()
+    // A targeted check can fill the remaining space without evicting valid
+    // hints from other sources. Their installations were revalidated above.
+    .filter(|source| !is_retry_source(source))
+    .chain(report.sources.iter().filter(is_retry_source))
     .flat_map(|source| source.updates.iter().chain(&source.saved_updates))
     .filter_map(|entry| {
       let source = store_source(&entry.applet)?.clone();

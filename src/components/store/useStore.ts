@@ -15,6 +15,7 @@ import {
   message,
   onAppletInstallationChanged,
   restartApplet,
+  retryStoreUpdates,
   setStoreUrl,
 } from '../../lib/tauri';
 import type {
@@ -28,6 +29,7 @@ import type {
   StoreReleaseOption,
   StoreSource,
   StoreUpdateResults,
+  StoreUpdateSource,
 } from '../../lib/types';
 import {
   installedStoreChannel,
@@ -80,6 +82,8 @@ export function useStore(
   const [detail_refresh, setDetailRefresh] = useState(0);
   const [catalog_loading, setCatalogLoading] = useState(false);
   const [updates_loading, setUpdatesLoading] = useState(false);
+  const [retrying_store, setRetryingStore] = useState<string>();
+  const [updates_notice, setUpdatesNotice] = useState('');
   const [detail_loading, setDetailLoading] = useState(false);
   const [detail_fresh, setDetailFresh] = useState(false);
   const [config_error, setConfigError] = useState('');
@@ -170,6 +174,8 @@ export function useStore(
     list_checked.current = { catalog: false, updates: false };
     setCatalogLoading(false);
     setUpdatesLoading(false);
+    setRetryingStore(undefined);
+    setUpdatesNotice('');
     clearCatalogReview();
     markUpdatesSaved(changed_applet_id);
   };
@@ -206,6 +212,8 @@ export function useStore(
     const request = ++scope.current.updates;
     const isCurrent = () => scope.current.alive && scope.current.updates === request;
     setUpdatesLoading(true);
+    setRetryingStore(undefined);
+    setUpdatesNotice('');
     setUpdatesError('');
     markUpdatesSaved();
     let checked = false;
@@ -227,6 +235,54 @@ export function useStore(
       setUpdatesError(message(error));
     } finally {
       if (isCurrent()) setUpdatesLoading(false);
+    }
+  };
+
+  const retryUpdateSource = async (store_url: string) => {
+    if (scope.current.operation || updates_loading || retrying_store || !updates?.fresh) return;
+    const previous = updates.sources.find((source) => source.store_url === store_url);
+    if (!previous || (!previous.error && previous.checked_count === previous.installed_count))
+      return;
+    const request = ++scope.current.updates;
+    const isCurrent = () => scope.current.alive && scope.current.updates === request;
+    const replace = (source: StoreUpdateSource | null) => {
+      setUpdates(
+        (current) =>
+          current && {
+            ...current,
+            sources: current.sources.flatMap((entry) =>
+              entry.store_url === store_url ? (source ? [source] : []) : [entry],
+            ),
+          },
+      );
+    };
+    setRetryingStore(store_url);
+    setUpdatesNotice('');
+    try {
+      const source = await retryStoreUpdates(store_url);
+      if (!isCurrent()) return;
+      if (source && source.store_url !== store_url)
+        throw new Error('Could not verify this Store’s update check.');
+      replace(source);
+      if (!source) setUpdatesNotice('No installed applets use this Store.');
+      else if (!source.error && source.checked_count === source.installed_count) {
+        setUpdatesNotice(
+          source.updates.length
+            ? `Checked updates from ${store_url}.`
+            : `No updates available from ${store_url}.`,
+        );
+      }
+    } catch (error) {
+      if (!isCurrent()) return;
+      replace({
+        ...previous,
+        checked_count: 0,
+        updates: [],
+        saved_updates: [...previous.updates, ...previous.saved_updates],
+        error: message(error),
+      });
+    } finally {
+      if (isCurrent()) setRetryingStore(undefined);
     }
   };
 
@@ -651,6 +707,8 @@ export function useStore(
     initial_loading: config_check === undefined && !config,
     catalog_loading: catalog_loading || (!!discover_url && !list_checked.current.catalog),
     updates_loading,
+    retrying_store,
+    updates_notice,
     detail_loading,
     detail_fresh,
     config_error,
@@ -694,9 +752,10 @@ export function useStore(
       } else if (current_url.current) void loadCatalog(current_url.current);
     },
     refreshUpdates: () => {
-      if (scope.current.operation) return;
+      if (scope.current.operation || retrying_store) return;
       void loadUpdates();
     },
+    retryUpdateSource,
     retryDetail: () => {
       if (!selection.current || scope.current.operation) return;
       void loadDetail(selection.current);

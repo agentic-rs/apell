@@ -45,6 +45,7 @@ function render(updates?: StoreUpdateResults, loading = false, error = '') {
       onQuery={noop}
       onFilter={noop}
       onRefresh={noop}
+      onRetryUpdateSource={noop}
       onAddress={noop}
       onSelect={noop}
       onSelectUpdate={noop}
@@ -99,6 +100,8 @@ describe('Store update check results', () => {
       ],
     });
     expect(html).toContain('This Store is unavailable.');
+    expect(html).toContain(`aria-label="Retry updates from ${first_store}"`);
+    expect(html).not.toContain(`aria-label="Retry updates from ${second_store}"`);
     expect(html).toContain('Check saved release for journal');
     expect(html).toContain('Review update for canvas');
     expect(html).toContain('Updates (1)');

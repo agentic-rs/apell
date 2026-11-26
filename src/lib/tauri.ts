@@ -53,6 +53,7 @@ import type {
   StoreSavedDetail,
   StoreSwitchSnapshot,
   StoreUpdatesReport,
+  StoreUpdateSource,
   ViewPermissionStatus,
 } from './types';
 
@@ -101,6 +102,8 @@ export const getStoreCatalog = (store_url: string) =>
 export const getSavedStoreCatalog = (store_url: string) =>
   shellCall<StoreCatalog | null>('store.saved_catalog', { store_url });
 export const getStoreUpdates = () => shellCall<StoreUpdatesReport>('store.updates');
+export const retryStoreUpdates = (store_url: string) =>
+  shellCall<StoreUpdateSource | null>('store.retry_updates', { store_url });
 export const getSavedStoreUpdates = () => shellCall<StoreUpdatesReport>('store.saved_updates');
 export const getStorePendingDownloads = () =>
   shellCall<StorePendingDownload[]>('store.pending_downloads');

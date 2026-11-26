@@ -80,6 +80,7 @@ describe('applet bridge boundary', () => {
       'store.saved_catalog',
       'store.updates',
       'store.saved_updates',
+      'store.retry_updates',
       'store.detail',
       'store.saved_detail',
       'navigation.background',
