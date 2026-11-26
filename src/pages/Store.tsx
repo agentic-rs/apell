@@ -18,26 +18,34 @@ export function Store({
   const state = useStore(onLaunch, onBusyChange);
   const { query, updates_only } = state.browse;
   const opening = state.operation === 'open' || state.operation === 'restart';
-  const page = state.address_open ? 'address' : state.selected_id ? 'detail' : 'catalog';
+  const page = state.address_open
+    ? 'address'
+    : state.selected_id
+      ? 'detail'
+      : updates_only
+        ? 'updates'
+        : 'discover';
   const previous_page = useRef(page);
   const previous_origin = useRef(state.config?.store_url);
-  const catalog_scroll = useRef(0);
+  const catalog_scroll = useRef({ discover: 0, updates: 0 });
   useLayoutEffect(() => {
     if (previous_origin.current !== state.config?.store_url) {
       previous_origin.current = state.config?.store_url;
-      catalog_scroll.current = 0;
+      catalog_scroll.current.discover = 0;
     }
     if (previous_page.current === page) return;
     previous_page.current = page;
-    window.scrollTo(0, page === 'catalog' ? catalog_scroll.current : 0);
+    window.scrollTo(
+      0,
+      page === 'discover' || page === 'updates' ? catalog_scroll.current[page] : 0,
+    );
   }, [page, state.config?.store_url]);
   const rememberCatalogScroll = () => {
-    if (page === 'catalog') catalog_scroll.current = window.scrollY;
+    if (page === 'discover' || page === 'updates') catalog_scroll.current[page] = window.scrollY;
   };
-  const can_leave_address = state.address_open && !!(state.config?.store_url || state.config_error);
-  useBackAction(25, can_leave_address || !!state.selected_id, () => {
+  useBackAction(25, state.address_open || !!state.selected_id, () => {
     if (state.operation) return;
-    if (can_leave_address) state.setAddressOpen(false);
+    if (state.address_open) state.setAddressOpen(false);
     else state.closeDetail();
   });
   if (state.initial_loading)
@@ -46,7 +54,7 @@ export function Store({
         Opening the store…
       </p>
     );
-  if (state.address_open || (state.config && !state.config.store_url))
+  if (state.address_open)
     return (
       <StoreAddress
         key={state.config?.store_url}
@@ -54,23 +62,8 @@ export function Store({
         busy={!!state.operation}
         error={state.action_error}
         onSave={state.saveAddress}
-        onCancel={
-          state.config?.store_url || state.config_error
-            ? () => state.setAddressOpen(false)
-            : undefined
-        }
+        onCancel={() => state.setAddressOpen(false)}
       />
-    );
-  if (!state.config)
-    return (
-      <section className="store-feedback" role="alert">
-        <h2>Couldn’t open the store</h2>
-        <p>{state.config_error}</p>
-        <div className="store-form-actions">
-          <button onClick={() => void state.loadConfig()}>Try again</button>
-          <button onClick={() => state.setAddressOpen(true)}>Edit store address</button>
-        </div>
-      </section>
     );
   return (
     <div className="store-page">
@@ -108,6 +101,7 @@ export function Store({
           <StoreDetailView
             detail={state.detail}
             installed={state.installed}
+            installed_source={state.installed_source}
             restart_required={state.restart_required}
             selected_version={state.selected_version}
             fresh={state.detail_fresh}
@@ -125,7 +119,7 @@ export function Store({
         ) : (
           <section className="store-detail-loading" aria-busy={state.detail_loading}>
             <button className="store-back" disabled={!!state.operation} onClick={state.closeDetail}>
-              Back to applets
+              {state.installed_source ? 'Back to updates' : 'Back to applets'}
             </button>
             {state.installed && (
               <div className="store-download-panel">
@@ -166,13 +160,19 @@ export function Store({
       ) : (
         <StoreCatalogView
           catalog={state.catalog}
-          loading={state.catalog_loading}
-          error={state.catalog_error}
-          query={query}
+          store_url={state.config?.store_url}
+          updates={state.updates}
+          loading={updates_only ? state.updates_loading : state.catalog_loading}
+          error={updates_only ? state.updates_error : state.catalog_error || state.config_error}
+          query={updates_only ? state.updates_query : query}
           updates_only={updates_only}
-          onQuery={(query) => state.updateBrowse({ query })}
-          onFilter={(updates_only) => state.updateBrowse({ updates_only })}
-          onRefresh={state.refreshCatalog}
+          onQuery={updates_only ? state.setUpdatesQuery : (query) => state.updateBrowse({ query })}
+          onFilter={(next) => {
+            if (next === updates_only) return;
+            rememberCatalogScroll();
+            state.updateBrowse({ updates_only: next });
+          }}
+          onRefresh={updates_only ? state.refreshUpdates : state.refreshCatalog}
           onAddress={() => {
             rememberCatalogScroll();
             state.setAddressOpen(true);
@@ -180,6 +180,10 @@ export function Store({
           onSelect={(applet_id) => {
             rememberCatalogScroll();
             state.openDetail(applet_id);
+          }}
+          onSelectUpdate={(source) => {
+            rememberCatalogScroll();
+            state.openUpdate(source);
           }}
         />
       )}

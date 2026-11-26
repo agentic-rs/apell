@@ -24,6 +24,7 @@ apell-core = { path = "../crates/apell-core" }
 apell-runtime = { path = "../crates/apell-runtime" }
 apell-vault-keys = { path = "../crates/apell-vault-keys" }
 base64 = "0.22"
+futures-util = "0.3"
 getrandom = "0.3"
 jsonwebtoken = { version = "12", default-features = false, features = ["rust_crypto"] }
 percent-encoding = "2"

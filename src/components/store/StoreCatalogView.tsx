@@ -1,4 +1,4 @@
-import type { StoreCatalog } from '../../lib/types';
+import type { StoreCatalog, StoreSource, StoreUpdatesReport } from '../../lib/types';
 import {
   installedStoreChannel,
   matchingStoreApplets,
@@ -8,9 +8,12 @@ import {
 } from '../../lib/storeState';
 import { Icon } from '../Icon';
 import { StoreIcon } from './StoreIcon';
+import { StoreUpdatesView } from './StoreUpdatesView';
 
 export function StoreCatalogView({
   catalog,
+  store_url,
+  updates,
   loading,
   error,
   query,
@@ -20,8 +23,11 @@ export function StoreCatalogView({
   onRefresh,
   onAddress,
   onSelect,
+  onSelectUpdate,
 }: {
   catalog?: StoreCatalog;
+  store_url?: string | null;
+  updates?: StoreUpdatesReport;
   loading: boolean;
   error: string;
   query: string;
@@ -31,28 +37,31 @@ export function StoreCatalogView({
   onRefresh: () => void;
   onAddress: () => void;
   onSelect: (applet_id: string) => void;
+  onSelectUpdate: (source: StoreSource) => void;
 }) {
-  const applets = matchingStoreApplets(catalog?.applets ?? [], query, updates_only);
   const update_count =
-    catalog?.applets.filter((item) => item.update_available && !item.source_conflict).length ?? 0;
+    updates?.sources.reduce((count, source) => count + source.updates.length, 0) ?? 0;
+  const refresh_label = updates_only ? 'Refresh updates' : 'Refresh store';
   return (
     <section className="store-catalog" aria-label="Applet store" aria-busy={loading}>
       <div className="store-toolbar">
         <p>
           {updates_only
-            ? 'See updates for applets installed from this Store.'
+            ? 'Check for updates to applets installed from any Store.'
             : 'Find a new applet. Keep your favorites up to date.'}
         </p>
         <div className="store-toolbar-actions">
-          <button
-            className="icon-button"
-            aria-label="Refresh store"
-            title="Refresh store"
-            disabled={loading}
-            onClick={onRefresh}
-          >
-            <Icon name="reload" />
-          </button>
+          {(updates_only || store_url || error) && (
+            <button
+              className="icon-button"
+              aria-label={refresh_label}
+              title={refresh_label}
+              disabled={loading}
+              onClick={onRefresh}
+            >
+              <Icon name="reload" />
+            </button>
+          )}
           <button
             className="icon-button"
             aria-label="Store address"
@@ -63,17 +72,19 @@ export function StoreCatalogView({
           </button>
         </div>
       </div>
-      <label className="store-search">
-        <span>Search applets</span>
-        <input
-          type="search"
-          value={query}
-          maxLength={200}
-          onChange={(event) => onQuery(event.target.value)}
-          placeholder="Name or description"
-          autoCapitalize="none"
-        />
-      </label>
+      {(store_url || updates_only) && (
+        <label className="store-search">
+          <span>{updates_only ? 'Search updates' : 'Search applets'}</span>
+          <input
+            type="search"
+            value={query}
+            maxLength={200}
+            onChange={(event) => onQuery(event.target.value)}
+            placeholder={updates_only ? 'Applet name' : 'Name or description'}
+            autoCapitalize="none"
+          />
+        </label>
+      )}
       <div className="store-filters" role="group" aria-label="Store filter">
         <button aria-pressed={!updates_only} onClick={() => onFilter(false)}>
           Discover
@@ -82,55 +93,84 @@ export function StoreCatalogView({
           Updates{update_count ? ` (${update_count})` : ''}
         </button>
       </div>
-      {updates_only && (
-        <p className="store-update-scope">
-          For an applet from another Store, open its menu and choose{' '}
-          <strong>About this applet</strong>, then <strong>Check for updates</strong>.
-        </p>
+      {updates_only ? (
+        <StoreUpdatesView
+          report={updates}
+          query={query}
+          loading={loading}
+          error={error}
+          onRefresh={onRefresh}
+          onSelect={onSelectUpdate}
+        />
+      ) : (
+        <StoreDiscover
+          catalog={catalog}
+          loading={loading}
+          error={error}
+          query={query}
+          store_url={store_url}
+          onRefresh={onRefresh}
+          onAddress={onAddress}
+          onSelect={onSelect}
+        />
       )}
+    </section>
+  );
+}
+
+function StoreDiscover({
+  catalog,
+  loading,
+  error,
+  query,
+  store_url,
+  onRefresh,
+  onAddress,
+  onSelect,
+}: {
+  catalog?: StoreCatalog;
+  loading: boolean;
+  error: string;
+  query: string;
+  store_url?: string | null;
+  onRefresh: () => void;
+  onAddress: () => void;
+  onSelect: (applet_id: string) => void;
+}) {
+  const applets = matchingStoreApplets(catalog?.applets ?? [], query, false);
+  return (
+    <>
       {loading && (
-        <p className={catalog && !updates_only ? 'visually-hidden' : 'status'} role="status">
-          {updates_only ? 'Checking this Store for updates…' : 'Checking the store…'}
+        <p className={catalog ? 'visually-hidden' : 'status'} role="status">
+          Checking the store…
         </p>
       )}
       {error && (
         <div className="store-feedback" role="alert">
-          <strong>
-            {updates_only
-              ? 'Couldn’t check for updates'
-              : catalog
-                ? 'Couldn’t refresh the store'
-                : 'Couldn’t load the store'}
-          </strong>
-          {updates_only && (
-            <p>
-              {applets.length
-                ? 'Shown updates are from the last successful check.'
-                : 'Update status is unknown.'}
-            </p>
-          )}
+          <strong>{catalog ? 'Couldn’t refresh the store' : 'Couldn’t load the store'}</strong>
           <p>{error}</p>
           <button disabled={loading} onClick={onRefresh}>
             Try again
           </button>
         </div>
       )}
-      {!loading && !error && !applets.length && (!updates_only || catalog) && (
+      {!loading && !error && !applets.length && (
         <div className="store-empty">
-          <h2>
-            {query.trim()
-              ? 'No matching applets'
-              : updates_only
-                ? 'No updates from this Store'
-                : 'No applets yet'}
-          </h2>
-          <p>
-            {query.trim()
-              ? 'Try another name or a shorter search.'
-              : updates_only
-                ? 'No newer releases were found on the installed channels.'
-                : 'Published applets will appear here.'}
-          </p>
+          {store_url ? (
+            <>
+              <h2>{query.trim() ? 'No matching applets' : 'No applets yet'}</h2>
+              <p>
+                {query.trim()
+                  ? 'Try another name or a shorter search.'
+                  : 'Published applets will appear here.'}
+              </p>
+            </>
+          ) : (
+            <>
+              <h2>Connect to a store</h2>
+              <button onClick={onAddress}>Set store address</button>
+            </>
+          )}
         </div>
       )}
       {!!applets.length && catalog && (
@@ -193,6 +233,6 @@ export function StoreCatalogView({
         </ul>
       )}
       {catalog && <p className="store-origin">{catalog.store_url}</p>}
-    </section>
+    </>
   );
 }

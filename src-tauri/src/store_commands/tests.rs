@@ -55,6 +55,212 @@ fn empty_report() -> AppletListReport {
   }
 }
 
+fn store_installation(
+  id: &str,
+  origin: &str,
+  version: &str,
+  channel: StoreChannel,
+) -> InstalledApplet {
+  let mut applet = installed(version);
+  applet.manifest.applet_id = id.into();
+  applet.source = Some(
+    StoreSource {
+      store_url: origin.into(),
+      applet_id: id.into(),
+      channel,
+    }
+    .into(),
+  );
+  applet
+}
+
+fn listing(id: &str, stable: &str, nightly: Option<&str>) -> StoreApplet {
+  let release_for = |version: &str| StoreRelease {
+    download_url: format!("/api/v1/applets/{id}/versions/{version}/download"),
+    ..release(version)
+  };
+  let stable = release_for(stable);
+  let nightly = nightly.map(release_for);
+  let latest = nightly
+    .as_ref()
+    .filter(|head| head.compare_version(&stable.version).unwrap().is_gt())
+    .unwrap_or(&stable);
+  let applet = StoreApplet {
+    applet_id: id.into(),
+    name: "Catalog name".into(),
+    description: "App description".into(),
+    project_url: None,
+    icon_url: Some(format!("/media/{}.png", "b".repeat(64))),
+    latest_release: latest.clone(),
+    latest_stable_release: Some(stable),
+    latest_nightly_release: nightly,
+  };
+  applet.validate().unwrap();
+  applet
+}
+
+#[tokio::test]
+async fn updates_fetch_only_distinct_canonical_installed_origins() {
+  let alpha = "https://a.example";
+  let bravo = "https://b.example";
+  let mut report = empty_report();
+  let stable = |id, origin| store_installation(id, origin, "1.0.0", StoreChannel::Stable);
+  let mut local = stable("file", "https://file.example");
+  local.source = None;
+  let mut github = stable("github", "https://github.example");
+  github.source = Some(
+    GitHubSource {
+      repository_id: 1,
+      repository: "sample/project".into(),
+      asset_name: "sample.apel".into(),
+      release_tag: None,
+      prerelease: false,
+    }
+    .into(),
+  );
+  let mut mismatched = stable("different-id", "https://wrong.example");
+  mismatched.manifest.applet_id = "mismatched".into();
+  report.retained.insert(
+    "removed".into(),
+    StoreSwitchSnapshot {
+      sha256: "a".repeat(64),
+      source: stable("removed", "https://removed.example").source,
+      removed: true,
+    },
+  );
+  report.unavailable.push(UnavailableApplet {
+    applet_id: "broken".into(),
+    error: "Broken package".into(),
+  });
+  report.applets = vec![
+    stable("bravo", bravo),
+    stable("alpha", alpha),
+    stable("neighbor", alpha),
+    stable("noncanonical", "https://a.example/"),
+    local,
+    github,
+    mismatched,
+  ];
+  let mut calls = std::sync::Mutex::new(Vec::new());
+  let result = check_updates(report, |origin| {
+    let applets = match origin.as_str() {
+      "https://a.example" => vec![
+        listing("alpha", "2.0.0", None),
+        listing("neighbor", "1.0.0", None),
+        listing("bravo", "3.0.0", None),
+        listing("file", "2.0.0", None),
+      ],
+      "https://b.example" => vec![listing("bravo", "1.0.0", None)],
+      _ => panic!("requested an origin without a verified Store installation"),
+    };
+    calls.lock().unwrap().push(origin);
+    std::future::ready(Ok(StoreCatalog { applets }))
+  })
+  .await;
+
+  calls.get_mut().unwrap().sort();
+  assert_eq!(calls.into_inner().unwrap(), [alpha, bravo]);
+  let [first, second] = result.sources.as_slice() else {
+    panic!("expected two source groups");
+  };
+  assert_eq!(
+    (
+      &*first.store_url,
+      first.installed_count,
+      first.checked_count
+    ),
+    (alpha, 2, 2)
+  );
+  assert_eq!(first.updates.len(), 1);
+  assert_eq!(first.updates[0].applet.manifest.applet_id, "alpha");
+  assert_eq!(
+    (
+      &*second.store_url,
+      second.installed_count,
+      second.checked_count
+    ),
+    (bravo, 1, 1)
+  );
+  assert!(second.updates.is_empty());
+}
+
+#[tokio::test]
+async fn updates_keep_successful_results_when_an_origin_fails() {
+  let healthy = "https://healthy.example";
+  let unavailable = "https://unavailable.example";
+  let mut report = empty_report();
+  report.applets = vec![
+    store_installation("sample", healthy, "1.0.0", StoreChannel::Stable),
+    store_installation("other", unavailable, "1.0.0", StoreChannel::Stable),
+  ];
+  let result = check_updates(report, |origin| async move {
+    match origin.as_str() {
+      "https://healthy.example" => Ok(StoreCatalog {
+        applets: vec![listing("sample", "2.0.0", None)],
+      }),
+      "https://unavailable.example" => Err("Could not reach the store.".into()),
+      _ => unreachable!(),
+    }
+  })
+  .await;
+  let json = output(result).unwrap();
+  let sources = json["sources"].as_array().unwrap();
+  assert_eq!(sources.len(), 2);
+  assert_eq!(sources[0]["checked_count"], 1);
+  assert_eq!(sources[0]["updates"][0]["release"]["version"], "2.0.0");
+  assert!(sources[0].get("error").is_none());
+  assert_eq!(
+    sources[1],
+    json!({
+      "store_url": unavailable,
+      "installed_count": 1,
+      "checked_count": 0,
+      "updates": [],
+      "error": "Could not reach the store."
+    })
+  );
+}
+
+#[tokio::test]
+async fn updates_follow_each_installed_channel_and_keep_local_artwork() {
+  let origin = "https://store.example";
+  let mut report = empty_report();
+  let mut nightly = store_installation("nightly", origin, "1.0.0-beta.1", StoreChannel::Nightly);
+  nightly.icon_data_url = Some("data:image/png;base64,aW5zdGFsbGVk".into());
+  report.applets = vec![
+    nightly,
+    store_installation("stable", origin, "1.0.0", StoreChannel::Stable),
+    store_installation(
+      "missing-channel",
+      origin,
+      "1.0.0-beta.1",
+      StoreChannel::Nightly,
+    ),
+    store_installation("unlisted", origin, "1.0.0", StoreChannel::Stable),
+  ];
+  let result = check_updates(report, |_| async {
+    Ok(StoreCatalog {
+      applets: vec![
+        listing("nightly", "3.0.0", Some("2.0.0-beta.1")),
+        listing("stable", "1.0.0", Some("2.0.0-beta.1")),
+        listing("missing-channel", "3.0.0", None),
+      ],
+    })
+  })
+  .await;
+  let source = &result.sources[0];
+  assert_eq!(source.installed_count, 4);
+  assert_eq!(source.checked_count, 2);
+  assert_eq!(source.updates.len(), 1);
+  let update = &source.updates[0];
+  assert_eq!(update.applet.manifest.name, "Sample");
+  assert_eq!(
+    update.applet.icon_data_url.as_deref(),
+    Some("data:image/png;base64,aW5zdGFsbGVk")
+  );
+  assert_eq!(update.release.version, "2.0.0-beta.1");
+}
+
 #[test]
 fn retained_data_requires_confirmation_when_reinstalling_from_another_source() {
   let mut report = empty_report();

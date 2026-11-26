@@ -72,6 +72,7 @@ dependencies = [
  "cc",
  "core-foundation",
  "core-graphics",
+ "futures-util",
  "getrandom 0.3.4",
  "jsonwebtoken",
  "objc2",

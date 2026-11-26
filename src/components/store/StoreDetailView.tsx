@@ -17,6 +17,7 @@ import {
   storeSize,
   storeSourceLabel,
 } from '../../lib/storeState';
+import { AppletIcon } from '../AppletIcon';
 import { Icon } from '../Icon';
 import { Sheet } from '../Sheet';
 import { StoreIcon } from './StoreIcon';
@@ -50,6 +51,7 @@ export function StoreOpenButton({
 export function StoreDetailView({
   detail,
   installed,
+  installed_source,
   restart_required,
   selected_version,
   fresh,
@@ -66,6 +68,7 @@ export function StoreDetailView({
 }: {
   detail: StoreDetail;
   installed?: InstalledApplet | null;
+  installed_source: boolean;
   restart_required: boolean;
   selected_version: string;
   fresh: boolean;
@@ -99,16 +102,19 @@ export function StoreDetailView({
     : installedStoreChannel(detail.store_url, detail.applet.applet_id, installed ?? null);
   const previous = detail.switch_snapshot;
   const previous_source = previous ? storeSourceLabel(previous.source) : null;
-  const can_switch_source = release?.action === 'switch_source' && !!previous;
-  const can_switch_channel = release?.action === 'switch_channel' && !!detail.channel_snapshot;
+  const can_switch_source = !installed_source && release?.action === 'switch_source' && !!previous;
+  const can_switch_channel =
+    !installed_source && release?.action === 'switch_channel' && !!detail.channel_snapshot;
   const confirm_required = can_switch_source || can_switch_channel;
   const can_install =
-    release && (release.action === 'install' || release.action === 'update' || confirm_required);
+    release &&
+    (release.action === 'update' ||
+      (!installed_source && (release.action === 'install' || confirm_required)));
   return (
     <section className="store-detail" aria-label={detail.applet.name} aria-busy={refreshing}>
       <div className="store-toolbar">
         <button className="store-back" disabled={busy} onClick={onBack}>
-          <Icon name="back" /> All applets
+          <Icon name="back" /> {installed_source ? 'Back to updates' : 'All applets'}
         </button>
         <button
           className="icon-button"
@@ -121,12 +127,18 @@ export function StoreDetailView({
         </button>
       </div>
       <div className="store-detail-heading">
-        <StoreIcon
-          store_url={detail.store_url}
-          icon_url={detail.applet.icon_url}
-          name={detail.applet.name}
-          large
-        />
+        {installed_source && installed ? (
+          <span className="store-icon store-icon-large" aria-hidden="true">
+            <AppletIcon applet={installed} />
+          </span>
+        ) : (
+          <StoreIcon
+            store_url={detail.store_url}
+            icon_url={installed_source ? null : detail.applet.icon_url}
+            name={detail.applet.name}
+            large
+          />
+        )}
         <div>
           <h2>{detail.applet.name}</h2>
           <p>
@@ -136,6 +148,7 @@ export function StoreDetailView({
                 ? `Saved data from ${previous_source}`
                 : 'An applet for Apell'}
           </p>
+          {installed_source && <p>{detail.store_url}</p>}
         </div>
       </div>
       <p className="store-description">{detail.applet.description}</p>
@@ -151,38 +164,68 @@ export function StoreDetailView({
       )}
       <div className="store-detail-layout">
         <div className="store-download-panel">
-          <label>
-            Release channel
-            <select
-              value={channel}
-              disabled={busy}
-              onChange={(event) =>
-                changeChannel(event.target.value === 'nightly' ? 'nightly' : 'stable')
-              }
-            >
-              <option value="stable" disabled={!detail.releases.some((item) => !item.prerelease)}>
-                Stable
-              </option>
-              <option value="nightly" disabled={!detail.releases.some((item) => item.prerelease)}>
-                Nightly
-              </option>
-            </select>
-          </label>
-          <label>
-            Version
-            <select
-              value={selected_version}
-              disabled={busy}
-              onChange={(event) => onVersion(event.target.value)}
-            >
-              {versions.map((item) => (
-                <option key={item.version} value={item.version}>
-                  {item.version}
-                  {item.version === recommended.version ? ' · Recommended' : ''}
-                </option>
-              ))}
-            </select>
-          </label>
+          {installed_source ? (
+            release ? (
+              <strong>Release {release.version}</strong>
+            ) : (
+              <>
+                <p className="store-action-reason">
+                  No release is available on the installed channel.
+                </p>
+                {installed && fresh && (
+                  <div className="store-install-actions">
+                    <StoreOpenButton
+                      restart_required={restart_required}
+                      busy={busy}
+                      opening={opening}
+                      onOpen={onOpen}
+                    />
+                  </div>
+                )}
+              </>
+            )
+          ) : (
+            <>
+              <label>
+                Release channel
+                <select
+                  value={channel}
+                  disabled={busy}
+                  onChange={(event) =>
+                    changeChannel(event.target.value === 'nightly' ? 'nightly' : 'stable')
+                  }
+                >
+                  <option
+                    value="stable"
+                    disabled={!detail.releases.some((item) => !item.prerelease)}
+                  >
+                    Stable
+                  </option>
+                  <option
+                    value="nightly"
+                    disabled={!detail.releases.some((item) => item.prerelease)}
+                  >
+                    Nightly
+                  </option>
+                </select>
+              </label>
+              <label>
+                Version
+                <select
+                  value={selected_version}
+                  disabled={busy}
+                  onChange={(event) => onVersion(event.target.value)}
+                >
+                  {versions.map((item) => (
+                    <option key={item.version} value={item.version}>
+                      {item.version}
+                      {item.version === recommended.version ? ' · Recommended' : ''}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </>
+          )}
           {release && (
             <>
               <div className="store-release-meta">

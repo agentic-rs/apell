@@ -59,6 +59,7 @@ pub struct Host {
   pub credential_gate: tokio::sync::Mutex<()>,
   pub store_gate: Arc<tokio::sync::Mutex<()>>,
   pub store_icons: tokio::sync::Semaphore,
+  pub(crate) store_update_requests: tokio::sync::Semaphore,
   pub applet_secret_gate: Arc<tokio::sync::Mutex<()>>,
   pub provider_http: apell_core::providers::Client,
   pub provider_jobs: Arc<ProviderJobs>,
@@ -100,6 +101,9 @@ impl Host {
       credential_gate: tokio::sync::Mutex::new(()),
       store_gate: Arc::default(),
       store_icons: tokio::sync::Semaphore::new(4),
+      store_update_requests: tokio::sync::Semaphore::new(
+        crate::store_commands::MAX_UPDATE_REQUESTS,
+      ),
       applet_secret_gate: Arc::default(),
       provider_http: apell_core::providers::http_client()?,
       provider_jobs: Arc::new(ProviderJobs::default()),

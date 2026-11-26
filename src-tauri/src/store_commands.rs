@@ -9,16 +9,20 @@ use apell_core::{
     StoreSwitchSnapshot,
   },
   store_client::{
-    normalize_store_url, DownloadCheckpoint, DownloadOutcome, StoreApplet, StoreClient,
-    StoreRelease,
+    normalize_store_url, DownloadCheckpoint, DownloadOutcome, StoreApplet, StoreCatalog,
+    StoreClient, StoreRelease,
   },
 };
+use futures_util::{stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::{collections::BTreeMap, future::Future, time::Duration};
 use tauri::{AppHandle, Emitter, Manager};
 
 pub use state::StoreConfig;
 
+pub(crate) const MAX_UPDATE_REQUESTS: usize = 4;
+const UPDATE_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const DEFAULT_STORE_URL: Option<&str> = if cfg!(all(
   feature = "local-dev",
   target_os = "macos",
@@ -74,6 +78,24 @@ struct CatalogItem {
 struct CatalogResult {
   store_url: String,
   applets: Vec<CatalogItem>,
+}
+#[derive(Serialize)]
+struct AppletUpdate {
+  applet: InstalledApplet,
+  release: StoreRelease,
+}
+#[derive(Serialize)]
+struct UpdateSource {
+  store_url: String,
+  installed_count: usize,
+  checked_count: usize,
+  updates: Vec<AppletUpdate>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  error: Option<String>,
+}
+#[derive(Serialize)]
+struct UpdatesResult {
+  sources: Vec<UpdateSource>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -185,6 +207,73 @@ async fn installed(host: &Host) -> Result<AppletListReport, String> {
     .map_err(|_| "Could not read installed applets.")?
 }
 
+async fn check_updates<F>(
+  report: AppletListReport,
+  fetch_catalog: impl Fn(String) -> F,
+) -> UpdatesResult
+where
+  F: Future<Output = Result<StoreCatalog, String>>,
+{
+  let mut installations = BTreeMap::<String, Vec<InstalledApplet>>::new();
+  for applet in report.applets {
+    let Some(PackageSource::Store(source)) = applet.source.as_ref() else {
+      continue;
+    };
+    if source.applet_id == applet.manifest.applet_id && source.validate().is_ok() {
+      installations
+        .entry(source.store_url.clone())
+        .or_default()
+        .push(applet);
+    }
+  }
+
+  let fetch_catalog = &fetch_catalog;
+  let mut sources: Vec<_> = stream::iter(installations)
+    .map(|(store_url, applets)| async move {
+      let catalog = fetch_catalog(store_url.clone()).await;
+      let mut source = UpdateSource {
+        store_url,
+        installed_count: applets.len(),
+        checked_count: 0,
+        updates: Vec::new(),
+        error: None,
+      };
+      let catalog = match catalog {
+        Ok(catalog) => catalog,
+        Err(error) => {
+          source.error = Some(error);
+          return source;
+        }
+      };
+      let listings: BTreeMap<_, _> = catalog
+        .applets
+        .iter()
+        .map(|listing| (listing.applet_id.as_str(), listing))
+        .collect();
+      for applet in applets {
+        let Some(release) = listings
+          .get(applet.manifest.applet_id.as_str())
+          .and_then(|listing| installed_channel_release(listing, &applet))
+        else {
+          continue;
+        };
+        source.checked_count += 1;
+        if is_newer(release, &applet) {
+          source.updates.push(AppletUpdate {
+            applet,
+            release: release.clone(),
+          });
+        }
+      }
+      source
+    })
+    .buffer_unordered(MAX_UPDATE_REQUESTS)
+    .collect()
+    .await;
+  sources.sort_by(|a, b| a.store_url.cmp(&b.store_url));
+  UpdatesResult { sources }
+}
+
 fn authorize_installed_source(
   installed: Option<&InstalledApplet>,
   origin: &str,
@@ -250,6 +339,22 @@ pub async fn dispatch(
         })
         .collect();
       output(CatalogResult { store_url, applets })
+    }
+    "store.updates" => {
+      let report = installed(host).await?;
+      let result = check_updates(report, |store_url| async move {
+        let _permit = host
+          .store_update_requests
+          .acquire()
+          .await
+          .map_err(|_| "Store update checks are unavailable.")?;
+        let client = store_client(host, &store_url)?;
+        tokio::time::timeout(UPDATE_REQUEST_TIMEOUT, client.catalog())
+          .await
+          .map_err(|_| "The store took too long to respond. Try again shortly.")?
+      })
+      .await;
+      output(result)
     }
     "store.detail" => {
       let request: DetailQuery = input(params)?;
@@ -368,19 +473,27 @@ fn review_install<'a>(
   }
 }
 
-fn has_update(applet: &StoreApplet, installed: &InstalledApplet) -> bool {
-  let candidate = match installed.source.as_ref() {
+fn installed_channel_release<'a>(
+  applet: &'a StoreApplet,
+  installed: &InstalledApplet,
+) -> Option<&'a StoreRelease> {
+  match installed.source.as_ref() {
     Some(PackageSource::Store(source)) => match source.channel {
       StoreChannel::Stable => applet.latest_stable_release.as_ref(),
       StoreChannel::Nightly => applet.nightly_release(),
     },
     _ => None,
-  };
-  candidate.is_some_and(|candidate| {
-    candidate
-      .compare_version(&installed.manifest.version)
-      .is_ok_and(|order| order.is_gt())
-  })
+  }
+}
+
+fn is_newer(release: &StoreRelease, installed: &InstalledApplet) -> bool {
+  release
+    .compare_version(&installed.manifest.version)
+    .is_ok_and(|order| order.is_gt())
+}
+
+fn has_update(applet: &StoreApplet, installed: &InstalledApplet) -> bool {
+  installed_channel_release(applet, installed).is_some_and(|release| is_newer(release, installed))
 }
 
 fn release_action(

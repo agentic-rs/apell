@@ -21,7 +21,7 @@ export function StoreAddress({
         <Icon name="store" />
       </div>
       <h2>{store_url ? 'Store address' : 'Connect to a store'}</h2>
-      <p>Browse applets, install them, and get updates from your store.</p>
+      <p>Choose the Store to browse for new applets.</p>
       <form
         onSubmit={(event) => {
           event.preventDefault();

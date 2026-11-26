@@ -39,6 +39,7 @@ import type {
   StoreDetail,
   StoreInstallRequest,
   StoreInstallResult,
+  StoreUpdatesReport,
 } from './types';
 
 declare global {
@@ -76,6 +77,7 @@ export const setStoreUrl = (store_url: string) =>
   shellCall<StoreConfig>('store.set_url', { store_url });
 export const getStoreCatalog = (store_url: string) =>
   shellCall<StoreCatalog>('store.catalog', { store_url });
+export const getStoreUpdates = () => shellCall<StoreUpdatesReport>('store.updates');
 export const getStoreDetail = (store_url: string, applet_id: string, installed_source = false) =>
   shellCall<StoreDetail>('store.detail', {
     store_url,

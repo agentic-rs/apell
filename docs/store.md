@@ -24,8 +24,10 @@ The Store website also saves public listings in the browser.
 
 The catalog lists every published applet once, including Nightly-only applets.
 Open an applet to choose its release channel and see that channel’s version
-history. Apell recommends Stable for new installs when available. For installed
-applets, **Updates** follows the channel recorded on this device.
+history. Apell recommends Stable for new installs when available. **Updates**
+checks each installed Store applet against its recorded Store and channel. It
+works when no Store is configured for Discover. If a source cannot be checked,
+Apell still shows updates from the other sources.
 Review an update's permissions, including newly declared access, then choose
 **Update**. Updates are manual, and existing applet data is retained.
 If the old version is running, choose **Restart applet** after installing to

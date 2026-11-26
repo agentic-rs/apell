@@ -93,6 +93,20 @@ export interface StoreCatalog {
   store_url: string;
   applets: StoreCatalogEntry[];
 }
+export interface StoreUpdateEntry {
+  applet: InstalledApplet;
+  release: StoreRelease;
+}
+export interface StoreUpdateSource {
+  store_url: string;
+  installed_count: number;
+  checked_count: number;
+  updates: StoreUpdateEntry[];
+  error?: string;
+}
+export interface StoreUpdatesReport {
+  sources: StoreUpdateSource[];
+}
 export type StoreReleaseAction =
   'install' | 'update' | 'switch_source' | 'switch_channel' | 'installed' | 'older' | 'conflict';
 export interface StoreReleaseOption extends StoreRelease {
