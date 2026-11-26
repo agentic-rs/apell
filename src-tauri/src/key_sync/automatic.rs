@@ -1,7 +1,5 @@
 use super::crypto::{self, Sealed, Secret, MAX_API_KEY};
-use super::{
-  cloud_context, eligible_endpoint, key_context, local_vault, save_head, verify_account, Entry,
-};
+use super::{cloud_context, eligible_endpoint, key_context, local_vault, save_head, Entry};
 use crate::{
   commands::blocking,
   host::Host,
@@ -424,7 +422,6 @@ struct Upload {
 #[derive(Default)]
 struct Plan {
   upload: Option<Upload>,
-  restored: bool,
   conflict: bool,
   capacity: bool,
   invalid: bool,
@@ -465,19 +462,21 @@ async fn synchronize(app: &AppHandle, host: &Host, account: &str) -> Result<(), 
   let plan_owner = owner.clone();
   let plan_app = app.clone();
   let root = host.root.clone();
-  let (plan, awaiting_metadata) = {
-    let _gate = host.credential_gate.lock().await;
-    let settings = host.settings.lock().await.clone();
-    let awaiting_metadata = missing.iter().any(|id| settings.connection(id).is_err());
-    verify_account(app, host, account).await?;
-    let plan =
-      blocking(move || apply_plan(&plan_app, &root, &settings, &plan_owner, &secret, entries))
-        .await?;
-    (plan, awaiting_metadata)
-  };
-  if plan.restored {
-    let _ = app.emit_to("main", "apell-llm-settings-changed", ());
-  }
+  let (plan, awaiting_metadata) =
+    crate::config_sync::apply_key_restores(app, host, &access, move |settings, preferred| {
+      let awaiting_metadata = missing.iter().any(|id| settings.connection(id).is_err());
+      let plan = apply_plan(
+        &plan_app,
+        &root,
+        settings,
+        &plan_owner,
+        &secret,
+        entries,
+        preferred,
+      )?;
+      Ok((plan, awaiting_metadata))
+    })
+    .await?;
   if let Some(upload) = plan.upload {
     save_head(app, host, &access, owner.vault_id, expected, upload.entries).await?;
     let _gate = host.credential_gate.lock().await;
@@ -549,10 +548,11 @@ async fn missing_metadata(
 fn apply_plan(
   app: &AppHandle,
   root: &Path,
-  settings: &Settings,
+  settings: &mut Settings,
   owner: &Owner,
   vault_key: &Secret,
   mut entries: BTreeMap<String, Entry>,
+  preferred: Option<&str>,
 ) -> Result<Plan, String> {
   let mut device = Device::load(root)?;
   let mut uploads = Vec::new();
@@ -642,10 +642,15 @@ fn apply_plan(
       Merge::Upload => plan.capacity = true,
     }
   }
-  plan.restored = !restores.is_empty();
-  if plan.restored {
+  if !restores.is_empty() {
     device.save(root)?;
-    commit_settings(app, root, settings, restores)?;
+    let mut next = settings.clone();
+    if let Some(connection_id) = restored_preference(settings, preferred, &restores) {
+      next.active_connection_id = Some(connection_id.to_owned());
+    }
+    commit_settings(app, root, &next, restores)?;
+    *settings = next;
+    let _ = app.emit_to("main", "apell-llm-settings-changed", ());
   }
   if !common.is_empty() {
     for (id, hash) in common {
@@ -660,9 +665,59 @@ fn apply_plan(
   Ok(plan)
 }
 
+fn restored_preference<'a>(
+  settings: &Settings,
+  preferred: Option<&'a str>,
+  restores: &[(String, Option<String>)],
+) -> Option<&'a str> {
+  let preferred = preferred?;
+  let slot = &settings.connection(preferred).ok()?.credential.account;
+  restores
+    .iter()
+    .any(|(account, value)| account == slot && value.is_some())
+    .then_some(preferred)
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::settings::credential_ref;
+
+  #[test]
+  fn only_restoring_the_preferred_slots_key_can_activate_it() {
+    let mut settings = Settings::default();
+    let connection = |id: &str| Connection {
+      connection_id: id.into(),
+      name: id.into(),
+      model_id: "fixture-model".into(),
+      provider_id: "openai".into(),
+      base_url: apell_core::providers::default_base_url("openai")
+        .unwrap()
+        .into(),
+      credential: credential_ref(id),
+    };
+    let preferred = connection("preferred");
+    let unrelated = connection("unrelated");
+    let preferred_slot = preferred.credential.account.clone();
+    let unrelated_slot = unrelated.credential.account.clone();
+    settings.connections = vec![preferred, unrelated];
+
+    let restores = vec![
+      (unrelated_slot, Some("fixture-key".into())),
+      (preferred_slot.clone(), None),
+    ];
+    assert_eq!(
+      restored_preference(&settings, Some("preferred"), &restores),
+      None
+    );
+
+    let restores = vec![(preferred_slot, Some("fixture-key".into()))];
+    assert_eq!(
+      restored_preference(&settings, Some("preferred"), &restores),
+      Some("preferred")
+    );
+    assert_eq!(restored_preference(&settings, None, &restores), None);
+  }
 
   #[test]
   fn chooses_missing_values_and_one_sided_rotations_without_resurrecting_deletions() {

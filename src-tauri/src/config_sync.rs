@@ -192,6 +192,20 @@ fn saved_selection(id: &str) -> Option<&str> {
   (id != LEGACY_DEMO_CONNECTION_ID).then_some(id)
 }
 
+fn pending_preference<'a>(state: &'a DeviceState, settings: &Settings) -> Option<&'a str> {
+  if !state.enabled || settings.active_connection_id.is_some() {
+    return None;
+  }
+  let cursor = state.cursor.as_ref()?;
+  let preferred = saved_selection(&cursor.remote_active)?;
+  if saved_selection(&cursor.local_active).is_some()
+    || capture(settings, state).fingerprint().ok()? != cursor.snapshot_hash
+  {
+    return None;
+  }
+  Some(preferred)
+}
+
 async fn synchronize(
   app: &AppHandle,
   host: &Host,
@@ -393,6 +407,34 @@ pub(crate) async fn add_credential_connections(
   Ok(true)
 }
 
+pub(crate) async fn apply_key_restores<T: Send + 'static>(
+  app: &AppHandle,
+  host: &Host,
+  access: &Access,
+  apply: impl FnOnce(&mut Settings, Option<&str>) -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+  // Serialize the preference lookup with model sync, and the commit with local
+  // connection edits. Other credential restores still work if config state is unreadable.
+  let _sync_gate = host.config_sync.gate.lock().await;
+  let state = load_state(host, &access.account_key).await.ok();
+  let _credential_gate = host.credential_gate.lock().await;
+  let mut current = host.settings.lock().await;
+  require_account(app, host, access).await?;
+  let mut next = current.clone();
+  let (next, result) = blocking(move || {
+    let preferred = state
+      .as_ref()
+      .and_then(|state| pending_preference(state, &next))
+      .map(str::to_owned);
+    let result = apply(&mut next, preferred.as_deref());
+    Ok((next, result))
+  })
+  .await?;
+  // The restore can commit settings before a later sync checkpoint fails.
+  *current = next;
+  result
+}
+
 fn can_activate(app: &AppHandle, connection: &Connection) -> Result<bool, String> {
   if apell_core::llm::validate_config(&connection.config()).is_err() {
     return Ok(false);
@@ -516,7 +558,7 @@ mod tests {
     let (mut local, _) = cloud.settings(&Settings::default()).unwrap();
     assert_eq!(local.active_connection_id.as_deref(), Some("fixture"));
     local.active_connection_id = None;
-    let state = DeviceState {
+    let mut state = DeviceState {
       enabled: true,
       cursor: Some(Cursor {
         revision_id: "fixture-revision".into(),
@@ -531,6 +573,24 @@ mod tests {
       Snapshot::capture(&local, None).active_connection_id,
       LEGACY_DEMO_CONNECTION_ID
     );
+    assert_eq!(pending_preference(&state, &local), Some("fixture"));
+
+    state.enabled = false;
+    assert_eq!(pending_preference(&state, &local), None);
+    state.enabled = true;
+
+    local.active_connection_id = Some("fixture".into());
+    assert_eq!(pending_preference(&state, &local), None);
+    local.active_connection_id = None;
+
+    local.connections[0].model_id = "edited-model".into();
+    assert_eq!(pending_preference(&state, &local), None);
+    local.connections[0].model_id = "model".into();
+    assert_eq!(pending_preference(&state, &local), Some("fixture"));
+
+    let cursor = state.cursor.as_mut().unwrap();
+    cursor.local_active = "previous-choice".into();
+    assert_eq!(pending_preference(&state, &local), None);
   }
 
   #[test]
