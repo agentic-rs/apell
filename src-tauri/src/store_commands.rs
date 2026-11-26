@@ -415,7 +415,7 @@ pub async fn dispatch(
             | ReleaseAction::SwitchChannel
         ) {
           if let Ok(checkpoint) = download_checkpoint(&app, &store_url, &release) {
-            let bytes = checkpoint.received(release.size_bytes).await;
+            let bytes = checkpoint.reviewed_received(release.size_bytes).await;
             downloaded_bytes = (bytes > 0).then_some(bytes);
           }
         }
@@ -453,18 +453,31 @@ pub async fn dispatch(
           .await?,
       )
     }
-    "store.pending_download" => {
+    "store.pending_downloads" => {
       let _gate = host.store_gate.lock().await;
-      output(DownloadCheckpoint::pending(&download_cache(&app)?).await?)
+      output(DownloadCheckpoint::pending_downloads(&download_cache(&app)?).await?)
     }
     "store.discard_download" => {
       let identity: DownloadIdentity = input(params)?;
-      let _gate = host.store_gate.lock().await;
-      output(DownloadCheckpoint::discard(&download_cache(&app)?, &identity).await?)
+      let cache = download_cache(&app)?;
+      let discarded = {
+        let _gate = host.store_gate.lock().await;
+        DownloadCheckpoint::discard(&cache, &identity).await
+      };
+      publish_download_change(&app);
+      output(discarded?)
     }
-    "store.install" => install(app, host, input(params)?).await,
+    "store.install" => {
+      let result = install(app.clone(), host, input(params)?).await;
+      publish_download_change(&app);
+      result
+    }
     _ => Err("Unknown store command.".into()),
   }
+}
+
+fn publish_download_change(app: &AppHandle) {
+  let _ = app.emit_to("main", "apell-store-download-changed", ());
 }
 
 fn review_install<'a>(
@@ -672,7 +685,12 @@ async fn install(app: AppHandle, host: &Host, request: InstallQuery) -> Result<V
   };
   let operation_id = &request.operation_id;
   let checkpoint = download_checkpoint(&app, &store_url, &request.release)?;
-  if request.resume_download && checkpoint.received(request.release.size_bytes).await == 0 {
+  if request.resume_download
+    && checkpoint
+      .reviewed_received(request.release.size_bytes)
+      .await
+      == 0
+  {
     return Err(
       "The saved download is no longer on this device. Review the release to start again.".into(),
     );

@@ -4,7 +4,6 @@ import {
   getStoreCatalog,
   getStoreConfig,
   getStoreDetail,
-  getStorePendingDownload,
   getStoreUpdates,
   installStoreRelease,
   launchApplet,
@@ -62,6 +61,7 @@ interface DetailSelection extends StoreReleaseChoice {
 export function useStore(
   onLaunch: (session: AppletSession) => void,
   onBusyChange: (busy: boolean) => void,
+  refreshDownloads: () => void,
 ) {
   const [config, setConfig] = useState<StoreConfig>();
   const [browse, setBrowse] = useState(DEFAULT_BROWSE);
@@ -69,11 +69,11 @@ export function useStore(
   const [updates, setUpdates] = useState<StoreUpdateResults>();
   const [updates_query, setUpdatesQuery] = useState('');
   const [detail, setDetail] = useState<StoreDetail>();
-  const [pending_download, setPendingDownload] = useState<StorePendingDownload>();
   const [local_installation, setLocalInstallation] = useState<AppletInstallResult>();
   const [detail_selection, setDetailSelection] = useState<DetailSelection>();
   const [address_open, setAddressOpen] = useState(false);
   const [initial_loading, setInitialLoading] = useState(true);
+  const [config_checking, setConfigChecking] = useState(true);
   const [catalog_loading, setCatalogLoading] = useState(false);
   const [updates_loading, setUpdatesLoading] = useState(false);
   const [detail_loading, setDetailLoading] = useState(false);
@@ -92,7 +92,6 @@ export function useStore(
     catalog: 0,
     updates: 0,
     detail: 0,
-    pending: 0,
     operation: '',
   });
   const current_url = useRef<string | null>(null);
@@ -123,7 +122,7 @@ export function useStore(
     setCatalog(next && cachedCatalog(next));
     setCatalogError('');
     setCatalogLoading(false);
-    if (selection.current?.installed_source) return;
+    if (selection.current?.installed_source || selection.current?.pending_download) return;
     scope.current.detail++;
     selectDetail();
     setDetail(undefined);
@@ -211,18 +210,6 @@ export function useStore(
     }
   };
 
-  const loadPendingDownload = async () => {
-    const request = ++scope.current.pending;
-    try {
-      const result = await getStorePendingDownload();
-      if (scope.current.alive && scope.current.pending === request) {
-        setPendingDownload(result ?? undefined);
-      }
-    } catch {
-      // A local checkpoint error does not prevent browsing the Store.
-    }
-  };
-
   const loadDetail = async (
     { store_url, applet_id, installed_source }: DetailSelection,
     just_installed?: AppletInstallResult,
@@ -278,6 +265,7 @@ export function useStore(
   const loadConfig = async () => {
     const request = ++scope.current.config;
     if (!config) setInitialLoading(true);
+    setConfigChecking(true);
     setConfigError('');
     try {
       const result = await getStoreConfig();
@@ -285,11 +273,27 @@ export function useStore(
       adoptStore(result.store_url);
       setConfig(result);
       if (result.store_url) void loadCatalog(result.store_url);
-      if (selection.current) void loadDetail(selection.current);
+      const selected = selection.current;
+      if (selected?.pending_download) {
+        const refreshed = {
+          ...selected,
+          installed_source: selected.store_url !== result.store_url,
+        };
+        if (selected.installed_source !== refreshed.installed_source) setDetail(undefined);
+        selectDetail(refreshed);
+        void loadDetail(refreshed);
+      } else if (selected) {
+        void loadDetail(selected);
+      }
     } catch (error) {
       if (scope.current.alive && scope.current.config === request) {
         if (!config) setConfigError(message(error));
-        if (selection.current) void loadDetail(selection.current);
+        if (selection.current?.pending_download && !config) {
+          setDetailError(message(error));
+          setDetailLoading(false);
+        } else if (selection.current) {
+          void loadDetail(selection.current);
+        }
         if (config?.store_url) {
           setCatalogError(message(error));
           setCatalogLoading(false);
@@ -297,12 +301,16 @@ export function useStore(
         }
       }
     } finally {
-      if (scope.current.alive && scope.current.config === request) setInitialLoading(false);
+      if (scope.current.alive && scope.current.config === request) {
+        setInitialLoading(false);
+        setConfigChecking(false);
+      }
     }
   };
 
   useLayoutEffect(() => {
     scope.current.alive = true;
+    setConfigChecking(true);
     markFresh(false);
     clearCatalogReview();
     setUpdates(savePreviousUpdates);
@@ -318,12 +326,10 @@ export function useStore(
       scope.current.catalog++;
       scope.current.updates++;
       scope.current.detail++;
-      scope.current.pending++;
     };
   }, []);
   useEffect(() => {
     void loadConfig();
-    void loadPendingDownload();
   }, []);
   useEffect(() => {
     if (browse.updates_only) void loadUpdates();
@@ -362,8 +368,8 @@ export function useStore(
     setStatus('');
   };
 
-  const reviewDownload = () => {
-    if (scope.current.operation || !pending_download) return;
+  const reviewDownload = (pending_download: StorePendingDownload) => {
+    if (scope.current.operation || config_checking) return;
     setActionError('');
     setStatus('');
     const requested = {
@@ -374,6 +380,12 @@ export function useStore(
     };
     selectDetail(requested);
     setDetail(undefined);
+    if (!config) {
+      markFresh(false);
+      setDetailLoading(false);
+      setDetailError(config_error || 'Couldn’t check the Store address.');
+      return;
+    }
     void loadDetail(requested);
   };
 
@@ -381,12 +393,16 @@ export function useStore(
     const pending = selection.current?.pending_download;
     if (!pending) return;
     void run('discard', async () => {
-      const discarded = await discardStoreDownload(pending);
-      if (discarded && scope.current.alive) setPendingDownload(undefined);
-      await loadPendingDownload();
-      if (!scope.current.alive) return;
-      closeDetail();
-      setStatus(discarded ? 'Download discarded.' : 'This paused download is no longer available.');
+      try {
+        const discarded = await discardStoreDownload(pending);
+        if (!scope.current.alive) return;
+        closeDetail();
+        setStatus(
+          discarded ? 'Download discarded.' : 'This paused download is no longer available.',
+        );
+      } finally {
+        refreshDownloads();
+      }
     });
   };
 
@@ -405,6 +421,7 @@ export function useStore(
     const requested = selection.current;
     if (!fresh.current || !detail?.releases.includes(release) || !requested) return;
     const resume = !!requested.pending_download;
+    const has_checkpoint = resume || (release.downloaded_bytes ?? 0) > 0;
     if (
       resume &&
       reviewStoreRelease(detail, requested, requested.installed_source).release !== release
@@ -441,7 +458,7 @@ export function useStore(
           ...(switching ? { switch_snapshot: snapshot.switch_snapshot } : {}),
           ...(switching_channel ? { channel_snapshot: snapshot.channel_snapshot } : {}),
           ...(requested.installed_source ? { installed_source: true } : {}),
-          ...(resume ? { resume_download: true } : {}),
+          ...(has_checkpoint ? { resume_download: true } : {}),
           operation_id,
         });
         if (!scope.current.alive) return;
@@ -493,11 +510,11 @@ export function useStore(
         if (snapshot.store_url === current_url.current) void loadCatalog(snapshot.store_url);
         if (requested.installed_source || updates) void loadUpdates();
       } catch (error) {
-        if (resume && scope.current.alive) void loadDetail(requested);
+        if (has_checkpoint && scope.current.alive) void loadDetail(requested);
         throw error;
       } finally {
         stop();
-        if (scope.current.alive) await loadPendingDownload();
+        refreshDownloads();
       }
     });
   };
@@ -542,7 +559,6 @@ export function useStore(
     updates_query,
     setUpdatesQuery,
     detail: displayed_detail,
-    pending_download,
     reviewing_download: detail_selection?.pending_download,
     reviewDownload,
     discardDownload,
@@ -560,6 +576,7 @@ export function useStore(
     address_open,
     setAddressOpen,
     initial_loading,
+    config_checking,
     catalog_loading,
     updates_loading,
     detail_loading,
@@ -607,17 +624,17 @@ export function useStore(
     },
     refreshCatalog: () => {
       if (scope.current.operation) return;
-      void loadPendingDownload();
       if (current_url.current) void loadCatalog(current_url.current);
       else if (!config) void loadConfig();
     },
     refreshUpdates: () => {
       if (scope.current.operation) return;
-      void loadPendingDownload();
       void loadUpdates();
     },
     retryDetail: () => {
-      if (selection.current && !scope.current.operation) void loadDetail(selection.current);
+      if (!selection.current || scope.current.operation) return;
+      if (selection.current.pending_download && !config) void loadConfig();
+      else void loadDetail(selection.current);
     },
     openApplet: () => {
       if (installed && selection.current?.applet_id === installed.applet_id) {

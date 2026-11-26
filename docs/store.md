@@ -61,10 +61,11 @@ downgrade an installed applet. Automatic background updates are not included.
 
 If an install download is interrupted, **Continue download** retries the
 reviewed release from the last saved byte when the Store supports byte ranges.
-**Discover** and **Updates** show the paused download after reopening Apell.
-Choose **Review** to check that exact release before continuing, or
-**Discard download** to clear its saved progress. Apell keeps one partial
-package in its local cache. Starting a different download replaces it.
+Open **Downloads** in Store or tap the paused downloads row in the Library
+after reopening Apell. Choose **Review** to check that exact release before
+continuing, or **Discard download** to clear its progress. Apell keeps up to
+four saved downloads on this device. To start another at the limit, finish or
+discard one of the saved downloads.
 If a Store cannot resume the transfer, Apell downloads the package
 again and checks the full checksum before installing. On iOS, a download you
 start can keep going while the phone is locked for as long as iOS grants

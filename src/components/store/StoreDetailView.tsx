@@ -65,6 +65,7 @@ export function StoreDetailView({
   onOpen,
   onRefresh,
   onBack,
+  back_label,
 }: {
   detail: StoreDetail;
   installed_source: boolean;
@@ -83,6 +84,7 @@ export function StoreDetailView({
   onOpen: () => void;
   onRefresh: () => void;
   onBack: () => void;
+  back_label?: string;
 }) {
   const [confirm_switch, setConfirmSwitch] = useState(false);
   useEffect(() => {
@@ -117,11 +119,7 @@ export function StoreDetailView({
       <div className="store-toolbar">
         <button className="store-back" disabled={busy} onClick={onBack}>
           <Icon name="back" />{' '}
-          {reviewing_download
-            ? 'Back to Store'
-            : installed_source
-              ? 'Back to updates'
-              : 'All applets'}
+          {back_label ?? (installed_source ? 'Back to updates' : 'All applets')}
         </button>
         <button
           className="icon-button"

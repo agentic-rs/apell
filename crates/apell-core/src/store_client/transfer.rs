@@ -23,7 +23,7 @@ impl StoreClient {
   ) -> Result<DownloadOutcome, String> {
     selected.validate(applet_id)?;
     let size = selected.size_bytes;
-    let mut received = checkpoint.received(size).await;
+    let mut received = checkpoint.reviewed_received(size).await;
     let paused = |received_bytes| Ok(DownloadOutcome::Paused { received_bytes });
     tokio::pin!(pause);
     let name = tokio::select! {

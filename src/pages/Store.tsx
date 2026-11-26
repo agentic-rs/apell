@@ -7,52 +7,114 @@ import { Sheet } from '../components/Sheet';
 import { StoreAddress } from '../components/store/StoreAddress';
 import { StoreCatalogView } from '../components/store/StoreCatalogView';
 import { StoreDetailView, StoreOpenButton } from '../components/store/StoreDetailView';
+import { StoreDownloadsView } from '../components/store/StoreDownloadsView';
+import { storeDownloadId } from '../components/store/StorePendingDownloadNotice';
 import { useStore } from '../components/store/useStore';
+import type { StoreDownloads } from '../components/store/useStoreDownloads';
 import './store.css';
 
 export function Store({
   onLaunch,
   onBusyChange,
+  downloads,
+  downloads_request,
+  onReturnToLibrary,
 }: {
   onLaunch: (session: AppletSession) => void;
   onBusyChange: (busy: boolean) => void;
+  downloads: StoreDownloads;
+  downloads_request: number;
+  onReturnToLibrary: (store_scroll: number) => void;
 }) {
-  const state = useStore(onLaunch, onBusyChange);
+  const state = useStore(onLaunch, onBusyChange, downloads.refresh);
+  const [downloads_open, setDownloadsOpen] = useState(false);
+  const [downloads_from_library, setDownloadsFromLibrary] = useState(false);
+  const [download_return_id, setDownloadReturnId] = useState<string>();
+  const downloads_request_handled = useRef(0);
+  const downloads_heading = useRef<HTMLHeadingElement>(null);
+  const download_return = useRef<HTMLButtonElement>(null);
+  const download_review = useRef<HTMLDivElement>(null);
   const { query, updates_only } = state.browse;
   const opening = state.operation === 'open' || state.operation === 'restart';
   const installed_source = state.installed?.source;
   const reviewing_download = state.reviewing_download;
+  const paused_download_missing =
+    reviewing_download &&
+    !state.operation &&
+    !downloads.loading &&
+    !downloads.error &&
+    !downloads.entries.some(
+      (entry) => storeDownloadId(entry) === storeDownloadId(reviewing_download),
+    );
   const page = state.address_open
     ? 'address'
     : state.selected_id
       ? 'detail'
-      : updates_only
-        ? 'updates'
-        : 'discover';
+      : downloads_open
+        ? 'downloads'
+        : updates_only
+          ? 'updates'
+          : 'discover';
   const previous_page = useRef(page);
   const previous_origin = useRef(state.config?.store_url);
-  const catalog_scroll = useRef({ discover: 0, updates: 0 });
+  const list_scroll = useRef({ discover: 0, updates: 0, downloads: 0 });
   useLayoutEffect(() => {
     if (previous_origin.current !== state.config?.store_url) {
       previous_origin.current = state.config?.store_url;
-      catalog_scroll.current.discover = 0;
+      list_scroll.current.discover = 0;
     }
-    if (previous_page.current === page) return;
+    const previous = previous_page.current;
+    if (previous === page) return;
     previous_page.current = page;
-    window.scrollTo(
-      0,
-      page === 'discover' || page === 'updates' ? catalog_scroll.current[page] : 0,
-    );
-  }, [page, state.config?.store_url]);
-  const rememberCatalogScroll = () => {
-    if (page === 'discover' || page === 'updates') catalog_scroll.current[page] = window.scrollY;
+    window.scrollTo(0, page === 'address' || page === 'detail' ? 0 : list_scroll.current[page]);
+    if (page === 'downloads') {
+      const entry = previous === 'detail' ? download_return.current : null;
+      const target = entry && !entry.disabled ? entry : downloads_heading.current;
+      target?.focus({ preventScroll: true });
+    } else if (page === 'detail' && downloads_open) {
+      download_review.current?.focus({ preventScroll: true });
+    } else if (previous === 'downloads') {
+      document.getElementById('store-open-downloads')?.focus({ preventScroll: true });
+    }
+  }, [page, downloads_open, state.config?.store_url]);
+
+  const rememberListScroll = () => {
+    if (page !== 'address' && page !== 'detail') list_scroll.current[page] = window.scrollY;
   };
-  useBackAction(25, state.address_open || !!state.selected_id, () => {
+  const openDownloads = (from_library = false) => {
+    if (state.operation) return;
+    state.setAddressOpen(false);
+    state.closeDetail();
+    list_scroll.current.downloads = 0;
+    setDownloadReturnId(undefined);
+    setDownloadsFromLibrary(from_library);
+    setDownloadsOpen(true);
+    downloads.refresh();
+    if (page === 'downloads') downloads_heading.current?.focus({ preventScroll: true });
+  };
+  const closeDownloads = () => {
+    if (state.operation) return;
+    state.closeDetail();
+    setDownloadsOpen(false);
+    if (downloads_from_library) {
+      setDownloadsFromLibrary(false);
+      onReturnToLibrary(list_scroll.current[updates_only ? 'updates' : 'discover']);
+    }
+  };
+
+  useLayoutEffect(() => {
+    if (state.operation || downloads_request <= downloads_request_handled.current) return;
+    downloads_request_handled.current = downloads_request;
+    openDownloads(true);
+  }, [downloads_request, state.operation]);
+
+  useBackAction(25, state.address_open || !!state.selected_id || downloads_open, () => {
     if (state.operation) return;
     if (state.address_open) state.setAddressOpen(false);
-    else state.closeDetail();
+    else if (state.selected_id) state.closeDetail();
+    else closeDownloads();
   });
-  if (state.initial_loading)
+  if (state.initial_loading && !downloads_open)
     return (
       <p className="status" role="status">
         Opening the store…
@@ -90,92 +152,128 @@ export function Store({
           </button>
         </div>
       )}
+      {paused_download_missing && (
+        <p className="store-feedback" role="alert">
+          This paused download is no longer available.
+        </p>
+      )}
       {state.selected_id ? (
-        state.detail && state.review ? (
-          <StoreDetailView
-            detail={state.detail}
-            installed_source={state.installed_source}
-            reviewing_download={reviewing_download}
-            restart_required={state.restart_required}
-            review={state.review}
-            fresh={state.detail_fresh}
-            refreshing={state.detail_loading}
-            busy={!!state.operation}
-            installing={state.operation === 'install'}
-            opening={opening}
-            progress={state.progress}
-            onChannel={state.setChannel}
-            onVersion={state.setSelectedVersion}
-            onInstall={state.install}
-            onOpen={state.openApplet}
-            onRefresh={state.retryDetail}
-            onBack={state.closeDetail}
-          />
-        ) : (
-          <section className="store-detail-loading" aria-busy={state.detail_loading}>
-            <button className="store-back" disabled={!!state.operation} onClick={state.closeDetail}>
-              {reviewing_download
-                ? 'Back to Store'
-                : state.installed_source
-                  ? 'Back to updates'
-                  : 'Back to applets'}
-            </button>
-            {state.installed && (
-              <div className="store-download-panel">
-                <div className="store-detail-heading">
-                  <span className="store-icon store-icon-large" aria-hidden="true">
-                    <AppletIcon applet={state.installed} />
-                  </span>
-                  <div>
-                    <h2>{state.installed.name}</h2>
-                    <p>
-                      Installed · {state.installed.version}
-                      {installed_source?.kind === 'store' &&
-                        ` · ${storeChannelName(installed_source.channel)}`}
-                    </p>
+        <div
+          ref={download_review}
+          tabIndex={downloads_open ? -1 : undefined}
+          role={downloads_open ? 'region' : undefined}
+          aria-label={downloads_open ? 'Download review' : undefined}
+          className="store-detail-route"
+        >
+          {state.detail && state.review ? (
+            <StoreDetailView
+              detail={state.detail}
+              installed_source={state.installed_source}
+              reviewing_download={reviewing_download}
+              restart_required={state.restart_required}
+              review={state.review}
+              fresh={state.detail_fresh && !paused_download_missing}
+              refreshing={state.detail_loading}
+              busy={!!state.operation}
+              installing={state.operation === 'install'}
+              opening={opening}
+              progress={state.progress}
+              onChannel={state.setChannel}
+              onVersion={state.setSelectedVersion}
+              onInstall={state.install}
+              onOpen={state.openApplet}
+              onRefresh={state.retryDetail}
+              onBack={state.closeDetail}
+              back_label={downloads_open ? 'Back to downloads' : undefined}
+            />
+          ) : (
+            <section className="store-detail-loading" aria-busy={state.detail_loading}>
+              <button
+                className="store-back"
+                disabled={!!state.operation}
+                onClick={state.closeDetail}
+              >
+                {downloads_open
+                  ? 'Back to downloads'
+                  : state.installed_source
+                    ? 'Back to updates'
+                    : 'Back to applets'}
+              </button>
+              {state.installed && (
+                <div className="store-download-panel">
+                  <div className="store-detail-heading">
+                    <span className="store-icon store-icon-large" aria-hidden="true">
+                      <AppletIcon applet={state.installed} />
+                    </span>
+                    <div>
+                      <h2>{state.installed.name}</h2>
+                      <p>
+                        Installed · {state.installed.version}
+                        {installed_source?.kind === 'store' &&
+                          ` · ${storeChannelName(installed_source.channel)}`}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="store-install-actions">
+                    <StoreOpenButton
+                      restart_required={state.restart_required}
+                      busy={!!state.operation}
+                      opening={opening}
+                      onOpen={state.openApplet}
+                    />
                   </div>
                 </div>
-                <div className="store-install-actions">
-                  <StoreOpenButton
-                    restart_required={state.restart_required}
-                    busy={!!state.operation}
-                    opening={opening}
-                    onOpen={state.openApplet}
-                  />
+              )}
+              {state.detail_loading ? (
+                <p className="status" role="status">
+                  {reviewing_download ? 'Checking this release…' : 'Loading applet…'}
+                </p>
+              ) : (
+                <div className="store-feedback" role="alert">
+                  <h2>
+                    {reviewing_download
+                      ? 'Couldn’t review this download'
+                      : state.installed
+                        ? 'Couldn’t load Store releases'
+                        : 'Couldn’t load this applet'}
+                  </h2>
+                  {reviewing_download && (
+                    <p>
+                      {reviewing_download.name} · {reviewing_download.version} ·{' '}
+                      {storeChannelName(reviewing_download.channel)}
+                    </p>
+                  )}
+                  <p>{state.detail_error}</p>
+                  <button
+                    disabled={state.config_checking || !!state.operation}
+                    onClick={state.retryDetail}
+                  >
+                    Try again
+                  </button>
                 </div>
-              </div>
-            )}
-            {state.detail_loading ? (
-              <p className="status" role="status">
-                Loading applet…
-              </p>
-            ) : (
-              <div className="store-feedback" role="alert">
-                <h2>
-                  {reviewing_download
-                    ? 'Couldn’t review this download'
-                    : state.installed
-                      ? 'Couldn’t load Store releases'
-                      : 'Couldn’t load this applet'}
-                </h2>
-                {reviewing_download && (
-                  <p>
-                    {reviewing_download.name} · {reviewing_download.version} ·{' '}
-                    {storeChannelName(reviewing_download.channel)}
-                  </p>
-                )}
-                <p>{state.detail_error}</p>
-                <button onClick={state.retryDetail}>Try again</button>
-              </div>
-            )}
-          </section>
-        )
+              )}
+            </section>
+          )}
+        </div>
+      ) : downloads_open ? (
+        <StoreDownloadsView
+          downloads={downloads}
+          heading_ref={downloads_heading}
+          return_id={download_return_id}
+          return_ref={download_return}
+          reviews_disabled={state.config_checking || downloads.loading || !!state.operation}
+          onReview={(pending) => {
+            rememberListScroll();
+            setDownloadReturnId(storeDownloadId(pending));
+            state.reviewDownload(pending);
+          }}
+        />
       ) : (
         <StoreCatalogView
           catalog={state.catalog}
           store_url={state.config?.store_url}
           updates={state.updates}
-          pending_download={state.pending_download}
+          download_count={downloads.entries.length}
           loading={updates_only ? state.updates_loading : state.catalog_loading}
           error={updates_only ? state.updates_error : state.catalog_error || state.config_error}
           query={updates_only ? state.updates_query : query}
@@ -183,34 +281,37 @@ export function Store({
           onQuery={updates_only ? state.setUpdatesQuery : (query) => state.updateBrowse({ query })}
           onFilter={(next) => {
             if (next === updates_only) return;
-            rememberCatalogScroll();
+            rememberListScroll();
             state.updateBrowse({ updates_only: next });
           }}
           onRefresh={updates_only ? state.refreshUpdates : state.refreshCatalog}
           onAddress={() => {
-            rememberCatalogScroll();
+            rememberListScroll();
             state.setAddressOpen(true);
           }}
           onSelect={(applet_id) => {
-            rememberCatalogScroll();
+            rememberListScroll();
             state.openDetail(applet_id);
           }}
           onSelectUpdate={(source) => {
-            rememberCatalogScroll();
+            rememberListScroll();
             state.openUpdate(source);
           }}
-          onReviewDownload={() => {
-            rememberCatalogScroll();
-            state.reviewDownload();
+          onOpenDownloads={() => {
+            rememberListScroll();
+            openDownloads();
           }}
         />
       )}
-      {reviewing_download && (
+      {reviewing_download && !paused_download_missing && (
         <DiscardDownload
           name={reviewing_download.name}
           version={reviewing_download.version}
           disabled={!!state.operation}
-          onDiscard={state.discardDownload}
+          onDiscard={() => {
+            setDownloadReturnId(undefined);
+            state.discardDownload();
+          }}
         />
       )}
     </div>

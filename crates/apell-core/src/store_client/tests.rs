@@ -252,9 +252,12 @@ async fn interrupted_download_resumes_the_reviewed_range_and_rejects_bad_ranges(
   assert!(
     matches!(result, DownloadOutcome::Paused { received_bytes } if received_bytes == middle as u64)
   );
-  let pending = DownloadCheckpoint::pending(cache.path()).await.unwrap();
+  let pending = DownloadCheckpoint::pending_downloads(cache.path())
+    .await
+    .unwrap();
+  assert_eq!(pending.len(), 1);
   assert_eq!(
-    serde_json::to_value(pending).unwrap(),
+    serde_json::to_value(&pending[0]).unwrap(),
     serde_json::json!({
       "origin": server.origin,
       "applet_id": "sample",
@@ -266,6 +269,11 @@ async fn interrupted_download_resumes_the_reviewed_range_and_rejects_bad_ranges(
       "size_bytes": size,
     }),
   );
+  assert_eq!(
+    checkpoint.reviewed_received(size as u64).await,
+    middle as u64
+  );
+  assert_eq!(checkpoint.reviewed_received(size as u64 + 1).await, 0);
   assert!(client
     .download_resumable(
       "sample",
@@ -279,6 +287,7 @@ async fn interrupted_download_resumes_the_reviewed_range_and_rejects_bad_ranges(
     .unwrap()
     .contains("invalid download range"));
   assert_eq!(checkpoint.received(size as u64).await, middle as u64);
+  let (other_checkpoint, _) = retain_partial(cache.path(), "2.0.0").await;
   let result = client
     .download_resumable(
       "sample",
@@ -291,10 +300,14 @@ async fn interrupted_download_resumes_the_reviewed_range_and_rejects_bad_ranges(
     .unwrap();
   assert!(matches!(result, DownloadOutcome::Verified(downloaded) if downloaded == bytes));
   assert_eq!(checkpoint.received(size as u64).await, 0);
-  assert!(DownloadCheckpoint::pending(cache.path())
-    .await
-    .unwrap()
-    .is_none());
+  assert_eq!(other_checkpoint.received(u64::MAX).await, 16);
+  assert_eq!(
+    DownloadCheckpoint::pending_downloads(cache.path())
+      .await
+      .unwrap()
+      .len(),
+    1
+  );
   let requests = server.requests.lock().unwrap();
   assert!(requests
     .last()
@@ -306,72 +319,78 @@ async fn interrupted_download_resumes_the_reviewed_range_and_rejects_bad_ranges(
     .contains(&format!("if-range: {etag}")));
 }
 
-#[tokio::test]
-async fn stale_discard_cannot_remove_a_replacement_and_eviction_clears_discovery() {
-  async fn retain_partial(
-    cache: &std::path::Path,
-    version: &str,
-  ) -> (DownloadCheckpoint, DownloadIdentity) {
-    let bytes = package("sample", version, &["sqlite"]);
-    let selected = release(&bytes, version);
-    let server = MockStore::new(vec![
-      (
-        "/api/v1/applets/sample".into(),
-        Reply::json(&detail(&selected)),
-      ),
-      (
-        selected.download_url.clone(),
-        Reply::ok(bytes[..16].to_vec()).header("Content-Length", &bytes.len().to_string()),
-      ),
-    ])
-    .await;
-    let checkpoint = DownloadCheckpoint::new(cache, &server.origin, &selected);
-    let result = StoreClient::new(&server.origin)
-      .unwrap()
-      .download_resumable(
-        "sample",
-        &selected,
-        &checkpoint,
-        std::future::pending(),
-        |_, _| {},
-      )
-      .await
-      .unwrap();
-    assert!(matches!(
-      result,
-      DownloadOutcome::Paused { received_bytes: 16 }
-    ));
-    let identity = serde_json::from_value(serde_json::json!({
-      "origin": server.origin,
-      "applet_id": "sample",
-      "version": version,
-      "channel": if selected.prerelease { "nightly" } else { "stable" },
-      "sha256": selected.sha256,
-    }))
+async fn retain_partial(
+  cache: &std::path::Path,
+  version: &str,
+) -> (DownloadCheckpoint, DownloadIdentity) {
+  let bytes = package("sample", version, &["sqlite"]);
+  let selected = release(&bytes, version);
+  let server = MockStore::new(vec![
+    (
+      "/api/v1/applets/sample".into(),
+      Reply::json(&detail(&selected)),
+    ),
+    (
+      selected.download_url.clone(),
+      Reply::ok(bytes[..16].to_vec()).header("Content-Length", &bytes.len().to_string()),
+    ),
+  ])
+  .await;
+  let checkpoint = DownloadCheckpoint::new(cache, &server.origin, &selected);
+  let result = StoreClient::new(&server.origin)
+    .unwrap()
+    .download_resumable(
+      "sample",
+      &selected,
+      &checkpoint,
+      std::future::pending(),
+      |_, _| {},
+    )
+    .await
     .unwrap();
-    (checkpoint, identity)
-  }
+  assert!(matches!(
+    result,
+    DownloadOutcome::Paused { received_bytes: 16 }
+  ));
+  let identity = serde_json::from_value(serde_json::json!({
+    "origin": server.origin,
+    "applet_id": "sample",
+    "version": version,
+    "channel": if selected.prerelease { "nightly" } else { "stable" },
+    "sha256": selected.sha256,
+  }))
+  .unwrap();
+  (checkpoint, identity)
+}
 
+#[tokio::test]
+async fn independent_downloads_keep_progress_and_discard_only_the_matching_release() {
   let cache = tempfile::tempdir().unwrap();
-  let (original, stale) = retain_partial(cache.path(), "1.0.0").await;
-  let (replacement, exact) = retain_partial(cache.path(), "2.0.0-nightly.1").await;
-  assert_eq!(original.received(u64::MAX).await, 0);
-  assert!(!DownloadCheckpoint::discard(cache.path(), &stale)
+  let (stable, stable_identity) = retain_partial(cache.path(), "1.0.0").await;
+  let (nightly, _) = retain_partial(cache.path(), "2.0.0-nightly.1").await;
+  assert_eq!(stable.received(u64::MAX).await, 16);
+  assert_eq!(nightly.received(u64::MAX).await, 16);
+  let saved = DownloadCheckpoint::pending_downloads(cache.path())
+    .await
+    .unwrap();
+  assert_eq!(saved.len(), 2);
+  assert!(DownloadCheckpoint::discard(cache.path(), &stable_identity)
     .await
     .unwrap());
-  assert_eq!(replacement.received(u64::MAX).await, 16);
-  let pending = DownloadCheckpoint::pending(cache.path()).await.unwrap();
-  assert_eq!(serde_json::to_value(pending).unwrap()["channel"], "nightly");
-  assert!(DownloadCheckpoint::discard(cache.path(), &exact)
+  assert_eq!(stable.received(u64::MAX).await, 0);
+  assert!(!DownloadCheckpoint::discard(cache.path(), &stable_identity)
     .await
     .unwrap());
-  assert_eq!(replacement.received(u64::MAX).await, 0);
-  assert!(std::fs::read_dir(cache.path()).unwrap().next().is_none());
-  assert!(!DownloadCheckpoint::discard(cache.path(), &exact)
+  assert_eq!(nightly.received(u64::MAX).await, 16);
+  let saved = DownloadCheckpoint::pending_downloads(cache.path())
     .await
-    .unwrap());
+    .unwrap();
+  assert_eq!(saved.len(), 1);
+  assert_eq!(
+    serde_json::to_value(&saved[0]).unwrap()["channel"],
+    "nightly"
+  );
 
-  retain_partial(cache.path(), "2.0.0-nightly.2").await;
   let part = std::fs::read_dir(cache.path())
     .unwrap()
     .flatten()
@@ -383,10 +402,10 @@ async fn stale_discard_cannot_remove_a_replacement_and_eviction_clears_discovery
     })
     .unwrap();
   std::fs::remove_file(part).unwrap();
-  assert!(DownloadCheckpoint::pending(cache.path())
+  assert!(DownloadCheckpoint::pending_downloads(cache.path())
     .await
     .unwrap()
-    .is_none());
+    .is_empty());
   assert!(std::fs::read_dir(cache.path()).unwrap().next().is_none());
 }
 
