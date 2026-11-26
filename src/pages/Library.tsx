@@ -24,6 +24,7 @@ import { AppletTile } from '../components/AppletTile';
 import { AppletInfoSheet } from '../components/AppletInfoSheet';
 import { Icon } from '../components/Icon';
 import { RestorePackageSheet } from '../components/RestorePackageSheet';
+import { RunningApplets } from '../components/RunningApplets';
 import { Sheet } from '../components/Sheet';
 import type { StoreDownloads } from '../components/store/useStoreDownloads';
 
@@ -237,7 +238,7 @@ export function Library({
     setAction(undefined);
     await installed(result, 'restored');
   };
-  const repairBusyChanged = (busy: boolean) => {
+  const childBusyChanged = (busy: boolean) => {
     pending.current = busy;
     setBusy(busy);
     onBusyChange(busy);
@@ -264,12 +265,24 @@ export function Library({
       className="library"
       aria-label="Your applets"
       aria-busy={loading || busy}
+      tabIndex={-1}
     >
       {loading && (
         <p className="status" role="status">
           Loading applets…
         </p>
       )}
+      <RunningApplets
+        disabled={busy || installOpen || !!action}
+        onBusyChange={childBusyChanged}
+        onStopped={({ applet_id }) => {
+          setRestartRequired((current) => current.filter((id) => id !== applet_id));
+          setRestartOfferId((current) => (current === applet_id ? undefined : current));
+          setStatus('');
+          setFailed(false);
+        }}
+        onReturnToLibrary={() => library.current?.focus({ preventScroll: true })}
+      />
       <div className="applet-grid">
         {applets.map((applet) => (
           <AppletTile
@@ -394,7 +407,7 @@ export function Library({
           key={action.applet_id}
           target={action}
           downloads={downloads}
-          onBusyChange={repairBusyChanged}
+          onBusyChange={childBusyChanged}
           onClose={() => setAction(undefined)}
           onRestored={restored}
         />

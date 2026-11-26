@@ -30,6 +30,12 @@ On first launch, the host loads the installed package and creates a run scoped t
 
 Apell keeps up to eight runs and one attached view in a process. **Close** detaches the current view and returns to the library. **Reload applet** replaces that view and its bridge. Opening a previously launched applet attaches a new view to its existing run. If the shell frontend reloads while a run is foreground, it can resume with a fresh view. The native instance and its service context remain available through these view changes. A running applet retains the package version and permission source with which it started. When the Store detects an older running snapshot, **Restart applet** revokes that run and its view, waits for its backend to stop, and opens the installed snapshot. Other applet runs and saved data stay intact.
 
+**Running applets** in Library lists detached runs and their running versions,
+including frontend-only applets. **Stop applet** ends the selected run and frees
+one slot. The host verifies that the reviewed run is still detached before
+stopping it. The applet stays installed with its saved data and permissions.
+Opening it again starts a fresh run. Other applets keep running.
+
 The host assigns independent opaque IDs to the run and view. A direct `hostCall` from the iframe uses the current view's service scope. Detaching it revokes that bridge, closes its SQLite handles and transactions, and cancels its LLM, HTTP, and resource work. Already-started local mutations finish before closure is acknowledged. Guest service calls use the backend run's scope and can complete while the view is detached. Both scopes access the same applet's durable data. A handle or transaction from one scope cannot be used in the other.
 
 A guest command's reply is delivered to the requesting view while it remains attached. Losing that receiver does not cancel an accepted backend command. Applet events are transient and can be missed while detached. Companion subscribes before requesting its current snapshot and uses later events to refresh it. Its reply work and stop operation belong to the backend, which commits the finished or interrupted result to SQLite. When Apell terminates, in-memory runs and pending operations end. After restart, Companion initializes from SQLite and marks leftover pending rows interrupted. Device suspension and termination are subject to the operating system.

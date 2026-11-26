@@ -28,6 +28,13 @@ struct ShellAppletList {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct StopApplet {
+  applet_id: String,
+  session_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct InstalledPermissionChange {
   applet_id: String,
   installed_revision: String,
@@ -191,6 +198,18 @@ pub async fn shell_command(
     "applets.info" => {
       crate::permissions::installed_info(app, string(&params, "applet_id")?.to_owned()).await
     }
+    "applets.running" => serde_json::to_value(host.detached_runs()?)
+      .map_err(|_| "Could not encode running applets.".into()),
+    "applets.stop" => {
+      let request: StopApplet =
+        serde_json::from_value(params).map_err(|_| "Choose a running applet to stop.")?;
+      host
+        .stop_detached_run(&request.applet_id, &request.session_id, |id| {
+          crate::applets::notify_stopped(&app, id)
+        })
+        .await?;
+      Ok(Value::Null)
+    }
     "applets.install" => crate::install::install(app, &host, params).await,
     "applets.restore_package" => {
       let result = crate::install::restore_package(&host, params).await?;
@@ -239,7 +258,9 @@ pub async fn shell_command(
       serde_json::to_value(attachment).map_err(|_| "Could not encode applet attachment.".into())
     }
     "applets.close" => {
-      host.detach_view(string(&params, "session_id")?, string(&params, "view_id")?)?;
+      if host.detach_view(string(&params, "session_id")?, string(&params, "view_id")?)? {
+        crate::applets::notify_runs_changed(&app);
+      }
       Ok(Value::Null)
     }
     "permissions.list" => crate::permissions::list(app, &host).await,

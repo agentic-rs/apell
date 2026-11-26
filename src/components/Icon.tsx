@@ -12,6 +12,7 @@ type IconName =
   | 'trash'
   | 'store'
   | 'download'
+  | 'activity'
   | 'account'
   | 'connections'
   | 'shield';
@@ -32,6 +33,7 @@ export function Icon({ name }: { name: IconName }) {
       {name === 'add' && <path d="M12 5v14M5 12h14" />}
       {name === 'store' && <path d="M4 8h16l-1 13H5L4 8Zm4 1V6a4 4 0 0 1 8 0v3" />}
       {name === 'download' && <path d="M12 3v12m-4-4 4 4 4-4M4 15v5h16v-5" />}
+      {name === 'activity' && <path d="M3 12h4l3-7 4 14 3-7h4" />}
       {name === 'account' && (
         <>
           <circle cx="12" cy="8" r="3.5" />

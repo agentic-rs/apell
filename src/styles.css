@@ -179,7 +179,7 @@ svg {
 .library {
   padding-top: 20px;
 }
-.library-downloads {
+.library-shortcut {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -188,12 +188,12 @@ svg {
   text-align: left;
   background: var(--subtle);
 }
-.library-downloads svg {
+.library-shortcut svg {
   flex: none;
   width: 19px;
   height: 19px;
 }
-.library-downloads-arrow {
+.library-shortcut-arrow {
   display: flex;
   margin-inline-start: auto;
   color: var(--muted);
@@ -391,6 +391,7 @@ svg {
 }
 .sheet-header h2 {
   margin: 0;
+  overflow-wrap: anywhere;
   font-size: 20px;
   font-weight: 600;
 }

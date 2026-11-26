@@ -86,6 +86,12 @@ export interface AppletSession {
   entry_url: string;
   has_lib: boolean;
 }
+export interface AppletRun {
+  session_id: string;
+  applet_id: string;
+  name: string;
+  version: string;
+}
 export interface AppletInstallation {
   store_source: StoreSource | null;
   installed_version: string;

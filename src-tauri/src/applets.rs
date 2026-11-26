@@ -30,6 +30,11 @@ impl RunningApplet {
 }
 
 const BACKEND_STOPPED: &str = "apell:stopped";
+const MAX_RUNNING_APPLETS: usize = 8;
+const RUN_LIMIT_REACHED: &str =
+  "Eight applets are already running. Stop one in Running applets before opening another.";
+const RUN_CHANGED: &str =
+  "The applet’s running state changed. Review Running applets and try again.";
 
 fn require_declared_permission(
   manifest: &Manifest,
@@ -62,6 +67,23 @@ impl RunningApplets {
       .find(|(_, run)| run.bundle.manifest.applet_id == applet_id)
       .map(|(id, _)| id.clone())
   }
+
+  fn available_run(&self, applet_id: &str) -> Result<Option<String>, String> {
+    let existing = self.session_for(applet_id);
+    if existing.is_none() && self.runs.len() >= MAX_RUNNING_APPLETS {
+      return Err(RUN_LIMIT_REACHED.into());
+    }
+    Ok(existing)
+  }
+
+  fn healthy_and_detached(&self, id: &str, run: &RunningApplet) -> bool {
+    self.foreground.as_deref() != Some(id)
+      && self
+        .view
+        .as_ref()
+        .is_none_or(|(attached, _)| attached != id)
+      && !run.is_stopped()
+  }
 }
 
 #[derive(Clone, Serialize)]
@@ -79,6 +101,14 @@ pub struct AppletInstallation {
   installed_sha256: String,
   store_source: Option<StoreSource>,
   restart_required: bool,
+}
+
+#[derive(Serialize)]
+pub(crate) struct DetachedRun {
+  session_id: String,
+  applet_id: String,
+  name: String,
+  version: String,
 }
 
 impl Host {
@@ -186,7 +216,7 @@ impl Host {
     self.attach_run_locked(&id).map(Some)
   }
 
-  pub fn detach_view(&self, session_id: &str, view_id: &str) -> Result<(), String> {
+  pub fn detach_view(&self, session_id: &str, view_id: &str) -> Result<bool, String> {
     let _gate = self
       .view_gate
       .lock()
@@ -204,11 +234,44 @@ impl Host {
       running.foreground = None;
       drop(running);
       self.close(view_id)?;
+      return Ok(true);
     }
-    Ok(())
+    Ok(false)
   }
 
-  fn retire_run(&self, session_id: &str) -> Result<Option<RunningApplet>, String> {
+  pub(crate) fn detached_runs(&self) -> Result<Vec<DetachedRun>, String> {
+    let _gate = self
+      .view_gate
+      .lock()
+      .map_err(|_| "Applet views are unavailable.")?;
+    let running = self
+      .running
+      .lock()
+      .map_err(|_| "Applet state is unavailable.")?;
+    let mut detached: Vec<_> = running
+      .runs
+      .iter()
+      .filter(|(id, run)| running.healthy_and_detached(id, run))
+      .map(|(id, run)| {
+        let manifest = &run.bundle.manifest;
+        DetachedRun {
+          session_id: id.clone(),
+          applet_id: manifest.applet_id.clone(),
+          name: manifest.name.clone(),
+          version: manifest.version.clone(),
+        }
+      })
+      .collect();
+    detached
+      .sort_by(|left, right| (&left.name, &left.applet_id).cmp(&(&right.name, &right.applet_id)));
+    Ok(detached)
+  }
+
+  fn retire_run(
+    &self,
+    session_id: &str,
+    expected_detached_applet: Option<&str>,
+  ) -> Result<Option<RunningApplet>, String> {
     let _gate = self
       .view_gate
       .lock()
@@ -217,6 +280,16 @@ impl Host {
       .running
       .lock()
       .map_err(|_| "Applet state is unavailable.")?;
+    // Verify the reviewed run and its detached state while holding the same
+    // view gate that protects reattachment. A stale stop cannot affect a new run.
+    if let Some(applet_id) = expected_detached_applet {
+      let matches = running.runs.get(session_id).is_some_and(|run| {
+        run.bundle.manifest.applet_id == applet_id && running.healthy_and_detached(session_id, run)
+      });
+      if !matches {
+        return Err(RUN_CHANGED.into());
+      }
+    }
     let Some(run) = running.runs.remove(session_id) else {
       return Ok(None);
     };
@@ -244,7 +317,22 @@ impl Host {
     })
   }
 
-  // Callers hold run_gate until they finish removing or replacing the applet.
+  // Callers hold run_gate until they finish stopping, removing, or replacing a run.
+  async fn stop_run_locked(
+    &self,
+    session_id: &str,
+    expected_detached_applet: Option<&str>,
+    on_stopped: impl FnOnce(&str),
+  ) -> Result<(), String> {
+    if let Some(run) = self.retire_run(session_id, expected_detached_applet)? {
+      on_stopped(session_id);
+      if let Some(backend) = run.backend {
+        backend.stop().await;
+      }
+    }
+    Ok(())
+  }
+
   async fn stop_applet_locked(
     &self,
     applet_id: &str,
@@ -256,14 +344,21 @@ impl Host {
       .map_err(|_| "Applet state is unavailable.")?
       .session_for(applet_id);
     if let Some(id) = session_id {
-      if let Some(run) = self.retire_run(&id)? {
-        on_stopped(&id);
-        if let Some(backend) = run.backend {
-          backend.stop().await;
-        }
-      }
+      self.stop_run_locked(&id, None, on_stopped).await?;
     }
     Ok(())
+  }
+
+  pub(crate) async fn stop_detached_run(
+    &self,
+    applet_id: &str,
+    session_id: &str,
+    on_stopped: impl FnOnce(&str),
+  ) -> Result<(), String> {
+    let _gate = self.run_gate.lock().await;
+    self
+      .stop_run_locked(session_id, Some(applet_id), on_stopped)
+      .await
   }
 
   pub async fn remove_applet(
@@ -512,10 +607,15 @@ pub fn notify_stopped(app: &AppHandle, session_id: &str) {
       "event":{"name":BACKEND_STOPPED,"payload":{"message":"The applet backend stopped. Reopen the applet."}}
     }),
   );
+  notify_runs_changed(app);
+}
+
+pub(crate) fn notify_runs_changed(app: &AppHandle) {
+  let _ = app.emit_to("main", "apell-applet-runs-changed", ());
 }
 
 fn retire_backend(app: &AppHandle, host: &Host, session_id: &str) -> Result<(), String> {
-  if host.retire_run(session_id)?.is_some() {
+  if host.retire_run(session_id, None)?.is_some() {
     notify_stopped(app, session_id);
   }
   Ok(())
@@ -555,22 +655,19 @@ pub async fn launch(app: AppHandle, applet_id: &str, restart: bool) -> Result<At
   for id in stopped {
     retire_backend(&app, &host, &id)?;
   }
-  let existing = {
-    let running = host
-      .running
-      .lock()
-      .map_err(|_| "Applet state is unavailable.")?;
-    let existing = running.session_for(applet_id);
-    if existing.is_none() && running.runs.len() >= 8 {
-      return Err(
-        "Eight applets are already running. Restart Apell before opening another applet.".into(),
-      );
-    }
-    existing
+  let existing = host
+    .running
+    .lock()
+    .map_err(|_| "Applet state is unavailable.")?
+    .available_run(applet_id)?;
+  let attach = |id: &str| {
+    let attachment = host.attach_run(id);
+    notify_runs_changed(&app);
+    attachment
   };
   if let Some(id) = &existing {
     if !restart {
-      return host.attach_run(id);
+      return attach(id.as_str());
     }
   }
   let store = host.bundles.clone();
@@ -590,7 +687,7 @@ pub async fn launch(app: AppHandle, applet_id: &str, restart: bool) -> Result<At
       .get(&id)
       .is_some_and(|run| !run.is_stopped() && run.matches_install(&installed));
     if already_current {
-      return host.attach_run(&id);
+      return attach(id.as_str());
     }
     host
       .stop_applet_locked(applet_id, |session_id| notify_stopped(&app, session_id))
@@ -697,7 +794,7 @@ pub async fn launch(app: AppHandle, applet_id: &str, restart: bool) -> Result<At
     },
   );
   drop(running);
-  host.attach_run(&session_id)
+  attach(session_id.as_str())
 }
 
 #[cfg(test)]
@@ -778,6 +875,114 @@ mod tests {
     install(&host, APPLET, "1.0.0");
     seed_run(&host, RUN, APPLET);
     (directory, host)
+  }
+
+  #[tokio::test]
+  async fn detached_runs_fill_the_limit_and_stopping_one_preserves_other_runs_and_data() {
+    let (_directory, host) = fixture();
+    let original = host.bundles.installed(APPLET).unwrap();
+    let grant = GrantSource::from(&original);
+    host.grants.remember(Microphone, APPLET, &grant).unwrap();
+    host
+      .config
+      .dispatch(APPLET, "config.set", json!({"key":"theme","value":"dark"}))
+      .unwrap();
+    let session = host.session(RUN, "sqlite.open").unwrap();
+    let database_handle = database(&host, RUN);
+    let foreground = host.attach_run(RUN).unwrap();
+    assert!(host.detached_runs().unwrap().is_empty());
+    assert_eq!(
+      host
+        .stop_detached_run(APPLET, RUN, |_| panic!("Foreground applet stopped"))
+        .await
+        .unwrap_err(),
+      RUN_CHANGED
+    );
+    assert!(!host.detach_view(RUN, "stale-view").unwrap());
+    assert!(host.detach_view(RUN, &foreground.view_id).unwrap());
+    assert_eq!(
+      serde_json::to_value(host.detached_runs().unwrap()).unwrap(),
+      json!([{
+        "session_id":RUN,"applet_id":APPLET,"name":"View fixture","version":"1.0.0",
+      }])
+    );
+
+    for index in (1..MAX_RUNNING_APPLETS).rev() {
+      let id = format!("neighbor-{index}");
+      install(&host, &id, "1.0.0");
+      seed_run(&host, &id, &id);
+    }
+    let neighbor = host.attach_run("neighbor-1").unwrap();
+    let detached = host.detached_runs().unwrap();
+    assert_eq!(detached.len(), MAX_RUNNING_APPLETS - 1);
+    assert_eq!(detached[0].applet_id, "neighbor-2");
+    assert_eq!(detached.last().unwrap().applet_id, APPLET);
+    {
+      let running = host.running.lock().unwrap();
+      assert_eq!(
+        running.available_run("next").unwrap_err(),
+        RUN_LIMIT_REACHED
+      );
+      assert_eq!(running.available_run(APPLET).unwrap().as_deref(), Some(RUN));
+    }
+    assert_eq!(
+      host
+        .stop_detached_run("neighbor-1", RUN, |_| panic!("Mismatched applet stopped"))
+        .await
+        .unwrap_err(),
+      RUN_CHANGED
+    );
+    host
+      .stop_detached_run(APPLET, RUN, |id| assert_eq!(id, RUN))
+      .await
+      .unwrap();
+    assert!(*session.cancellation.borrow());
+    assert!(host.session(RUN, "sqlite.open").is_err());
+    assert!(host
+      .sqlite
+      .dispatch(
+        RUN,
+        APPLET,
+        "sqlite.query",
+        json!({
+          "database_handle":database_handle,"sql":"SELECT 1",
+        })
+      )
+      .is_err());
+    assert_eq!(
+      host.bundles.installed(APPLET).unwrap().sha256,
+      original.sha256
+    );
+    assert!(host.grants.remembered(Microphone, APPLET, &grant).unwrap());
+    assert_eq!(
+      host
+        .config
+        .dispatch(APPLET, "config.get", json!({"key":"theme"}))
+        .unwrap(),
+      json!({"found":true,"value":"dark"})
+    );
+    host.require_view("neighbor-1", &neighbor.view_id).unwrap();
+    assert!(host
+      .running
+      .lock()
+      .unwrap()
+      .available_run("next")
+      .unwrap()
+      .is_none());
+
+    seed_run(&host, "replacement", APPLET);
+    assert_eq!(
+      host
+        .stop_detached_run(APPLET, RUN, |_| panic!("Replacement applet stopped"))
+        .await
+        .unwrap_err(),
+      RUN_CHANGED
+    );
+    assert!(host
+      .detached_runs()
+      .unwrap()
+      .iter()
+      .any(|run| run.session_id == "replacement"));
   }
 
   #[tokio::test]
@@ -1128,7 +1333,7 @@ mod tests {
         .unwrap(),
       PermissionMode::Remembered
     );
-    host.retire_run(RUN).unwrap();
+    host.retire_run(RUN, None).unwrap();
     seed_run(&host, "reopened", APPLET);
     let replaced = host.attach_run("reopened").unwrap();
     assert_eq!(
@@ -1419,8 +1624,8 @@ mod tests {
         .unwrap(),
       json!({"found":true,"value":"dark"})
     );
-    assert!(host.retire_run(RUN).unwrap().is_none());
-    assert!(host.retire_run("neighbor-run").unwrap().is_some());
+    assert!(host.retire_run(RUN, None).unwrap().is_none());
+    assert!(host.retire_run("neighbor-run", None).unwrap().is_some());
     host.require_view("reopened", &reopened.view_id).unwrap();
     assert_eq!(host.running.lock().unwrap().runs.len(), 1);
     assert_eq!(host.sessions.lock().unwrap().len(), 2);

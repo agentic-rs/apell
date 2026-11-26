@@ -142,7 +142,7 @@ function Shell() {
                     <button
                       ref={downloads_button}
                       type="button"
-                      className="library-downloads"
+                      className="library-shortcut"
                       disabled={busy}
                       onClick={() => {
                         restore_download_focus.current = true;
@@ -155,7 +155,7 @@ function Shell() {
                         {downloads.entries.length} paused{' '}
                         {downloads.entries.length === 1 ? 'download' : 'downloads'}
                       </span>
-                      <span className="library-downloads-arrow">
+                      <span className="library-shortcut-arrow">
                         <Icon name="back" />
                       </span>
                     </button>

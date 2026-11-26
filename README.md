@@ -47,6 +47,10 @@ Store updates or switch channels without opening the applet. Choose **Remove
 applet** and confirm to remove it. Removal keeps its local data for a later
 reinstall from the same source.
 
+Close returns you to Library and leaves the applet running. Open **Running
+applets** in Library to stop one and free a slot. Stopping ends work still in
+progress and keeps the applet installed with its saved data and permissions.
+
 `pnpm dev` serves the shell frontend for development. Launch the native Tauri application, `apell-app`, to install and run applets.
 
 ## Build and test
