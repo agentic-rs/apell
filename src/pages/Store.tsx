@@ -26,11 +26,15 @@ export function Store({
   downloads_request: number;
   onReturnToLibrary: (store_scroll: number) => void;
 }) {
-  const state = useStore(onLaunch, onBusyChange, downloads.refresh);
   const [downloads_open, setDownloadsOpen] = useState(false);
   const [downloads_from_library, setDownloadsFromLibrary] = useState(false);
   const [download_return_id, setDownloadReturnId] = useState<string>();
   const downloads_request_handled = useRef(0);
+  const downloads_requested = downloads_request > downloads_request_handled.current;
+  const state = useStore(onLaunch, onBusyChange, downloads.refresh, {
+    downloads_open,
+    downloads_requested,
+  });
   const downloads_heading = useRef<HTMLHeadingElement>(null);
   const download_return = useRef<HTMLButtonElement>(null);
   const download_review = useRef<HTMLDivElement>(null);
@@ -273,7 +277,7 @@ export function Store({
           updates={state.updates}
           download_count={downloads.entries.length}
           loading={updates_only ? state.updates_loading : state.catalog_loading}
-          error={updates_only ? state.updates_error : state.catalog_error || state.config_error}
+          error={updates_only ? state.updates_error : state.config_error || state.catalog_error}
           query={updates_only ? state.updates_query : query}
           updates_only={updates_only}
           onQuery={updates_only ? state.setUpdatesQuery : (query) => state.updateBrowse({ query })}

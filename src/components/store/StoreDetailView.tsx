@@ -86,10 +86,10 @@ export function StoreDetailView({
   onBack: () => void;
   back_label?: string;
 }) {
-  const [confirm_switch, setConfirmSwitch] = useState(false);
-  useEffect(() => {
-    if (!fresh) setConfirmSwitch(false);
-  }, [fresh]);
+  const [pending_switch, setPendingSwitch] = useState<{
+    detail: StoreDetail;
+    release: StoreReleaseOption;
+  }>();
   const { installed } = detail;
   const { release, recommended, channel, installed_channel: default_channel, versions } = review;
   const channel_name = storeChannelName(channel);
@@ -108,6 +108,14 @@ export function StoreDetailView({
     release?.action === 'switch_channel' &&
     !!detail.channel_snapshot;
   const confirm_required = can_switch_source || can_switch_channel;
+  const confirm_switch =
+    fresh &&
+    confirm_required &&
+    pending_switch?.detail === detail &&
+    pending_switch.release === release;
+  useEffect(() => {
+    if (pending_switch && !confirm_switch) setPendingSwitch(undefined);
+  }, [confirm_switch, pending_switch]);
   const can_install =
     fresh &&
     release &&
@@ -269,7 +277,9 @@ export function StoreDetailView({
                   <button
                     className="store-primary"
                     disabled={busy}
-                    onClick={() => (confirm_required ? setConfirmSwitch(true) : onInstall(release))}
+                    onClick={() =>
+                      confirm_required ? setPendingSwitch({ detail, release }) : onInstall(release)
+                    }
                   >
                     {installing
                       ? 'Installing…'
@@ -392,11 +402,11 @@ export function StoreDetailView({
           </div>
         )}
       </div>
-      {fresh && release && confirm_required && (
+      {confirm_switch && release && (
         <Sheet
-          open={confirm_switch}
+          open
           title={can_switch_source ? 'Switch installation source?' : `Switch to ${channel_name}?`}
-          onClose={() => setConfirmSwitch(false)}
+          onClose={() => setPendingSwitch(undefined)}
         >
           {can_switch_source ? (
             <>
@@ -416,12 +426,12 @@ export function StoreDetailView({
             </p>
           )}
           <div className="store-form-actions">
-            <button onClick={() => setConfirmSwitch(false)}>Cancel</button>
+            <button onClick={() => setPendingSwitch(undefined)}>Cancel</button>
             <button
               className="store-primary"
               disabled={busy}
               onClick={() => {
-                setConfirmSwitch(false);
+                setPendingSwitch(undefined);
                 onInstall(release, can_switch_channel);
               }}
             >

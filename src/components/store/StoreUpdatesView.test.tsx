@@ -62,6 +62,28 @@ describe('Store update check results', () => {
     expect(html).not.toContain('Updates (');
   });
 
+  it('shows a retained live update as a saved result while checking again', () => {
+    const sources = [
+      {
+        store_url: second_store,
+        installed_count: 1,
+        checked_count: 1,
+        updates: [offer('canvas', second_store)],
+        saved_updates: [],
+      },
+    ];
+    const checking = render({ fresh: false, sources }, true);
+    expect(checking).toContain('Check saved release for canvas');
+    expect(checking).toContain('Saved result');
+    expect(checking).not.toContain('Review update for canvas');
+    expect(checking).not.toContain('Updates (1)');
+
+    const current = render({ fresh: true, sources });
+    expect(current).toContain('Review update for canvas');
+    expect(current).toContain('Updates (1)');
+    expect(current).not.toContain('Saved result');
+  });
+
   it('counts only live updates when one Store is offline', () => {
     const html = render({
       fresh: true,

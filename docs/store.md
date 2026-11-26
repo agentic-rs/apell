@@ -17,9 +17,11 @@ publishing token. Search the catalog, open an applet, and review its version,
 release notes, and declared access before choosing **Install**.
 
 Apell saves public catalog listings and recently viewed applet details on the
-device, including after a restart. Returning to Store shows saved results while
-Apell checks for changes. Discover and Updates can both show saved applet details
-when the Store is unreachable.
+device, including after a restart. Store refreshes the page you’re viewing and
+keeps previous listings visible while checking. Downloads reads paused
+transfers from your device. Open a download to check its release at the original
+Store. Discover and Updates can both show saved applet details when the Store
+is unreachable.
 Apell checks local installations to show their installed channels and sources
 in saved listings. Update badges require a fresh Store response.
 Saved applet details for an installed source follow that Store and the applet’s
@@ -33,11 +35,11 @@ Open an applet to choose its release channel and see that channel’s version
 history. Apell recommends Stable for new installs when available. **Updates**
 checks each installed Store applet against its recorded Store and channel. It
 works when no Store is configured for Discover. If a source cannot be checked,
-Apell still shows updates from the other sources. The Updates page shows **Saved
-result** for earlier checks that still match the installed package, Store, and
-channel, including after you restart or go offline. Only current results count
-toward the Updates badge. Open a saved result to check the release before
-installing it.
+Apell still shows updates from the other sources. The Updates page keeps
+previous rows visible as **Saved result** while it checks for updates. Saved
+results that match the installed package, Store, and channel are also available
+after a restart or when offline. Only current results count toward the Updates
+badge. Open a saved result to check the release before installing it.
 Review an update's permissions, including newly declared access, then choose
 **Update**. Updates are manual, and existing applet data is retained.
 If the old version is running, choose **Restart applet** after installing to

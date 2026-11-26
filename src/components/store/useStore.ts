@@ -48,16 +48,23 @@ import {
 } from './cache';
 
 type StoreOperation = 'save' | 'install' | 'open' | 'restart' | 'discard';
-interface DetailSelection extends StoreReleaseChoice {
+interface DetailTarget {
   store_url: string;
   applet_id: string;
   installed_source?: boolean;
+}
+interface DetailSelection extends StoreReleaseChoice {
+  target: DetailTarget;
 }
 
 export function useStore(
   onLaunch: (session: AppletSession) => void,
   onBusyChange: (busy: boolean) => void,
   refreshDownloads: () => void,
+  {
+    downloads_open,
+    downloads_requested,
+  }: { downloads_open: boolean; downloads_requested: boolean },
 ) {
   const [config, setConfig] = useState<StoreConfig>();
   const [browse, setBrowse] = useState(DEFAULT_BROWSE);
@@ -68,7 +75,7 @@ export function useStore(
   const [local_installation, setLocalInstallation] = useState<AppletInstallResult>();
   const [detail_selection, setDetailSelection] = useState<DetailSelection>();
   const [address_open, setAddressOpen] = useState(false);
-  const [initial_loading, setInitialLoading] = useState(true);
+  const [config_check, setConfigCheck] = useState<number>();
   const [catalog_loading, setCatalogLoading] = useState(false);
   const [updates_loading, setUpdatesLoading] = useState(false);
   const [detail_loading, setDetailLoading] = useState(false);
@@ -89,24 +96,26 @@ export function useStore(
     detail: 0,
     operation: '',
   });
+  const list_checked = useRef({ catalog: false, updates: false });
   const current_url = useRef<string | null>(null);
   const selection = useRef<DetailSelection | undefined>(undefined);
-  const fresh = useRef(false);
+  const fresh = useRef<StoreDetail>(undefined);
 
   const selectDetail = (next?: DetailSelection) => {
     selection.current = next;
     setDetailSelection(next);
   };
 
-  const markFresh = (value: boolean) => {
-    fresh.current = value;
-    setDetailFresh(value);
+  const markFresh = (snapshot?: StoreDetail) => {
+    fresh.current = snapshot;
+    setDetailFresh(!!snapshot);
   };
 
   const adoptStore = (store_url: string | null) => {
     if (current_url.current === store_url) return;
     current_url.current = store_url;
     scope.current.catalog++;
+    list_checked.current.catalog = false;
     const preferences = store_url ? readStorePreferences(store_url) : DEFAULT_BROWSE;
     setBrowse((current) => {
       return current.updates_only ? { ...preferences, updates_only: true } : preferences;
@@ -114,14 +123,8 @@ export function useStore(
     setCatalog(undefined);
     setCatalogError('');
     setCatalogLoading(false);
-    if (selection.current?.installed_source || selection.current?.pending_download) return;
-    scope.current.detail++;
-    selectDetail();
-    setDetail(undefined);
-    setLocalInstallation(undefined);
-    setDetailError('');
-    setDetailLoading(false);
-    markFresh(false);
+    const current = selection.current;
+    if (current && !current.target.installed_source && !current.pending_download) closeDetail();
   };
 
   const updateBrowse = (patch: Partial<StoreBrowsePreferences>) => {
@@ -130,11 +133,6 @@ export function useStore(
       ...patch,
       ...(patch.query !== undefined ? { query: patch.query.slice(0, 200) } : {}),
     };
-    if (patch.updates_only && !browse.updates_only) {
-      setUpdates(undefined);
-      setUpdatesError('');
-      setUpdatesLoading(true);
-    }
     setBrowse(next);
     if (current_url.current) writeStorePreferences(current_url.current, next);
   };
@@ -144,7 +142,37 @@ export function useStore(
 
   const clearCatalogReview = () => setCatalog((current) => current && reviewSavedCatalog(current));
 
+  const markUpdatesSaved = (changed_applet_id?: string) =>
+    setUpdates(
+      (current) =>
+        current && {
+          fresh: false,
+          sources: changed_applet_id
+            ? current.sources.map((source) => ({
+                ...source,
+                updates: source.updates.filter(
+                  ({ applet }) => applet.applet_id !== changed_applet_id,
+                ),
+                saved_updates: source.saved_updates.filter(
+                  ({ applet }) => applet.applet_id !== changed_applet_id,
+                ),
+              }))
+            : current.sources,
+        },
+    );
+
+  const invalidateLists = (changed_applet_id?: string) => {
+    scope.current.catalog++;
+    scope.current.updates++;
+    list_checked.current = { catalog: false, updates: false };
+    setCatalogLoading(false);
+    setUpdatesLoading(false);
+    clearCatalogReview();
+    markUpdatesSaved(changed_applet_id);
+  };
+
   const loadCatalog = async (store_url: string) => {
+    list_checked.current.catalog = true;
     const request = ++scope.current.catalog;
     setCatalogLoading(true);
     setCatalogError('');
@@ -171,11 +199,12 @@ export function useStore(
   };
 
   const loadUpdates = async () => {
+    list_checked.current.updates = true;
     const request = ++scope.current.updates;
     const isCurrent = () => scope.current.alive && scope.current.updates === request;
     setUpdatesLoading(true);
     setUpdatesError('');
-    setUpdates(undefined);
+    markUpdatesSaved();
     let checked = false;
     const saved = (async () => {
       try {
@@ -198,21 +227,16 @@ export function useStore(
     }
   };
 
-  const loadDetail = async (
-    { store_url, applet_id, installed_source, pending_download }: DetailSelection,
-    just_installed?: AppletInstallResult,
-  ) => {
+  const loadDetail = async ({ target, pending_download }: DetailSelection) => {
+    const { store_url, applet_id, installed_source } = target;
     const request = ++scope.current.detail;
     const isCurrent = () =>
       scope.current.alive &&
       scope.current.detail === request &&
-      selection.current?.store_url === store_url &&
-      selection.current.applet_id === applet_id &&
-      selection.current.installed_source === installed_source;
-    markFresh(false);
+      selection.current?.target === target;
+    markFresh();
     setDetailLoading(true);
     setDetailError('');
-    setLocalInstallation(just_installed);
     void listApplets().then(
       (report) => {
         if (isCurrent()) {
@@ -255,13 +279,15 @@ export function useStore(
       const requested = selection.current;
       if (isCurrent() && requested) {
         setDetail(result);
-        markFresh(true);
+        markFresh(result);
         if (!installed_source && !pending_download) {
           const remembered = requested.version ?? requested.remembered_version;
-          const version = requested.channel
-            ? reviewStoreRelease(result, requested).release?.version
-            : result.releases.find((release) => release.version === remembered)?.version;
-          rememberStoreVersion(store_url, applet_id, version);
+          if (requested.channel || remembered !== undefined) {
+            const version = requested.channel
+              ? reviewStoreRelease(result, requested).release?.version
+              : result.releases.find((release) => release.version === remembered)?.version;
+            rememberStoreVersion(store_url, applet_id, version);
+          }
         }
       }
     } catch (error) {
@@ -274,40 +300,28 @@ export function useStore(
 
   const loadConfig = async () => {
     const request = ++scope.current.config;
-    if (!config) setInitialLoading(true);
+    setConfigCheck(undefined);
     setConfigError('');
     try {
       const result = await getStoreConfig();
       if (!scope.current.alive || scope.current.config !== request) return;
       adoptStore(result.store_url);
       setConfig(result);
-      if (result.store_url) void loadCatalog(result.store_url);
-      const selected = selection.current;
-      if (selected && !selected.pending_download) void loadDetail(selected);
     } catch (error) {
       if (scope.current.alive && scope.current.config === request) {
-        if (!config) setConfigError(message(error));
-        const selected = selection.current;
-        if (selected && !selected.pending_download) void loadDetail(selected);
-        if (config?.store_url) {
-          setCatalogError(message(error));
-          setCatalogLoading(false);
-          scope.current.catalog++;
-          clearCatalogReview();
-        }
+        setConfigError(message(error));
       }
     } finally {
       if (scope.current.alive && scope.current.config === request) {
-        setInitialLoading(false);
+        setConfigCheck(request);
       }
     }
   };
 
   useLayoutEffect(() => {
     scope.current.alive = true;
-    markFresh(false);
-    clearCatalogReview();
-    setUpdates(undefined);
+    markFresh();
+    invalidateLists();
     if (selection.current) {
       setLocalInstallation(undefined);
       setDetailLoading(true);
@@ -315,7 +329,7 @@ export function useStore(
     }
     return () => {
       scope.current.alive = false;
-      fresh.current = false;
+      fresh.current = undefined;
       scope.current.config++;
       scope.current.catalog++;
       scope.current.updates++;
@@ -323,13 +337,41 @@ export function useStore(
     };
   }, []);
   useEffect(() => {
-    const selected = selection.current;
-    if (selected?.pending_download) void loadDetail(selected);
     void loadConfig();
   }, []);
+
+  // The Library shortcut can replace the previously visible Store route on reveal.
+  const show_list =
+    config_check !== undefined &&
+    !address_open &&
+    !detail_selection &&
+    !downloads_open &&
+    !downloads_requested;
+  const show_updates = show_list && browse.updates_only;
+  const discover_url =
+    show_list && !browse.updates_only && !config_error ? config?.store_url : null;
   useEffect(() => {
-    if (browse.updates_only) void loadUpdates();
-  }, [browse.updates_only]);
+    if (scope.current.config !== config_check) return;
+    if (show_updates && !list_checked.current.updates) void loadUpdates();
+    if (discover_url && !list_checked.current.catalog) void loadCatalog(discover_url);
+  }, [show_updates, discover_url, config_check]);
+
+  const configured_detail =
+    !detail_selection?.target.installed_source && !detail_selection?.pending_download;
+  const visible_detail =
+    !address_open &&
+    !downloads_requested &&
+    detail_selection &&
+    (!configured_detail || config_check !== undefined)
+      ? detail_selection.target
+      : undefined;
+  const detail_config_check = configured_detail ? config_check : undefined;
+  useEffect(() => {
+    const selected = selection.current;
+    if (!selected || selected.target !== visible_detail) return;
+    if (configured_detail && scope.current.config !== detail_config_check) return;
+    void loadDetail(selected);
+  }, [visible_detail, detail_config_check]);
 
   const run = async (kind: StoreOperation, action: (id: string) => Promise<void>) => {
     if (scope.current.operation) return;
@@ -355,7 +397,7 @@ export function useStore(
   const closeDetail = () => {
     scope.current.detail++;
     selectDetail();
-    markFresh(false);
+    markFresh();
     setDetail(undefined);
     setLocalInstallation(undefined);
     setDetailError('');
@@ -364,19 +406,24 @@ export function useStore(
     setStatus('');
   };
 
-  const reviewDownload = (pending_download: StorePendingDownload) => {
+  const openReview = (requested: DetailSelection) => {
     if (scope.current.operation) return;
+    scope.current.detail++;
     setActionError('');
     setStatus('');
-    const requested = {
-      store_url: pending_download.origin,
-      applet_id: pending_download.applet_id,
-      pending_download,
-    };
     selectDetail(requested);
+    markFresh();
     setDetail(undefined);
-    void loadDetail(requested);
+    setLocalInstallation(undefined);
+    setDetailLoading(true);
+    setDetailError('');
   };
+
+  const reviewDownload = (pending_download: StorePendingDownload) =>
+    openReview({
+      target: { store_url: pending_download.origin, applet_id: pending_download.applet_id },
+      pending_download,
+    });
 
   const discardDownload = () => {
     const pending = selection.current?.pending_download;
@@ -397,32 +444,40 @@ export function useStore(
 
   const saveAddress = (value: string) =>
     void run('save', async () => {
-      scope.current.config++;
-      const result = await setStoreUrl(value.trim());
-      if (!scope.current.alive) return;
-      adoptStore(result.store_url);
-      setConfig(result);
-      setAddressOpen(false);
-      if (result.store_url) void loadCatalog(result.store_url);
+      const request = ++scope.current.config;
+      try {
+        const result = await setStoreUrl(value.trim());
+        if (!scope.current.alive || scope.current.config !== request) return;
+        adoptStore(result.store_url);
+        setConfig(result);
+        setConfigError('');
+        setAddressOpen(false);
+      } finally {
+        if (scope.current.alive && scope.current.config === request) {
+          setConfigCheck(request);
+        }
+      }
     });
 
   const install = (release: StoreReleaseOption, confirmed_channel_switch = false) => {
     const requested = selection.current;
-    if (!fresh.current || !detail?.releases.includes(release) || !requested) return;
+    const snapshot = fresh.current;
+    if (!snapshot || snapshot !== detail || !requested) return;
+    const { target } = requested;
+    if (reviewStoreRelease(snapshot, requested, target.installed_source).release !== release)
+      return;
     const resume = !!requested.pending_download;
     const has_checkpoint = resume || (release.downloaded_bytes ?? 0) > 0;
-    if (resume && reviewStoreRelease(detail, requested).release !== release) return;
     const switching = release.action === 'switch_source';
     const switching_channel = release.action === 'switch_channel';
-    if (requested.installed_source) {
+    if (target.installed_source) {
       const same_channel_update =
-        release.action === 'update' && storeReleaseChannel(release) === detail.installed_channel;
+        release.action === 'update' && storeReleaseChannel(release) === snapshot.installed_channel;
       if (!same_channel_update) return;
-    } else if (!resume && requested.store_url !== current_url.current) return;
-    if (switching && !detail.switch_snapshot) return;
-    if (switching_channel && (!confirmed_channel_switch || !detail.channel_snapshot)) return;
+    } else if (!resume && target.store_url !== current_url.current) return;
+    if (switching && !snapshot.switch_snapshot) return;
+    if (switching_channel && (!confirmed_channel_switch || !snapshot.channel_snapshot)) return;
     if (!switching && !switching_channel && !['install', 'update'].includes(release.action)) return;
-    const snapshot = detail;
     void run('install', async (operation_id) => {
       setProgress(undefined);
       const stop = await onInstallProgress((event) => {
@@ -434,7 +489,8 @@ export function useStore(
           setProgress(event);
       }).catch(() => () => {});
       try {
-        if (!scope.current.alive) return;
+        if (!scope.current.alive || fresh.current !== snapshot || selection.current !== requested)
+          return;
         const installed = await installStoreRelease({
           store_url: snapshot.store_url,
           applet_id: snapshot.applet.applet_id,
@@ -442,7 +498,7 @@ export function useStore(
           expected_installed_sha256: snapshot.installed?.sha256 ?? null,
           ...(switching ? { switch_snapshot: snapshot.switch_snapshot } : {}),
           ...(switching_channel ? { channel_snapshot: snapshot.channel_snapshot } : {}),
-          ...(requested.installed_source ? { installed_source: true } : {}),
+          ...(target.installed_source ? { installed_source: true } : {}),
           ...(has_checkpoint ? { resume_download: true } : {}),
           operation_id,
         });
@@ -455,17 +511,16 @@ export function useStore(
             );
             return;
           }
-          setDetail(
-            (current) =>
-              current && {
-                ...current,
-                releases: current.releases.map((option) =>
-                  option.version === release.version && option.sha256 === release.sha256
-                    ? { ...option, downloaded_bytes: installed.received_bytes || undefined }
-                    : option,
-                ),
-              },
-          );
+          const paused = {
+            ...snapshot,
+            releases: snapshot.releases.map((option) =>
+              option === release
+                ? { ...option, downloaded_bytes: installed.received_bytes || undefined }
+                : option,
+            ),
+          };
+          setDetail(paused);
+          markFresh(paused);
           setStatus(
             installed.received_bytes > 0
               ? 'Download paused. Continue when you’re ready.'
@@ -481,18 +536,18 @@ export function useStore(
               : 'Installed.',
         );
         const installed_source =
-          requested.installed_source || (resume && snapshot.store_url !== current_url.current);
-        const next_selection = {
+          target.installed_source || (resume && snapshot.store_url !== current_url.current);
+        const next_selection: DetailSelection = {
           ...requested,
-          installed_source,
+          target: { ...target, installed_source },
           pending_download: undefined,
           version: requested.pending_download?.version ?? selection.current?.version,
           channel: installed_source ? undefined : storeReleaseChannel(release),
         };
+        markFresh();
+        setLocalInstallation(installed);
         selectDetail(next_selection);
-        void loadDetail(next_selection, installed);
-        if (snapshot.store_url === current_url.current) void loadCatalog(snapshot.store_url);
-        if (installed_source || updates) void loadUpdates();
+        invalidateLists(installed.applet.applet_id);
       } catch (error) {
         if (has_checkpoint && scope.current.alive) void loadDetail(requested);
         throw error;
@@ -521,13 +576,18 @@ export function useStore(
       : { ...detail, installed: installed ?? null, installed_channel: undefined });
   const chooseRelease = (choice: StoreReleaseChoice) => {
     const requested = selection.current;
-    if (!displayed_detail || !requested || requested.installed_source || requested.pending_download)
+    if (
+      !displayed_detail ||
+      !requested ||
+      requested.target.installed_source ||
+      requested.pending_download
+    )
       return;
     const next = { ...requested, ...choice, remembered_version: undefined };
     selectDetail(next);
     rememberStoreVersion(
-      requested.store_url,
-      requested.applet_id,
+      requested.target.store_url,
+      requested.target.applet_id,
       reviewStoreRelease(displayed_detail, choice).release?.version,
     );
   };
@@ -546,10 +606,14 @@ export function useStore(
     discardDownload,
     installed,
     restart_required,
-    selected_id: detail_selection?.applet_id,
+    selected_id: detail_selection?.target.applet_id,
     review:
       displayed_detail &&
-      reviewStoreRelease(displayed_detail, detail_selection, detail_selection?.installed_source),
+      reviewStoreRelease(
+        displayed_detail,
+        detail_selection,
+        detail_selection?.target.installed_source,
+      ),
     setChannel: (channel: StoreChannel) => chooseRelease({ channel, version: undefined }),
     setSelectedVersion: (version: string) => {
       const release = displayed_detail?.releases.find((option) => option.version === version);
@@ -557,8 +621,8 @@ export function useStore(
     },
     address_open,
     setAddressOpen,
-    initial_loading,
-    catalog_loading,
+    initial_loading: config_check === undefined && !config,
+    catalog_loading: catalog_loading || (!!discover_url && !list_checked.current.catalog),
     updates_loading,
     detail_loading,
     detail_fresh,
@@ -570,41 +634,36 @@ export function useStore(
     action_error,
     operation,
     progress,
-    loadConfig,
     saveAddress,
     closeDetail: () => {
       if (!scope.current.operation) closeDetail();
     },
     install,
-    installed_source: detail_selection?.installed_source === true,
+    installed_source: detail_selection?.target.installed_source === true,
     openDetail: (applet_id: string) => {
       if (!current_url.current || scope.current.operation) return;
-      setStatus('');
-      setActionError('');
       const store_url = current_url.current;
-      const remembered_version = rememberedStoreVersion(store_url, applet_id);
-      const requested = { store_url, applet_id, remembered_version };
-      selectDetail(requested);
-      setDetail(undefined);
-      void loadDetail(requested);
+      const listing = catalog?.applets.find((entry) => entry.applet_id === applet_id);
+      const use_latest = listing?.update_available && !listing.source_conflict;
+      const remembered_version = use_latest
+        ? undefined
+        : rememberedStoreVersion(store_url, applet_id);
+      openReview({ target: { store_url, applet_id }, remembered_version });
     },
-    openUpdate: (source: StoreSource) => {
-      if (scope.current.operation) return;
-      setStatus('');
-      setActionError('');
-      const requested = {
-        store_url: source.store_url,
-        applet_id: source.applet_id,
-        installed_source: true,
-      };
-      selectDetail(requested);
-      setDetail(undefined);
-      void loadDetail(requested);
-    },
+    openUpdate: (source: StoreSource) =>
+      openReview({
+        target: {
+          store_url: source.store_url,
+          applet_id: source.applet_id,
+          installed_source: true,
+        },
+      }),
     refreshCatalog: () => {
-      if (scope.current.operation) return;
-      if (current_url.current) void loadCatalog(current_url.current);
-      else if (!config) void loadConfig();
+      if (scope.current.operation || scope.current.config !== config_check) return;
+      if (!config || config_error) {
+        list_checked.current.catalog = false;
+        void loadConfig();
+      } else if (current_url.current) void loadCatalog(current_url.current);
     },
     refreshUpdates: () => {
       if (scope.current.operation) return;
@@ -615,7 +674,7 @@ export function useStore(
       void loadDetail(selection.current);
     },
     openApplet: () => {
-      if (installed && selection.current?.applet_id === installed.applet_id) {
+      if (installed && selection.current?.target.applet_id === installed.applet_id) {
         openInstalled(installed.applet_id, restart_required);
       }
     },

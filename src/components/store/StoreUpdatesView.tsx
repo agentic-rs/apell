@@ -18,12 +18,13 @@ export function StoreUpdatesView({
   onSelect: (source: StoreSource) => void;
 }) {
   const search = query.trim().toLocaleLowerCase();
+  const fresh = report?.fresh === true;
   const groups = (report?.sources ?? []).map((source) => ({
     source,
-    unchecked: report?.fresh ? source.installed_count - source.checked_count : 0,
-    check_error: report?.fresh ? source.error : undefined,
+    unchecked: fresh ? source.installed_count - source.checked_count : 0,
+    check_error: fresh ? source.error : undefined,
     matching: [
-      ...source.updates.map((entry) => ({ ...entry, saved: false })),
+      ...source.updates.map((entry) => ({ ...entry, saved: !fresh })),
       ...source.saved_updates.map((entry) => ({ ...entry, saved: true })),
     ].filter(({ applet }) => applet.name.toLocaleLowerCase().includes(search)),
   }));
@@ -36,7 +37,7 @@ export function StoreUpdatesView({
   );
   return (
     <>
-      {(loading || (!report?.fresh && !error)) && (
+      {(loading || (!fresh && !error)) && (
         <p className="status" role="status">
           Checking installed applets for updates…
         </p>
@@ -53,7 +54,7 @@ export function StoreUpdatesView({
           </button>
         </div>
       )}
-      {!loading && !error && report?.fresh && !visible.length && (
+      {!loading && !error && fresh && !visible.length && (
         <div className="store-empty">
           <h2>
             {no_installations
