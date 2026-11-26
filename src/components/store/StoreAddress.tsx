@@ -1,16 +1,18 @@
-import { useState } from 'react';
+import { useState, type Ref } from 'react';
 import { Icon } from '../Icon';
 
 export function StoreAddress({
   store_url,
   busy,
   error,
+  heading_ref,
   onSave,
   onCancel,
 }: {
   store_url: string | null;
   busy: boolean;
   error: string;
+  heading_ref: Ref<HTMLHeadingElement>;
   onSave: (value: string) => void;
   onCancel?: () => void;
 }) {
@@ -20,7 +22,9 @@ export function StoreAddress({
       <div className="store-address-mark" aria-hidden="true">
         <Icon name="store" />
       </div>
-      <h2>{store_url ? 'Store address' : 'Connect to a store'}</h2>
+      <h2 ref={heading_ref} tabIndex={-1}>
+        {store_url ? 'Store address' : 'Connect to a store'}
+      </h2>
       <p>Choose the Store to browse for new applets.</p>
       <form
         onSubmit={(event) => {

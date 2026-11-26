@@ -1,3 +1,4 @@
+import type { Ref } from 'react';
 import type { StoreCatalog, StoreSource, StoreUpdateResults } from '../../lib/types';
 import {
   installedStoreChannel,
@@ -19,6 +20,7 @@ export function StoreCatalogView({
   error,
   query,
   updates_only,
+  catalog_ref,
   onQuery,
   onFilter,
   onRefresh,
@@ -35,12 +37,13 @@ export function StoreCatalogView({
   error: string;
   query: string;
   updates_only: boolean;
+  catalog_ref?: Ref<HTMLElement>;
   onQuery: (value: string) => void;
   onFilter: (value: boolean) => void;
   onRefresh: () => void;
-  onAddress: () => void;
-  onSelect: (applet_id: string) => void;
-  onSelectUpdate: (source: StoreSource) => void;
+  onAddress: (trigger: HTMLButtonElement) => void;
+  onSelect: (applet_id: string, trigger: HTMLButtonElement) => void;
+  onSelectUpdate: (source: StoreSource, trigger: HTMLButtonElement) => void;
   onOpenDownloads: () => void;
 }) {
   const update_count = updates?.fresh
@@ -48,7 +51,12 @@ export function StoreCatalogView({
     : 0;
   const refresh_label = updates_only ? 'Refresh updates' : 'Refresh store';
   return (
-    <section className="store-catalog" aria-label="Applet store" aria-busy={loading}>
+    <section
+      ref={catalog_ref}
+      className="store-catalog"
+      aria-label="Applet store"
+      aria-busy={loading}
+    >
       <div className="store-toolbar">
         <p>
           {updates_only
@@ -68,10 +76,11 @@ export function StoreCatalogView({
             </button>
           )}
           <button
+            id="store-address-settings"
             className="icon-button"
             aria-label="Store address"
             title="Store address"
-            onClick={onAddress}
+            onClick={(event) => onAddress(event.currentTarget)}
           >
             <Icon name="settings" />
           </button>
@@ -142,8 +151,8 @@ function StoreDiscover({
   query: string;
   store_url?: string | null;
   onRefresh: () => void;
-  onAddress: () => void;
-  onSelect: (applet_id: string) => void;
+  onAddress: (trigger: HTMLButtonElement) => void;
+  onSelect: (applet_id: string, trigger: HTMLButtonElement) => void;
 }) {
   const applets = matchingStoreApplets(catalog?.applets ?? [], query, false);
   return (
@@ -177,7 +186,9 @@ function StoreDiscover({
           ) : (
             <>
               <h2>Connect to a store</h2>
-              <button onClick={onAddress}>Set store address</button>
+              <button id="store-connect" onClick={(event) => onAddress(event.currentTarget)}>
+                Set store address
+              </button>
             </>
           )}
         </div>
@@ -201,7 +212,8 @@ function StoreDiscover({
               <li key={applet.applet_id}>
                 <button
                   className="store-card"
-                  onClick={() => onSelect(applet.applet_id)}
+                  data-store-card={JSON.stringify([catalog.store_url, applet.applet_id])}
+                  onClick={(event) => onSelect(applet.applet_id, event.currentTarget)}
                   aria-label={`View ${applet.name}`}
                 >
                   <StoreIcon

@@ -15,6 +15,19 @@ import type { StoreDownloads } from '../components/store/useStoreDownloads';
 import './store.css';
 
 type RepairDownload = StorePendingDownload & { restore_snapshot: StoreSwitchSnapshot };
+type BrowsePage = 'discover' | 'updates';
+type BrowseCardsReturn = { page: BrowsePage; kind: 'cards'; keys: string[]; top: number };
+type BrowseReturn = BrowseCardsReturn | { page: BrowsePage; kind: 'address'; trigger_id: string };
+
+function storeCards(catalog: HTMLElement | null) {
+  return Array.from(catalog?.querySelectorAll<HTMLButtonElement>('button[data-store-card]') ?? []);
+}
+
+function alignStoreCard(card: HTMLButtonElement, top: number) {
+  const offset = card.getBoundingClientRect().top - top;
+  if (Math.abs(offset) > 1) window.scrollTo(0, window.scrollY + offset);
+  card.scrollIntoView({ block: 'nearest' });
+}
 
 export function Store({
   onLaunch,
@@ -42,7 +55,15 @@ export function Store({
   });
   const downloads_heading = useRef<HTMLHeadingElement>(null);
   const download_return = useRef<HTMLButtonElement>(null);
-  const download_review = useRef<HTMLDivElement>(null);
+  const detail_route = useRef<HTMLDivElement>(null);
+  const address_heading = useRef<HTMLHeadingElement>(null);
+  const catalog = useRef<HTMLElement>(null);
+  const browse_return = useRef<BrowseReturn>(undefined);
+  const returned_card = useRef<{
+    location: BrowseCardsReturn;
+    button: HTMLButtonElement;
+    scroll: number;
+  }>(undefined);
   const repair_focus = useRef<'download' | 'heading'>(undefined);
   const { query, updates_only } = state.browse;
   const opening = state.operation === 'open' || state.operation === 'restart';
@@ -68,25 +89,86 @@ export function Store({
   const previous_page = useRef(page);
   const previous_origin = useRef(state.config?.store_url);
   const list_scroll = useRef({ discover: 0, updates: 0, downloads: 0 });
+  const stopTrackingCard = () => {
+    returned_card.current = undefined;
+    catalog.current?.removeAttribute('data-return-anchor');
+  };
+  const restoreCard = (location: BrowseCardsReturn, restore_position = true) => {
+    const cards = storeCards(catalog.current);
+    const button = location.keys
+      .map((key) => cards.find((card) => card.dataset.storeCard === key && !card.disabled))
+      .find(Boolean);
+    if (button) {
+      catalog.current?.setAttribute('data-return-anchor', '');
+      if (restore_position) alignStoreCard(button, location.top);
+      button.focus({ preventScroll: true });
+      returned_card.current = {
+        button,
+        location: restore_position
+          ? location
+          : { ...location, top: button.getBoundingClientRect().top },
+        scroll: window.scrollY,
+      };
+    } else {
+      stopTrackingCard();
+      catalog.current?.querySelector<HTMLButtonElement>('button[aria-pressed="true"]')?.focus({
+        preventScroll: !restore_position,
+      });
+    }
+  };
   useLayoutEffect(() => {
     if (previous_origin.current !== state.config?.store_url) {
       previous_origin.current = state.config?.store_url;
       list_scroll.current.discover = 0;
     }
     const previous = previous_page.current;
-    if (previous === page) return;
+    if (previous === page || (state.initial_loading && !downloads_open)) return;
     previous_page.current = page;
+    stopTrackingCard();
     window.scrollTo(0, page === 'address' || page === 'detail' ? 0 : list_scroll.current[page]);
     if (page === 'downloads') {
       const entry = previous === 'detail' ? download_return.current : null;
       const target = entry && !entry.disabled ? entry : downloads_heading.current;
       target?.focus({ preventScroll: true });
-    } else if (page === 'detail' && downloads_open) {
-      download_review.current?.focus({ preventScroll: true });
+    } else if (page === 'detail') {
+      detail_route.current?.focus({ preventScroll: true });
+    } else if (page === 'address') {
+      address_heading.current?.focus({ preventScroll: true });
     } else if (previous === 'downloads') {
       document.getElementById('store-open-downloads')?.focus({ preventScroll: true });
+    } else if (previous === 'detail' || previous === 'address') {
+      const returning = browse_return.current;
+      browse_return.current = undefined;
+      if (returning?.page !== page) return;
+      if (returning.kind === 'address') {
+        const trigger = document.getElementById(returning.trigger_id);
+        (trigger ?? document.getElementById('store-address-settings'))?.focus();
+        return;
+      }
+      restoreCard(returning);
     }
-  }, [page, downloads_open, state.config?.store_url]);
+  }, [page, downloads_open, state.config?.store_url, state.initial_loading]);
+  useLayoutEffect(() => {
+    const returned = returned_card.current;
+    if (!returned || returned.location.page !== page) return;
+    const same_scroll = Math.abs(window.scrollY - returned.scroll) <= 1;
+    const focused = document.activeElement;
+    // A returned list may replace saved cards or remove its loading banner.
+    if (!returned.button.isConnected && focused === document.body) {
+      restoreCard(returned.location, same_scroll);
+    } else if (focused === returned.button && same_scroll) {
+      alignStoreCard(returned.button, returned.location.top);
+      returned.scroll = window.scrollY;
+    } else stopTrackingCard();
+  }, [
+    page,
+    state.catalog,
+    state.catalog_loading,
+    state.catalog_error,
+    state.updates,
+    state.updates_loading,
+    state.updates_error,
+  ]);
   useEffect(() => {
     if (repair || !repair_focus.current) return;
     const entry = repair_focus.current === 'download' ? download_return.current : null;
@@ -98,10 +180,27 @@ export function Store({
   const rememberListScroll = () => {
     if (page !== 'address' && page !== 'detail') list_scroll.current[page] = window.scrollY;
   };
+  const rememberBrowse = (trigger: HTMLButtonElement) => {
+    if (page !== 'discover' && page !== 'updates') return;
+    rememberListScroll();
+    if (!trigger.dataset.storeCard) {
+      browse_return.current = { page, kind: 'address', trigger_id: trigger.id };
+      return;
+    }
+    const cards = storeCards(catalog.current);
+    const index = cards.indexOf(trigger);
+    const keys = [
+      trigger.dataset.storeCard,
+      cards[index + 1]?.dataset.storeCard,
+      cards[index - 1]?.dataset.storeCard,
+    ].filter((key): key is string => !!key);
+    browse_return.current = { page, kind: 'cards', keys, top: trigger.getBoundingClientRect().top };
+  };
   const openDownloads = (from_library = false) => {
     if (state.operation) return;
     state.setAddressOpen(false);
     state.closeDetail();
+    browse_return.current = undefined;
     list_scroll.current.downloads = 0;
     setDownloadReturnId(undefined);
     setRepairStatus('');
@@ -145,6 +244,7 @@ export function Store({
         store_url={state.config?.store_url ?? null}
         busy={!!state.operation}
         error={state.action_error}
+        heading_ref={address_heading}
         onSave={state.saveAddress}
         onCancel={() => state.setAddressOpen(false)}
       />
@@ -182,10 +282,10 @@ export function Store({
       )}
       {state.selected_id ? (
         <div
-          ref={download_review}
-          tabIndex={downloads_open ? -1 : undefined}
-          role={downloads_open ? 'region' : undefined}
-          aria-label={downloads_open ? 'Download review' : undefined}
+          ref={detail_route}
+          tabIndex={-1}
+          role="region"
+          aria-label={downloads_open ? 'Download review' : 'Applet details'}
           className="store-detail-route"
         >
           {state.detail && state.review ? (
@@ -298,6 +398,7 @@ export function Store({
         />
       ) : (
         <StoreCatalogView
+          catalog_ref={catalog}
           catalog={state.catalog}
           store_url={state.config?.store_url}
           updates={state.updates}
@@ -313,16 +414,16 @@ export function Store({
             state.updateBrowse({ updates_only: next });
           }}
           onRefresh={updates_only ? state.refreshUpdates : state.refreshCatalog}
-          onAddress={() => {
-            rememberListScroll();
+          onAddress={(trigger) => {
+            rememberBrowse(trigger);
             state.setAddressOpen(true);
           }}
-          onSelect={(applet_id) => {
-            rememberListScroll();
+          onSelect={(applet_id, trigger) => {
+            rememberBrowse(trigger);
             state.openDetail(applet_id);
           }}
-          onSelectUpdate={(source) => {
-            rememberListScroll();
+          onSelectUpdate={(source, trigger) => {
+            rememberBrowse(trigger);
             state.openUpdate(source);
           }}
           onOpenDownloads={() => {

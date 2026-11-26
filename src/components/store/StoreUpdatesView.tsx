@@ -15,7 +15,7 @@ export function StoreUpdatesView({
   error: string;
   query: string;
   onRefresh: () => void;
-  onSelect: (source: StoreSource) => void;
+  onSelect: (source: StoreSource, trigger: HTMLButtonElement) => void;
 }) {
   const search = query.trim().toLocaleLowerCase();
   const fresh = report?.fresh === true;
@@ -95,7 +95,12 @@ export function StoreUpdatesView({
                   <li key={applet.applet_id}>
                     <button
                       className="store-card"
-                      onClick={() => onSelect(installed_source)}
+                      data-store-card={JSON.stringify([
+                        installed_source.store_url,
+                        applet.applet_id,
+                        installed_source.channel,
+                      ])}
+                      onClick={(event) => onSelect(installed_source, event.currentTarget)}
                       aria-label={`${saved ? 'Check saved release' : 'Review update'} for ${applet.name}`}
                       aria-describedby={version_id}
                     >

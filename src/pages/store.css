@@ -8,6 +8,9 @@
 .store-page {
   padding-top: 12px;
 }
+.store-catalog[data-return-anchor] {
+  overflow-anchor: none;
+}
 .store-primary {
   background: var(--applet-icon-background);
   border-color: var(--applet-icon-background);
