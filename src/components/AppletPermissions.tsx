@@ -248,18 +248,23 @@ function AppletPermissionGroup({
 export function AppletPermissionDetails({
   applet,
   show_id,
+  device_only = false,
   busy,
   saving,
   edit_error,
   edit,
-}: AppletPermissionDetailsProps) {
+}: AppletPermissionDetailsProps & { device_only?: boolean }) {
   const rows = applet.manifest ? appletPermissionRows(applet.manifest) : [];
   const fixed = rows.filter((row) => row.kind === 'fixed');
   const pickers = rows.filter((row) => row.kind === 'picker');
   const configurable = applet.grants.some((grant) => grant.available && grant.mode);
+  const has_device_access = applet.grants.length > 0 || pickers.length > 0;
+  if (device_only && !has_device_access) {
+    return <p className="status">This applet has no device permissions.</p>;
+  }
   return (
     <div className="applet-permission-details">
-      {(applet.grants.length > 0 || pickers.length > 0) && (
+      {has_device_access && (
         <div className="applet-permission-section">
           <h3>Device access</h3>
           {configurable && <p className="applet-permission-note">{device_access_note}</p>}
@@ -285,7 +290,7 @@ export function AppletPermissionDetails({
           </dl>
         </div>
       )}
-      {fixed.length > 0 && (
+      {!device_only && fixed.length > 0 && (
         <div className="applet-permission-section">
           <h3>Package access</h3>
           {applet.restart_required && (

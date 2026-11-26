@@ -43,6 +43,9 @@ after a restart or when offline. Only current results count toward the Updates
 badge. Open a saved result to check the release before installing it.
 Review an update's permissions, including newly declared access, then choose
 **Update**. Updates are manual, and existing applet data is retained.
+For an applet installed from the Store you are viewing, open **Device permissions**
+to see or change the choices for the installed version. You can do this while
+the Store is offline.
 If the old version is running, choose **Restart applet** after installing to
 open the new package and backend. This leaves Apell and other applets running.
 If you restart later, the applet keeps a badge in the Library. Open its actions

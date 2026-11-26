@@ -690,6 +690,7 @@ export function useStore(
     installed,
     restart_required,
     selected_id: detail_selection?.target.applet_id,
+    selected_store_url: detail_selection?.target.store_url,
     review:
       displayed_detail &&
       reviewStoreRelease(

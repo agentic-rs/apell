@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import type {
   InstallProgress,
   StoreChannel,
@@ -66,6 +66,7 @@ export function StoreDetailView({
   onVersion,
   onInstall,
   onOpen,
+  permissions_action,
   onRefresh,
   onBack,
   back_label,
@@ -86,6 +87,7 @@ export function StoreDetailView({
   onVersion: (version: string) => void;
   onInstall: (release: StoreReleaseOption, confirmed_channel_switch?: boolean) => void;
   onOpen: () => void;
+  permissions_action?: ReactNode;
   onRefresh: () => void;
   onBack: () => void;
   back_label?: string;
@@ -126,6 +128,7 @@ export function StoreDetailView({
     (release.action === 'update' ||
       (!installed_source && release.action === 'install') ||
       confirm_required);
+  const open_without_release = installed && (!fresh || !release);
   return (
     <section className="store-detail" aria-label={detail.applet.name} aria-busy={refreshing}>
       <div className="store-toolbar">
@@ -175,14 +178,17 @@ export function StoreDetailView({
         </div>
       </div>
       <p className="store-description">{detail.applet.description}</p>
-      {installed && (!fresh || !release) && (
+      {(open_without_release || permissions_action) && (
         <div className="store-form-actions store-description">
-          <StoreOpenButton
-            restart_required={restart_required}
-            busy={busy}
-            opening={opening}
-            onOpen={onOpen}
-          />
+          {open_without_release && (
+            <StoreOpenButton
+              restart_required={restart_required}
+              busy={busy}
+              opening={opening}
+              onOpen={onOpen}
+            />
+          )}
+          {permissions_action}
         </div>
       )}
       <div className="store-detail-layout">

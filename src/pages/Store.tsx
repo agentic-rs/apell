@@ -1,8 +1,14 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import type { AppletSession, StorePendingDownload, StoreSwitchSnapshot } from '../lib/types';
-import { storeChannelName } from '../lib/storeState';
+import type {
+  AppletSession,
+  InstalledApplet,
+  StorePendingDownload,
+  StoreSwitchSnapshot,
+} from '../lib/types';
+import { installedStoreChannel, storeChannelName } from '../lib/storeState';
 import { useBackAction } from '../lib/backNavigation';
 import { AppletIcon } from '../components/AppletIcon';
+import { InstalledDevicePermissionsSheet } from '../components/InstalledDevicePermissionsSheet';
 import { RestorePackageSheet } from '../components/RestorePackageSheet';
 import { Sheet } from '../components/Sheet';
 import { StoreAddress } from '../components/store/StoreAddress';
@@ -47,6 +53,7 @@ export function Store({
   const [download_return_id, setDownloadReturnId] = useState<string>();
   const [repair, setRepair] = useState<RepairDownload>();
   const [repair_status, setRepairStatus] = useState('');
+  const [permission_applet, setPermissionApplet] = useState<InstalledApplet>();
   const downloads_request_handled = useRef(0);
   const downloads_requested = downloads_request > downloads_request_handled.current;
   const state = useStore(onLaunch, onBusyChange, downloads.refresh, {
@@ -56,6 +63,7 @@ export function Store({
   const downloads_heading = useRef<HTMLHeadingElement>(null);
   const download_return = useRef<HTMLButtonElement>(null);
   const detail_route = useRef<HTMLDivElement>(null);
+  const permission_return = useRef<HTMLButtonElement>(null);
   const address_heading = useRef<HTMLHeadingElement>(null);
   const catalog = useRef<HTMLElement>(null);
   const browse_return = useRef<BrowseReturn>(undefined);
@@ -69,6 +77,29 @@ export function Store({
   const opening = state.operation === 'open' || state.operation === 'restart';
   const installed_source = state.installed?.source;
   const reviewing_download = state.reviewing_download;
+  const installed = state.installed;
+  const can_manage_permissions =
+    !reviewing_download &&
+    installed?.applet_id === state.selected_id &&
+    state.selected_id &&
+    state.selected_store_url &&
+    installedStoreChannel(state.selected_store_url, state.selected_id, installed ?? null);
+  const permissions_action = can_manage_permissions ? (
+    <button
+      type="button"
+      id="store-installed-permissions"
+      aria-haspopup="dialog"
+      disabled={!!state.operation}
+      onClick={(event) => {
+        if (!installed || state.operation) return;
+        event.currentTarget.focus({ preventScroll: true });
+        permission_return.current = event.currentTarget;
+        setPermissionApplet(installed);
+      }}
+    >
+      Device permissions
+    </button>
+  ) : undefined;
   const paused_download_missing =
     reviewing_download &&
     !state.operation &&
@@ -176,6 +207,17 @@ export function Store({
     const target = entry && !entry.disabled ? entry : downloads_heading.current;
     target?.focus({ preventScroll: true });
   }, [repair]);
+  useEffect(() => {
+    const trigger = permission_return.current;
+    if (permission_applet || !trigger) return;
+    permission_return.current = null;
+    if (page !== 'detail' || (trigger.isConnected && !trigger.disabled)) return;
+    const route = detail_route.current;
+    const next = route?.querySelector<HTMLButtonElement>(
+      '#store-installed-permissions:not(:disabled)',
+    );
+    (next ?? route)?.focus({ preventScroll: true });
+  }, [permission_applet, page]);
 
   const rememberListScroll = () => {
     if (page !== 'address' && page !== 'detail') list_scroll.current[page] = window.scrollY;
@@ -199,6 +241,7 @@ export function Store({
   const openDownloads = (from_library = false) => {
     if (state.operation) return;
     state.setAddressOpen(false);
+    setPermissionApplet(undefined);
     state.closeDetail();
     browse_return.current = undefined;
     list_scroll.current.downloads = 0;
@@ -306,6 +349,7 @@ export function Store({
               onVersion={state.setSelectedVersion}
               onInstall={state.install}
               onOpen={state.openApplet}
+              permissions_action={permissions_action}
               onRefresh={state.retryDetail}
               onBack={state.closeDetail}
               back_label={downloads_open ? 'Back to downloads' : undefined}
@@ -345,6 +389,7 @@ export function Store({
                       opening={opening}
                       onOpen={state.openApplet}
                     />
+                    {permissions_action}
                   </div>
                 </div>
               )}
@@ -435,6 +480,15 @@ export function Store({
           }}
         />
       )}
+      {permission_applet &&
+        page === 'detail' &&
+        permission_applet.applet_id === state.selected_id && (
+          <InstalledDevicePermissionsSheet
+            key={permission_applet.applet_id}
+            applet={permission_applet}
+            onClose={() => setPermissionApplet(undefined)}
+          />
+        )}
       {reviewing_download && !paused_download_missing && (
         <DiscardDownload
           name={reviewing_download.name}

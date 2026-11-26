@@ -36,6 +36,15 @@
   overflow-wrap: normal;
 }
 
+.applet-info .installed-permissions-source > div {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 4px;
+}
+
+.applet-info .installed-permissions-source dd {
+  text-align: start;
+}
+
 .applet-info .applet-channel p {
   margin: 0;
   font-size: 0.875rem;

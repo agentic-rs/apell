@@ -23,6 +23,20 @@ function installation({ applet, permissions }: AppletInfo): AppletInstallation {
   };
 }
 
+export function AppletInfoIdentity({ applet }: { applet: InstalledApplet }) {
+  return (
+    <div className="applet-info-identity">
+      <span className="applet-icon" aria-hidden="true">
+        <AppletIcon applet={applet} />
+      </span>
+      <div>
+        <h3>{applet.name}</h3>
+        <p>Version {applet.version}</p>
+      </div>
+    </div>
+  );
+}
+
 export function AppletInfoSheet({
   applet,
   onClose,
@@ -56,15 +70,7 @@ export function AppletInfoSheet({
   return (
     <Sheet open title="Applet info" dismissible={!installing && !saving} onClose={onClose}>
       <div className="applet-info">
-        <div className="applet-info-identity">
-          <span className="applet-icon" aria-hidden="true">
-            <AppletIcon applet={current} />
-          </span>
-          <div>
-            <h3>{current.name}</h3>
-            <p>Version {current.version}</p>
-          </div>
-        </div>
+        <AppletInfoIdentity applet={current} />
         {error && (
           <div role="alert">
             <p className="status error">Couldn’t refresh applet info. {error}</p>
