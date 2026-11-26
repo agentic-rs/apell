@@ -305,7 +305,7 @@ export function ConnectionEditor(props: EditorProps) {
           </p>
           {stale_review.staged_sign_in && <p>The temporary sign-in for this draft ended.</p>}
           <button type="button" onClick={goBack}>
-            Review saved connections
+            {props.back_label ? `Back to ${props.back_label}` : 'Review saved connections'}
           </button>
         </div>
       )}

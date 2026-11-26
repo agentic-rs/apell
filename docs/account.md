@@ -265,8 +265,8 @@ if Apell cannot reach the service to determine how to verify it.
 On a verified device, **Encrypted API keys** also lists eligible keys saved on
 this device that are outside the current Account’s sync. A key saved while
 signed out can remain outside sync after you sign in again. To sync that key
-with this Account, open **Model connections** from the list, enter the key
-again, and save the connection.
+with this Account, select **Edit** on its connection, enter the key again, and
+save the connection.
 Apell keeps local and cloud copies when both have changed independently.
 Choose **Review key conflicts** to see which connections are affected and
 whether each side has a key. Confirm a choice for each connection. Keeping

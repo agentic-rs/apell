@@ -689,10 +689,29 @@ svg {
   cursor: pointer;
   font-weight: 600;
 }
-.key-sync-coverage ul {
+.key-sync-connections {
+  display: grid;
+  gap: 6px;
   margin: 0;
-  padding: 0 0 0 20px;
+  padding: 0;
+  list-style: none;
+}
+.key-sync-connection {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  text-align: start;
+}
+.key-sync-connection-identity {
+  display: grid;
+  gap: 2px;
   overflow-wrap: anywhere;
+}
+.key-sync-connection small,
+.key-sync-connection > span:last-child {
+  color: var(--muted);
 }
 .key-sync-coverage .key-sync-option {
   margin-top: 8px;

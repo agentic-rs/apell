@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
   approveKeySyncPairing,
   cancelKeySyncPairing,
@@ -20,6 +20,7 @@ import type {
   KeySyncPairing,
   KeySyncRecovery,
   KeySyncStatus,
+  LlmConnection,
   LlmProvider,
   LocalKeySyncStatus,
 } from '../lib/types';
@@ -337,12 +338,13 @@ function Approvals({
 interface Props {
   account_session_id: string;
   providers: LlmProvider[];
+  connections: LlmConnection[];
   disabled: boolean;
   model_sync_enabled?: boolean;
   model_review_needed: boolean;
   onApplied: () => void;
   onBusyChange: (busy: boolean) => void;
-  onOpenConnections: () => void;
+  onOpenConnections: (trigger: HTMLButtonElement, connection_id?: string) => void;
 }
 
 const sync_labels = {
@@ -400,6 +402,7 @@ async function cancelRequest(account_session_id: string, flow: Flow | undefined)
 export function EncryptedKeySync({
   account_session_id,
   providers,
+  connections,
   disabled,
   model_sync_enabled,
   model_review_needed,
@@ -423,6 +426,9 @@ export function EncryptedKeySync({
   const retry_scope = useRef(new OperationScope());
   const read_version = useRef(0);
   const visible = useRef(false);
+  const heading = useRef<HTMLHeadingElement>(null);
+  const coverage_focus = useRef<HTMLElement>(undefined);
+  const outside_keys = status?.state === 'verified' ? status.keys_outside_account : null;
   const isCurrentFlow = useCallback((request: Flow) => active_flow.current === request, []);
 
   function showFlow(next?: Flow) {
@@ -485,6 +491,12 @@ export function EncryptedKeySync({
       retry_scope.current.cancel();
     };
   }, [account_session_id]);
+  useLayoutEffect(() => {
+    if (coverage_focus.current?.isConnected === false) {
+      coverage_focus.current = undefined;
+      if (document.activeElement === document.body) heading.current?.focus({ preventScroll: true });
+    }
+  }, [outside_keys, status_error]);
 
   async function retry() {
     const operation = retry_scope.current.start();
@@ -577,11 +589,23 @@ export function EncryptedKeySync({
     ['failed', 'waiting_for_model_settings', 'conflict'].includes(status.sync_state);
   const can_review =
     !status_error && status?.state === 'verified' && status.sync_state === 'conflict';
-  const outside_keys = status?.state === 'verified' ? status.keys_outside_account : null;
+  const coverage_rows =
+    outside_keys?.map(({ connection_id, name }) => {
+      const connection = connections.find((item) => item.connection_id === connection_id);
+      const provider = providers.find((item) => item.provider_id === connection?.provider_id);
+      const detail = connection
+        ? [provider?.name ?? connection.provider_id, connection.model_id]
+            .filter(Boolean)
+            .join(' · ')
+        : '';
+      return { connection_id, name, detail };
+    }) ?? [];
 
   return (
     <section className="account-key-sync" aria-label="Encrypted API keys">
-      <h3>Encrypted API keys</h3>
+      <h3 ref={heading} tabIndex={-1}>
+        Encrypted API keys
+      </h3>
       {!status && !status_error && <p role="status">Checking device…</p>}
       {status?.state === 'unavailable' && (
         <p role="status">Encrypted API-key sync is unavailable in this build.</p>
@@ -605,24 +629,68 @@ export function EncryptedKeySync({
                 {status.sync_error}
               </p>
             )}
-          {!status_error && !!outside_keys?.length && (
-            <details className="key-sync-coverage">
+          {!status_error && coverage_rows.length > 0 && (
+            <details
+              className="key-sync-coverage"
+              onFocus={(event) => {
+                coverage_focus.current = event.target;
+              }}
+            >
               <summary>
-                {outside_keys.length} {outside_keys.length === 1 ? 'API key' : 'API keys'} outside
+                {coverage_rows.length} {coverage_rows.length === 1 ? 'API key' : 'API keys'} outside
                 this Account’s sync
               </summary>
               <div className="key-sync-option">
-                <ul>
-                  {outside_keys.map(({ connection_id, name }) => (
-                    <li key={connection_id}>
-                      <bdi>{name}</bdi>
-                    </li>
-                  ))}
-                </ul>
                 <p>
-                  To sync one of these keys with this Account, enter it again in Model connections.
+                  To sync a key with this Account, edit its connection, enter the key again, and
+                  save.
                 </p>
-                <button type="button" disabled={button_disabled} onClick={onOpenConnections}>
+                <ul
+                  className="key-sync-connections"
+                  aria-label="Connections with keys outside sync"
+                >
+                  {coverage_rows.map(({ connection_id, name, detail }) => {
+                    const duplicate = coverage_rows.some(
+                      (other) =>
+                        other.connection_id !== connection_id &&
+                        other.name === name &&
+                        other.detail === detail,
+                    );
+                    const description = [detail, duplicate ? connection_id : '']
+                      .filter(Boolean)
+                      .join(' · ');
+                    return (
+                      <li key={connection_id}>
+                        <button
+                          className="key-sync-connection"
+                          type="button"
+                          aria-label={
+                            description ? `Edit ${name} (${description})` : `Edit ${name}`
+                          }
+                          disabled={button_disabled || retrying}
+                          onClick={(event) => onOpenConnections(event.currentTarget, connection_id)}
+                        >
+                          <span className="key-sync-connection-identity">
+                            <strong>
+                              <bdi>{name}</bdi>
+                            </strong>
+                            {description && (
+                              <small>
+                                <bdi>{description}</bdi>
+                              </small>
+                            )}
+                          </span>
+                          <span aria-hidden="true">Edit</span>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+                <button
+                  type="button"
+                  disabled={button_disabled || retrying}
+                  onClick={(event) => onOpenConnections(event.currentTarget)}
+                >
                   Open model connections
                 </button>
               </div>

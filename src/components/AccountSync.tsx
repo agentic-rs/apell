@@ -19,6 +19,7 @@ import type {
   ConfigSyncConflict,
   ConfigSyncResolution,
   ConfigSyncStatus,
+  LlmConnection,
   LlmProvider,
 } from '../lib/types';
 import { AccountSignIn } from './AccountSignIn';
@@ -53,14 +54,16 @@ function modelSyncLabel(
 
 interface AccountSyncProps {
   providers: LlmProvider[];
+  connections: LlmConnection[];
   disabled: boolean;
   onApplied: () => void;
   onSyncBusyChange: (busy: boolean) => void;
-  onOpenConnections: () => void;
+  onOpenConnections: (trigger: HTMLButtonElement, connection_id?: string) => void;
 }
 
 export function AccountSync({
   providers,
+  connections,
   disabled,
   onApplied,
   onSyncBusyChange,
@@ -469,6 +472,7 @@ export function AccountSync({
             key={account.account_session_id}
             account_session_id={account.account_session_id}
             providers={providers}
+            connections={connections}
             model_review_needed={pending_conflict}
             model_sync_enabled={
               model_status_unavailable || sync?.state === 'disabled'

@@ -20,11 +20,17 @@ import { SettingsTransfer } from '../components/SettingsTransfer';
 import { SettingsMenu, type SettingsSection } from '../components/SettingsMenu';
 import { DefaultModelSettings } from '../components/DefaultModelSettings';
 
+interface AccountConnectionVisit {
+  trigger: HTMLButtonElement;
+  scroll: number;
+  pending_connection_id?: string;
+}
+
 export function Settings() {
   const [section, setSection] = useState<SettingsSection | null>(null);
   const [visited_permissions, setVisitedPermissions] = useState(false);
   const [settings, setSettings] = useState<LlmSettings>();
-  const [editor, setEditor] = useState<{ connection?: LlmConnection }>();
+  const [editor, setEditor] = useState<{ connection?: LlmConnection; from_account?: boolean }>();
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [syncing, setSyncing] = useState(false);
@@ -32,28 +38,41 @@ export function Settings() {
   const [load_error, setLoadError] = useState('');
   const [status, setStatus] = useState('');
   const scope = useRef(new OperationScope());
+  const settings_change = useRef(0);
   const previous_section = useRef<SettingsSection | null>(null);
   const menu_scroll = useRef(0);
-  const connections_from_account = useRef(false);
+  const account_visit = useRef<AccountConnectionVisit>(undefined);
+  const account_return = useRef<AccountConnectionVisit>(undefined);
   const editor_return = useRef<{ id: string; scroll: number }>(undefined);
 
+  const invalidateSettings = () => {
+    settings_change.current += 1;
+    setReloadRequested(true);
+  };
+
+  const returnToAccount = () => {
+    account_return.current = account_visit.current;
+    account_visit.current = undefined;
+    setSection('account');
+  };
   useBackAction(10, section !== null, () => {
     if (busy || syncing) return;
     setStatus('');
-    if (section === 'connections' && connections_from_account.current) {
-      connections_from_account.current = false;
-      setSection('account');
-    } else {
-      setSection(null);
-    }
+    if (section === 'connections' && account_visit.current) returnToAccount();
+    else setSection(null);
   });
   useLayoutEffect(() => {
     const previous = previous_section.current;
     if (previous === section) return;
     previous_section.current = section;
     const target = section ? `settings-${section}` : `settings-open-${previous}`;
-    window.scrollTo(0, section ? 0 : menu_scroll.current);
-    document.getElementById(target)?.focus({ preventScroll: true });
+    const returning = section === 'account' ? account_return.current : undefined;
+    account_return.current = undefined;
+    const trigger = returning?.trigger;
+    const focus =
+      trigger?.isConnected && !trigger.disabled ? trigger : document.getElementById(target);
+    window.scrollTo(0, returning?.scroll ?? (section ? 0 : menu_scroll.current));
+    focus?.focus({ preventScroll: true });
   }, [section]);
   useLayoutEffect(() => {
     if (editor) {
@@ -77,15 +96,29 @@ export function Settings() {
   const load = async () => {
     const operation = scope.current.start();
     if (!operation) return;
+    const visit = account_visit.current;
+    const requested_id = visit?.pending_connection_id;
+    const observed_change = settings_change.current;
+    const isCurrentVisit = () =>
+      visit === account_visit.current && observed_change === settings_change.current;
     setLoading(true);
     setLoadError('');
     try {
       const result = await getSettings();
-      if (operation.isCurrent()) setSettings(result);
+      if (!operation.isCurrent()) return;
+      setSettings(result);
+      if (requested_id && isCurrentVisit()) {
+        const connection = result.connections.find(
+          ({ connection_id }) => connection_id === requested_id,
+        );
+        if (connection) setEditor({ connection, from_account: true });
+        else setStatus('This connection is no longer saved on this device.');
+      }
     } catch (error) {
       if (operation.isCurrent()) setLoadError(message(error));
     } finally {
       if (operation.isCurrent()) {
+        if (visit && isCurrentVisit()) visit.pending_connection_id = undefined;
         operation.finish();
         setLoading(false);
       }
@@ -99,7 +132,7 @@ export function Settings() {
   useEffect(() => {
     let active = true;
     const refresh = () => {
-      if (active) setReloadRequested(true);
+      if (active) invalidateSettings();
     };
     const unsubscribe = [onLlmSettingsChanged(refresh), onAccountChanged(refresh)].map(
       (subscription) => subscription.catch(() => undefined),
@@ -164,12 +197,19 @@ export function Settings() {
   const connections_editor = editor && settings && (
     <ConnectionEditor
       connection={editor.connection}
-      back_label={section === 'default-model' ? 'Default model' : undefined}
+      back_label={
+        editor.from_account
+          ? 'Apell Account'
+          : section === 'default-model'
+            ? 'Default model'
+            : undefined
+      }
       providers={settings.providers}
       active_connection_id={settings.active_connection_id}
       onBack={(refresh) => {
         setEditor(undefined);
         setStatus('');
+        if (editor.from_account) returnToAccount();
         if (refresh) setReloadRequested(true);
       }}
       onSaved={(connection, previous_id) => {
@@ -211,6 +251,7 @@ export function Settings() {
         );
         setEditor(undefined);
         setStatus('');
+        if (editor.from_account) returnToAccount();
         setReloadRequested(true);
       }}
     />
@@ -226,9 +267,21 @@ export function Settings() {
         Model connections
       </h2>
       {settings && !settings.connections.length && <p>Add a provider connection to use models.</p>}
-      {loading && !settings && (
+      {!!account_visit.current?.pending_connection_id ? (
         <p className="status connection-status" role="status">
-          Loading connections…
+          Checking connection…
+        </p>
+      ) : (
+        loading &&
+        !settings && (
+          <p className="status connection-status" role="status">
+            Loading connections…
+          </p>
+        )
+      )}
+      {status && (
+        <p className="status connection-status error" role="alert">
+          {status}
         </p>
       )}
       {!!settings?.connections.length && (
@@ -317,12 +370,15 @@ export function Settings() {
       <Activity mode={section === 'account' ? 'visible' : 'hidden'}>
         <AccountSync
           providers={settings?.providers ?? []}
+          connections={settings?.connections ?? []}
           disabled={settings_mutation_pending}
-          onApplied={() => setReloadRequested(true)}
+          onApplied={invalidateSettings}
           onSyncBusyChange={setSyncing}
-          onOpenConnections={() => {
-            connections_from_account.current = true;
+          onOpenConnections={(trigger, pending_connection_id) => {
+            account_visit.current = { trigger, scroll: window.scrollY, pending_connection_id };
+            setStatus('');
             setSection('connections');
+            if (pending_connection_id) setReloadRequested(true);
           }}
         />
       </Activity>
