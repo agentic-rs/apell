@@ -31,8 +31,17 @@ struct ShellAppletList {
 struct InstalledPermissionChange {
   applet_id: String,
   installed_revision: String,
+  grant_revision: String,
   permission: ManagedPermission,
   mode: PermissionMode,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PermissionReset {
+  applet_id: String,
+  permission: ManagedPermission,
+  grant_revision: String,
 }
 
 #[derive(Deserialize)]
@@ -287,16 +296,11 @@ pub async fn shell_command(
       if !change.permission.available() {
         return Err("This permission is unavailable on this platform.".into());
       }
-      let install_gate = host
-        .store_gate
-        .clone()
-        .try_lock_owned()
-        .map_err(|_| "Wait for the applet installation to finish before changing permissions.")?;
       blocking(move || {
-        let _install = install_gate;
         let mode = app.state::<Host>().set_installed_permission(
           &change.applet_id,
           &change.installed_revision,
+          &change.grant_revision,
           change.permission,
           change.mode,
         )?;
@@ -306,13 +310,14 @@ pub async fn shell_command(
       .await
     }
     "permissions.forget" => {
-      let applet_id = string(&params, "applet_id")?.to_owned();
-      let permission = serde_json::from_value(params["permission"].clone())
-        .map_err(|_| "Choose an applet permission.")?;
+      let reset: PermissionReset =
+        serde_json::from_value(params).map_err(|_| "Choose a saved applet permission.")?;
       blocking(move || {
-        app
-          .state::<Host>()
-          .forget_permission(&applet_id, permission)?;
+        app.state::<Host>().forget_permission(
+          &reset.applet_id,
+          reset.permission,
+          &reset.grant_revision,
+        )?;
         permissions::publish_device_change(&app);
         Ok(Value::Null)
       })

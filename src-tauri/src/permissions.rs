@@ -1,6 +1,9 @@
 use crate::host::Host;
 use apell_core::{
-  bundles::{digest, AppletListReport, InstalledApplet, PackageSource},
+  bundles::{
+    digest, AppletListReport, AppletReportEntry, InstalledApplet, PackageSource,
+    StoreSwitchSnapshot, UnavailableApplet,
+  },
   config::ConfigStore,
 };
 use serde::{Deserialize, Serialize};
@@ -194,6 +197,46 @@ fn blocked_value(source: &GrantSource) -> Value {
   json!({"mode": PermissionMode::Blocked, "source": source})
 }
 
+pub(crate) const GRANT_CHANGED: &str =
+  "This permission changed. Review the current setting and try again.";
+
+#[derive(Serialize)]
+enum GrantTarget<'a> {
+  Installed(&'a str),
+  Unavailable(Option<&'a StoreSwitchSnapshot>, &'a str),
+}
+
+impl<'a> From<&'a UnavailableApplet> for GrantTarget<'a> {
+  fn from(applet: &'a UnavailableApplet) -> Self {
+    Self::Unavailable(applet.active_snapshot.as_ref(), &applet.error)
+  }
+}
+
+fn grant_revision(
+  applet_id: &str,
+  permission: ManagedPermission,
+  target: &GrantTarget<'_>,
+  stored: Option<&Value>,
+) -> Result<String, String> {
+  // Including presence distinguishes an absent setting from a stored JSON null.
+  let snapshot = serde_json::to_vec(&(applet_id, permission, target, stored.is_some(), stored))
+    .map_err(|_| "Could not encode the reviewed permission setting.")?;
+  Ok(digest(&snapshot))
+}
+
+fn permission_access(stored: Option<&Value>, source: Option<&GrantSource>) -> PermissionAccess {
+  match stored {
+    None => PermissionAccess::Ask,
+    Some(value) if source.is_some_and(|source| *value == json!(source)) => {
+      PermissionAccess::Remembered
+    }
+    Some(value) if source.is_some_and(|source| *value == blocked_value(source)) => {
+      PermissionAccess::Blocked
+    }
+    Some(_) => PermissionAccess::PreviousPackage,
+  }
+}
+
 /// Separate host storage. The applet config bridge cannot access grants.
 pub struct PermissionGrants(ConfigStore);
 
@@ -218,7 +261,8 @@ impl PermissionGrants {
     applet_id: &str,
     source: &GrantSource,
   ) -> Result<PermissionMode, String> {
-    Ok(self.access(permission, applet_id, Some(source))?.mode())
+    let stored = self.saved_grant(permission, applet_id)?;
+    Ok(permission_access(stored.as_ref(), Some(source)).mode())
   }
 
   /// Check the applet's policy before device access. True skips Apell's prompt.
@@ -260,25 +304,83 @@ impl PermissionGrants {
     Ok(mode)
   }
 
-  fn access(
+  fn saved_grant(
     &self,
     permission: ManagedPermission,
     applet_id: &str,
-    source: Option<&GrantSource>,
-  ) -> Result<PermissionAccess, String> {
-    let stored = self
-      .0
-      .dispatch(applet_id, "config.get", json!({"key": permission.label()}))?;
-    Ok(match stored.get("value") {
-      None => PermissionAccess::Ask,
-      Some(value) if source.is_some_and(|source| *value == json!(source)) => {
-        PermissionAccess::Remembered
+  ) -> Result<Option<Value>, String> {
+    let mut record =
+      self
+        .0
+        .dispatch(applet_id, "config.get", json!({"key": permission.label()}))?;
+    Ok(
+      record
+        .as_object_mut()
+        .and_then(|record| record.remove("value")),
+    )
+  }
+
+  fn checked_grant(
+    &self,
+    applet_id: &str,
+    permission: ManagedPermission,
+    target: &GrantTarget<'_>,
+    expected: &str,
+  ) -> Result<Option<Value>, String> {
+    let current = self.saved_grant(permission, applet_id)?;
+    if grant_revision(applet_id, permission, target, current.as_ref())? != expected {
+      return Err(GRANT_CHANGED.into());
+    }
+    Ok(current)
+  }
+
+  pub(crate) fn set_reviewed_mode(
+    &self,
+    applet: &InstalledApplet,
+    installed_revision: &str,
+    expected_grant: &str,
+    permission: ManagedPermission,
+    mode: PermissionMode,
+  ) -> Result<PermissionMode, String> {
+    let applet_id = &applet.manifest.applet_id;
+    self.checked_grant(
+      applet_id,
+      permission,
+      &GrantTarget::Installed(installed_revision),
+      expected_grant,
+    )?;
+    self.set_mode(permission, applet_id, &GrantSource::from(applet), mode)
+  }
+
+  pub(crate) fn reset_reviewed(
+    &self,
+    applet_id: &str,
+    target: AppletReportEntry,
+    permission: ManagedPermission,
+    expected_grant: &str,
+  ) -> Result<(), String> {
+    let current = match target {
+      AppletReportEntry::Installed(applet) => {
+        let revision = installed_revision(&applet)?;
+        self.checked_grant(
+          applet_id,
+          permission,
+          &GrantTarget::Installed(&revision),
+          expected_grant,
+        )?
       }
-      Some(value) if source.is_some_and(|source| *value == blocked_value(source)) => {
-        PermissionAccess::Blocked
-      }
-      Some(_) => PermissionAccess::PreviousPackage,
-    })
+      AppletReportEntry::Unavailable(applet) => self.checked_grant(
+        applet_id,
+        permission,
+        &GrantTarget::from(&applet),
+        expected_grant,
+      )?,
+      AppletReportEntry::Retained(_) => return Err(GRANT_CHANGED.into()),
+    };
+    if current.is_none() {
+      return Err(GRANT_CHANGED.into());
+    }
+    self.forget(permission, applet_id)
   }
 
   pub fn remember(
@@ -322,10 +424,12 @@ impl PermissionGrants {
     applet_id: &str,
     source: Option<&GrantSource>,
     declared: &[String],
+    target: &GrantTarget<'_>,
   ) -> Result<Vec<GrantSummary>, String> {
     let mut grants = Vec::new();
     for permission in ManagedPermission::ALL {
-      let access = self.access(permission, applet_id, source)?;
+      let stored = self.saved_grant(permission, applet_id)?;
+      let access = permission_access(stored.as_ref(), source);
       let declared = declared
         .iter()
         .any(|group| group == permission.manifest_group());
@@ -340,6 +444,7 @@ impl PermissionGrants {
       grants.push(GrantSummary {
         permission,
         access,
+        grant_revision: grant_revision(applet_id, permission, target, stored.as_ref())?,
         mode: (declared && source.is_some()).then_some(access.mode()),
         available: permission.available(),
         system_authorization: SystemAuthorization::Unknown,
@@ -357,7 +462,12 @@ impl PermissionGrants {
     let revision = installed_revision(applet)?;
     let source = GrantSource::from(applet);
     let manifest = &applet.manifest;
-    let grants = self.summary(&manifest.applet_id, Some(&source), &manifest.permissions)?;
+    let grants = self.summary(
+      &manifest.applet_id,
+      Some(&source),
+      &manifest.permissions,
+      &GrantTarget::Installed(&revision),
+    )?;
     Ok(AppletPermissionSummary {
       applet_id: manifest.applet_id.clone(),
       name: manifest.name.clone(),
@@ -394,7 +504,7 @@ impl PermissionGrants {
       entries.push(self.installed_summary(&applet, restart_required)?);
     }
     for applet in report.unavailable {
-      let grants = self.summary(&applet.applet_id, None, &[])?;
+      let grants = self.summary(&applet.applet_id, None, &[], &GrantTarget::from(&applet))?;
       if !grants.is_empty() {
         entries.push(AppletPermissionSummary {
           applet_id: applet.applet_id.clone(),
@@ -408,12 +518,33 @@ impl PermissionGrants {
     }
     Ok(entries)
   }
+
+  #[cfg(test)]
+  pub(crate) fn reported_grant_revision(
+    &self,
+    report: AppletListReport,
+    applet_id: &str,
+    permission: ManagedPermission,
+  ) -> String {
+    self
+      .summaries(report, &HashSet::new())
+      .unwrap()
+      .into_iter()
+      .find(|entry| entry.applet_id == applet_id)
+      .unwrap()
+      .grants
+      .into_iter()
+      .find(|grant| grant.permission == permission)
+      .unwrap()
+      .grant_revision
+  }
 }
 
 #[derive(Serialize)]
 struct GrantSummary {
   permission: ManagedPermission,
   access: PermissionAccess,
+  grant_revision: String,
   #[serde(skip_serializing_if = "Option::is_none")]
   mode: Option<PermissionMode>,
   available: bool,
@@ -625,6 +756,7 @@ mod tests {
       grants: vec![GrantSummary {
         permission: ManagedPermission::Microphone,
         access,
+        grant_revision: "fixture".into(),
         mode: declared.then_some(access.mode()),
         available: true,
         system_authorization: SystemAuthorization::Unknown,
@@ -876,37 +1008,45 @@ mod tests {
       sha256: "b".repeat(64),
     };
     let applet_id = "fixture";
+    let target = GrantTarget::Installed("fixture-package");
+    let unverified = GrantTarget::Unavailable(None, "Fixture unavailable.");
+    let saved = json!(source);
+    let saved_revision = grant_revision(applet_id, Camera, &target, Some(&saved)).unwrap();
+    let unverified_revision = grant_revision(applet_id, Camera, &unverified, Some(&saved)).unwrap();
+    let ask_revision = grant_revision(applet_id, Location, &target, None).unwrap();
     grants.remember(Camera, applet_id, &source).unwrap();
     assert!(!grants.remembered(Location, applet_id, &source).unwrap());
     assert!(!grants.remembered(Microphone, applet_id, &source).unwrap());
     let sensors_available = cfg!(any(target_os = "ios", target_os = "android"));
     assert_eq!(
       json!(grants
-        .summary(applet_id, Some(&updated), &["location".into()])
+        .summary(applet_id, Some(&updated), &["location".into()], &target)
         .unwrap()),
       json!([
-        {"permission":"camera","access":"previous_package","available":sensors_available,"system_authorization":"unknown"},
-        {"permission":"location","access":"ask","mode":"ask","available":sensors_available,"system_authorization":"unknown"},
+        {"permission":"camera","access":"previous_package","grant_revision":saved_revision,"available":sensors_available,"system_authorization":"unknown"},
+        {"permission":"location","access":"ask","grant_revision":ask_revision,"mode":"ask","available":sensors_available,"system_authorization":"unknown"},
       ]),
     );
     assert_eq!(
       json!(grants
-        .summary(applet_id, Some(&source), &["camera".into()])
+        .summary(applet_id, Some(&source), &["camera".into()], &target)
         .unwrap()),
-      json!([{"permission":"camera","access":"remembered","mode":"remembered","available":sensors_available,"system_authorization":"unknown"}]),
+      json!([{"permission":"camera","access":"remembered","grant_revision":saved_revision,"mode":"remembered","available":sensors_available,"system_authorization":"unknown"}]),
     );
     assert_eq!(
-      json!(grants.summary(applet_id, Some(&source), &[]).unwrap()),
-      json!([{"permission":"camera","access":"undeclared","available":sensors_available,"system_authorization":"unknown"}]),
+      json!(grants
+        .summary(applet_id, Some(&source), &[], &target)
+        .unwrap()),
+      json!([{"permission":"camera","access":"undeclared","grant_revision":saved_revision,"available":sensors_available,"system_authorization":"unknown"}]),
     );
     assert_eq!(
-      json!(grants.summary(applet_id, None, &[]).unwrap()),
-      json!([{"permission":"camera","access":"unverified_package","available":sensors_available,"system_authorization":"unknown"}]),
+      json!(grants.summary(applet_id, None, &[], &unverified).unwrap()),
+      json!([{"permission":"camera","access":"unverified_package","grant_revision":unverified_revision,"available":sensors_available,"system_authorization":"unknown"}]),
     );
     grants.remember(Location, applet_id, &updated).unwrap();
     grants.forget(Camera, applet_id).unwrap();
     assert!(grants
-      .summary(applet_id, Some(&source), &[])
+      .summary(applet_id, Some(&source), &[], &target)
       .unwrap()
       .iter()
       .all(|grant| grant.permission != Camera));
@@ -925,6 +1065,7 @@ mod tests {
       sha256: "b".repeat(64),
     };
     let applet_id = "fixture";
+    let target = GrantTarget::Installed("fixture-package");
     let declared = vec!["audio".into(), "camera".into(), "location".into()];
     for permission in ManagedPermission::ALL {
       grants.remember(permission, applet_id, &source).unwrap();
@@ -941,10 +1082,10 @@ mod tests {
 
     let reopened = PermissionGrants::new(dir.path().into());
     let summary = reopened
-      .summary(applet_id, Some(&source), &declared)
+      .summary(applet_id, Some(&source), &declared, &target)
       .unwrap();
     let replacement_summary = reopened
-      .summary(applet_id, Some(&replacement), &declared)
+      .summary(applet_id, Some(&replacement), &declared, &target)
       .unwrap();
     for ((permission, active), previous) in ManagedPermission::ALL
       .into_iter()

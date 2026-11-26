@@ -1,5 +1,7 @@
 use crate::host::{Host, Session};
-use crate::permissions::{installed_revision, GrantSource, ManagedPermission, PermissionMode};
+use crate::permissions::{
+  installed_revision, GrantSource, ManagedPermission, PermissionMode, GRANT_CHANGED,
+};
 use apell_core::bundles::{Bundle, InstalledApplet, Manifest, PackageSource, StoreSource};
 use apell_runtime::{HostError, HostEvents, HostServices, RuntimeHandle, ServiceFuture};
 use serde::Serialize;
@@ -413,28 +415,40 @@ impl Host {
     &self,
     applet_id: &str,
     permission: ManagedPermission,
+    expected_grant: &str,
   ) -> Result<(), String> {
     self.edit_detached_permission(applet_id, permission, || {
-      self.grants.forget(permission, applet_id)
+      let target = self
+        .bundles
+        .report_applet(applet_id)?
+        .ok_or(GRANT_CHANGED)?;
+      self
+        .grants
+        .reset_reviewed(applet_id, target, permission, expected_grant)
     })
   }
 
-  /// The caller holds the Store gate through the read and edit.
   pub fn set_installed_permission(
     &self,
     applet_id: &str,
     expected_revision: &str,
+    expected_grant: &str,
     permission: ManagedPermission,
     mode: PermissionMode,
   ) -> Result<PermissionMode, String> {
-    let applet = self.bundles.installed(applet_id)?;
-    if installed_revision(&applet)? != expected_revision {
-      return Err("This applet changed. Review its current permissions and try again.".into());
-    }
-    require_declared_permission(&applet.manifest, permission)?;
-    let source = GrantSource::from(&applet);
     self.edit_detached_permission(applet_id, permission, || {
-      self.grants.set_mode(permission, applet_id, &source, mode)
+      let applet = self
+        .bundles
+        .installed(applet_id)
+        .map_err(|_| GRANT_CHANGED.to_owned())?;
+      let revision = installed_revision(&applet)?;
+      if revision != expected_revision {
+        return Err(GRANT_CHANGED.into());
+      }
+      require_declared_permission(&applet.manifest, permission)?;
+      self
+        .grants
+        .set_reviewed_mode(&applet, &revision, expected_grant, permission, mode)
     })
   }
 
@@ -444,6 +458,10 @@ impl Host {
     permission: ManagedPermission,
     edit: impl FnOnce() -> Result<T, String>,
   ) -> Result<T, String> {
+    let _install = self
+      .store_gate
+      .try_lock()
+      .map_err(|_| "Wait for the applet installation to finish before changing permissions.")?;
     let _gate = self
       .view_gate
       .lock()
@@ -686,7 +704,7 @@ pub async fn launch(app: AppHandle, applet_id: &str, restart: bool) -> Result<At
 mod tests {
   use super::*;
   use apell_core::{
-    bundles::{digest, pack_directory, API_VERSION},
+    bundles::{digest, pack_directory, StoreChannel, StoreSwitchSnapshot, API_VERSION},
     llm::{LlmConfig, LlmRequest, LlmStatus},
   };
   use std::{fs, net::Ipv4Addr, time::Duration};
@@ -720,6 +738,12 @@ mod tests {
     .unwrap();
     let package = pack_directory(source.path()).unwrap();
     host.bundles.install(&package, &digest(&package)).unwrap();
+  }
+
+  fn reviewed_grant(host: &Host, applet_id: &str, permission: ManagedPermission) -> String {
+    host
+      .grants
+      .reported_grant_revision(host.bundles.list_report().unwrap(), applet_id, permission)
   }
 
   fn seed_run(host: &Host, session_id: &str, applet_id: &str) {
@@ -810,9 +834,14 @@ mod tests {
     let session = host.sessions.lock().unwrap()[&attachment.view_id].clone();
     host.grants.remember(Microphone, APPLET, &source).unwrap();
 
-    assert!(host.forget_permission(APPLET, Microphone).is_err());
+    let remembered = reviewed_grant(&host, APPLET, Microphone);
+    assert!(host
+      .forget_permission(APPLET, Microphone, &remembered)
+      .is_err());
     host.detach_view(RUN, &attachment.view_id).unwrap();
-    host.forget_permission(APPLET, Microphone).unwrap();
+    host
+      .forget_permission(APPLET, Microphone, &remembered)
+      .unwrap();
     assert!(session
       .run_local(|| host.grants.remember(Microphone, APPLET, &source))
       .is_err());
@@ -828,34 +857,76 @@ mod tests {
     let installed = host.bundles.installed(id).unwrap();
     let revision = installed_revision(&installed).unwrap();
     let source = GrantSource::from(&installed);
+    let camera = reviewed_grant(&host, id, Camera);
+    let microphone = reviewed_grant(&host, id, Microphone);
 
     assert!(host
-      .set_installed_permission(id, &revision, Camera, PermissionMode::Remembered)
+      .set_installed_permission(id, &revision, &camera, Camera, PermissionMode::Remembered)
       .is_err());
     assert_eq!(
       host
-        .set_installed_permission(id, &revision, Microphone, PermissionMode::Blocked)
+        .set_installed_permission(
+          id,
+          &revision,
+          &microphone,
+          Microphone,
+          PermissionMode::Blocked
+        )
         .unwrap(),
       PermissionMode::Blocked
+    );
+    assert_eq!(
+      host
+        .set_installed_permission(
+          id,
+          &revision,
+          &microphone,
+          Microphone,
+          PermissionMode::Remembered
+        )
+        .unwrap_err(),
+      GRANT_CHANGED
     );
     assert_eq!(
       host.grants.mode(Microphone, id, &source).unwrap(),
       PermissionMode::Blocked
     );
 
+    let blocked = reviewed_grant(&host, id, Microphone);
     seed_run(&host, "permission-fixture-run", id);
     let current = host.attach_run("permission-fixture-run").unwrap();
     assert!(host
-      .set_installed_permission(id, &revision, Microphone, PermissionMode::Remembered)
+      .set_installed_permission(
+        id,
+        &revision,
+        &blocked,
+        Microphone,
+        PermissionMode::Remembered
+      )
       .is_err());
     host
       .detach_view("permission-fixture-run", &current.view_id)
       .unwrap();
 
     install_with_permissions(&host, id, "2.0.0", &["audio", "camera", "fs"]);
-    assert!(host
-      .set_installed_permission(id, &revision, Microphone, PermissionMode::Remembered)
-      .is_err());
+    assert_eq!(
+      host
+        .set_installed_permission(
+          id,
+          &revision,
+          &blocked,
+          Microphone,
+          PermissionMode::Remembered
+        )
+        .unwrap_err(),
+      GRANT_CHANGED
+    );
+    assert_eq!(
+      host
+        .forget_permission(id, Microphone, &blocked)
+        .unwrap_err(),
+      GRANT_CHANGED
+    );
     let updated = host.bundles.installed(id).unwrap();
     let new_revision = installed_revision(&updated).unwrap();
     assert_eq!(
@@ -866,8 +937,15 @@ mod tests {
       PermissionMode::Ask
     );
     let new_source = GrantSource::from(&updated);
+    let new_microphone = reviewed_grant(&host, id, Microphone);
     host
-      .set_installed_permission(id, &new_revision, Microphone, PermissionMode::Blocked)
+      .set_installed_permission(
+        id,
+        &new_revision,
+        &new_microphone,
+        Microphone,
+        PermissionMode::Blocked,
+      )
       .unwrap();
     let old_view = host.attach_run("permission-fixture-run").unwrap();
     assert!(host
@@ -888,11 +966,121 @@ mod tests {
     host
       .detach_view("permission-fixture-run", &old_view.view_id)
       .unwrap();
+    let new_camera = reviewed_grant(&host, id, Camera);
     assert_eq!(
       host
-        .set_installed_permission(id, &new_revision, Camera, PermissionMode::Remembered)
+        .set_installed_permission(
+          id,
+          &new_revision,
+          &new_camera,
+          Camera,
+          PermissionMode::Remembered
+        )
         .unwrap(),
       PermissionMode::Remembered
+    );
+  }
+
+  #[test]
+  fn settings_reset_binds_the_reviewed_store_source_even_with_identical_bytes() {
+    let (_directory, host) = fixture();
+    let applet = host.bundles.installed(APPLET).unwrap();
+    let bytes = fs::read(
+      host
+        .root
+        .join("bundles")
+        .join(APPLET)
+        .join(format!("{}.apel", applet.sha256)),
+    )
+    .unwrap();
+    let source = GrantSource::from(&applet);
+    host.grants.remember(Microphone, APPLET, &source).unwrap();
+    let reviewed = reviewed_grant(&host, APPLET, Microphone);
+
+    host
+      .bundles
+      .switch_to_store_release(
+        &bytes,
+        &applet.sha256,
+        StoreSource {
+          store_url: "https://store.example".into(),
+          applet_id: APPLET.into(),
+          channel: StoreChannel::Stable,
+        },
+        &StoreSwitchSnapshot {
+          sha256: applet.sha256.clone(),
+          source: applet.source,
+          removed: false,
+        },
+      )
+      .unwrap();
+
+    assert_eq!(
+      host
+        .forget_permission(APPLET, Microphone, &reviewed)
+        .unwrap_err(),
+      GRANT_CHANGED
+    );
+    assert!(host.grants.remembered(Microphone, APPLET, &source).unwrap());
+    let moved = reviewed_grant(&host, APPLET, Microphone);
+    host.forget_permission(APPLET, Microphone, &moved).unwrap();
+    assert!(!host.grants.remembered(Microphone, APPLET, &source).unwrap());
+  }
+
+  #[test]
+  fn settings_reset_allows_an_unavailable_grant_only_for_that_review() {
+    let (_directory, host) = fixture();
+    let applet = host.bundles.installed(APPLET).unwrap();
+    let archive = host
+      .root
+      .join("bundles")
+      .join(APPLET)
+      .join(format!("{}.apel", applet.sha256));
+    let bytes = fs::read(&archive).unwrap();
+    let source = GrantSource::from(&applet);
+    host.grants.remember(Microphone, APPLET, &source).unwrap();
+    let reviewed = reviewed_grant(&host, APPLET, Microphone);
+
+    fs::remove_file(archive).unwrap();
+    let unavailable = reviewed_grant(&host, APPLET, Microphone);
+    assert_eq!(
+      host
+        .forget_permission(APPLET, Microphone, &reviewed)
+        .unwrap_err(),
+      GRANT_CHANGED
+    );
+    host
+      .forget_permission(APPLET, Microphone, &unavailable)
+      .unwrap();
+    assert!(!host.grants.remembered(Microphone, APPLET, &source).unwrap());
+    assert_eq!(
+      host
+        .forget_permission(APPLET, Microphone, &unavailable)
+        .unwrap_err(),
+      GRANT_CHANGED
+    );
+
+    host.grants.remember(Microphone, APPLET, &source).unwrap();
+    let report = host.bundles.list_report().unwrap();
+    let snapshot = report.unavailable[0].restore_snapshot.as_ref().unwrap();
+    host
+      .bundles
+      .restore_package(APPLET, snapshot, &bytes)
+      .unwrap();
+    assert_eq!(
+      host
+        .forget_permission(APPLET, Microphone, &unavailable)
+        .unwrap_err(),
+      GRANT_CHANGED
+    );
+    assert!(host.grants.remembered(Microphone, APPLET, &source).unwrap());
+
+    host.bundles.remove(APPLET, || Ok(())).unwrap();
+    assert_eq!(
+      host
+        .forget_permission(APPLET, Microphone, &reviewed)
+        .unwrap_err(),
+      GRANT_CHANGED
     );
   }
 
@@ -1240,8 +1428,6 @@ mod tests {
 
   #[test]
   fn about_reports_the_current_installation_even_for_an_older_running_package() {
-    use apell_core::bundles::{StoreChannel, StoreSource, StoreSwitchSnapshot};
-
     let (_directory, host) = fixture();
     let attachment = host.attach_run(RUN).unwrap();
     let initial = host.view_installation(RUN, &attachment.view_id).unwrap();

@@ -29,6 +29,14 @@ pub struct UnavailableApplet {
   pub can_remove: bool,
   #[serde(skip_serializing_if = "Option::is_none")]
   pub restore_snapshot: Option<StoreSwitchSnapshot>,
+  #[serde(skip)]
+  pub active_snapshot: Option<StoreSwitchSnapshot>,
+}
+
+pub enum AppletReportEntry {
+  Installed(InstalledApplet),
+  Unavailable(UnavailableApplet),
+  Retained(StoreSwitchSnapshot),
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -539,34 +547,13 @@ impl BundleStore {
       retained: BTreeMap::new(),
     };
     for id in self.ids()? {
-      match self.record(&id) {
-        Ok(Some(record)) if record.removed => {
-          report.retained.insert(id, record.switch_snapshot());
+      match self.report_entry(&id) {
+        Some(AppletReportEntry::Retained(snapshot)) => {
+          report.retained.insert(id, snapshot);
         }
-        Ok(Some(active)) => match self.read_active_bundle(&active) {
-          Ok(bundle) => report.applets.push(active.installed(&bundle)),
-          Err(error) => {
-            let restore_snapshot = (!active.legacy
-              && matches!(
-                &error,
-                InstalledBundleError::Archive(ArchiveError::Missing | ArchiveError::Damaged)
-              ))
-            .then(|| active.switch_snapshot());
-            report.unavailable.push(UnavailableApplet {
-              applet_id: id,
-              error: error.into_message(),
-              can_remove: true,
-              restore_snapshot,
-            });
-          }
-        },
-        Ok(None) => {}
-        Err(error) => report.unavailable.push(UnavailableApplet {
-          applet_id: id,
-          error,
-          can_remove: false,
-          restore_snapshot: None,
-        }),
+        Some(AppletReportEntry::Installed(applet)) => report.applets.push(applet),
+        Some(AppletReportEntry::Unavailable(applet)) => report.unavailable.push(applet),
+        None => {}
       }
     }
     sort_installed(&mut report.applets);
@@ -574,6 +561,53 @@ impl BundleStore {
       .unavailable
       .sort_by(|a, b| a.applet_id.cmp(&b.applet_id));
     Ok(report)
+  }
+
+  /// Inspect only one applet with the same rules as the complete inventory.
+  pub fn report_applet(&self, id: &str) -> Result<Option<AppletReportEntry>, String> {
+    if !valid_name(id) {
+      return Err("Invalid applet identifier.".into());
+    }
+    match fs::symlink_metadata(self.root.join(id)) {
+      Ok(metadata) if metadata.is_dir() => Ok(self.report_entry(id)),
+      Ok(_) => Ok(None),
+      Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+      Err(_) => Err("Could not inspect applet entry.".into()),
+    }
+  }
+
+  fn report_entry(&self, id: &str) -> Option<AppletReportEntry> {
+    let entry = match self.record(id) {
+      Ok(Some(record)) if record.removed => AppletReportEntry::Retained(record.switch_snapshot()),
+      Ok(Some(active)) => match self.read_active_bundle(&active) {
+        Ok(bundle) => AppletReportEntry::Installed(active.installed(&bundle)),
+        Err(error) => {
+          let snapshot = active.switch_snapshot();
+          let restore_snapshot = (!active.legacy
+            && matches!(
+              &error,
+              InstalledBundleError::Archive(ArchiveError::Missing | ArchiveError::Damaged)
+            ))
+          .then(|| snapshot.clone());
+          AppletReportEntry::Unavailable(UnavailableApplet {
+            applet_id: id.to_owned(),
+            error: error.into_message(),
+            can_remove: true,
+            restore_snapshot,
+            active_snapshot: Some(snapshot),
+          })
+        }
+      },
+      Err(error) => AppletReportEntry::Unavailable(UnavailableApplet {
+        applet_id: id.to_owned(),
+        error,
+        can_remove: false,
+        restore_snapshot: None,
+        active_snapshot: None,
+      }),
+      Ok(None) => return None,
+    };
+    Some(entry)
   }
 
   fn ids(&self) -> Result<Vec<String>, String> {

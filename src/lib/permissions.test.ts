@@ -42,6 +42,7 @@ describe('applet permission summary', () => {
 function deviceGrant(permission: ManagedPermission, overrides: Partial<PermissionGrant> = {}) {
   return {
     permission,
+    grant_revision: 'reviewed-grant',
     access: 'remembered',
     mode: 'remembered',
     available: true,

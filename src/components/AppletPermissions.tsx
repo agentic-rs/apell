@@ -39,8 +39,9 @@ interface PermissionTarget {
   permission: ManagedPermission;
 }
 
-type PermissionChange = PermissionTarget &
-  ({ mode: PermissionMode; installed_revision: string } | { mode?: undefined });
+type PermissionChange = PermissionTarget & { grant_revision: string } & (
+    { mode: PermissionMode; installed_revision: string } | { mode?: undefined }
+  );
 
 type PermissionChangeError = PermissionTarget & { text: string };
 
@@ -160,7 +161,8 @@ function AppletDeviceGrant({
   show_applet = false,
 }: AppletPermissionDetailsProps & { grant: PermissionGrant; show_applet?: boolean }) {
   const { applet_id, installed_revision } = applet;
-  const { permission } = grant;
+  const { permission, grant_revision } = grant;
+  const target = { applet_id, permission, grant_revision };
   const declaration = managedPermissionDeclaration(applet.manifest, permission);
   const can_change =
     installed_revision &&
@@ -186,10 +188,8 @@ function AppletDeviceGrant({
       saving={saving === permission}
       error={edit_error?.permission === permission ? edit_error.text : undefined}
       unavailable_reason={declaration?.unavailable_reason}
-      change={
-        can_change ? (mode) => edit({ applet_id, installed_revision, permission, mode }) : undefined
-      }
-      reset={() => edit({ applet_id, permission })}
+      change={can_change ? (mode) => edit({ ...target, installed_revision, mode }) : undefined}
+      reset={() => edit(target)}
     />
   );
 }
@@ -301,9 +301,10 @@ export function useAppletPermissionState<T>(read: () => Promise<T>) {
                 edit.installed_revision,
                 edit.permission,
                 edit.mode,
+                edit.grant_revision,
               );
             } else {
-              await forgetPermission(edit.applet_id, edit.permission);
+              await forgetPermission(edit.applet_id, edit.permission, edit.grant_revision);
             }
           } catch (cause) {
             if (operation.isCurrent()) {

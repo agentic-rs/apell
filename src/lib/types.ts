@@ -72,6 +72,7 @@ export interface PermissionStatus {
 }
 export interface PermissionGrant {
   permission: ManagedPermission;
+  grant_revision: string;
   access: PermissionMode | 'previous_package' | 'undeclared' | 'unverified_package';
   mode?: PermissionMode;
   available: boolean;

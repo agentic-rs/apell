@@ -466,6 +466,8 @@ Camera and Location default to **Ask every time**. The Apell prompt names the ap
 
 Choose **By permission** in **Settings → Applet permissions** to review microphone, camera, or location across applets. Each group counts the applets that Apell is set to always allow for that permission. Open a group to change an applet’s setting or review stale settings from earlier packages.
 
+Settings and Library → Applet info check the reviewed package and saved choice before changing or resetting a permission. If either changes while the screen is open, Apell refreshes the row so you can review it and try again.
+
 **About this applet** and **Settings → Applet permissions** display system authorization separately from Apell’s saved choice when the platform reports it. The display refreshes when Apell regains focus. Restart an applet after switching sources before editing its device permissions in About. Android’s camera opens a system capture app, so its authorization is handled when the camera opens.
 
 When the system reports a device permission you can change, **Open system settings** opens Apell’s app settings on iOS and Android, or the microphone privacy pane on macOS. System restrictions such as parental controls are shown as **Restricted by system** when the platform reports them.
