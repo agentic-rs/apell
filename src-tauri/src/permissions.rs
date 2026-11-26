@@ -1,6 +1,6 @@
 use crate::host::Host;
 use apell_core::{
-  bundles::{InstalledApplet, PackageSource},
+  bundles::{AppletListReport, InstalledApplet, PackageSource},
   config::ConfigStore,
 };
 use serde::{Deserialize, Serialize};
@@ -212,6 +212,41 @@ impl PermissionGrants {
     }
     Ok(grants)
   }
+
+  fn installed_summary(&self, applet: InstalledApplet) -> Result<AppletPermissionSummary, String> {
+    let source = GrantSource::from(&applet);
+    let manifest = applet.manifest;
+    let grants = self.summary(&manifest.applet_id, Some(&source), &manifest.permissions)?;
+    Ok(AppletPermissionSummary {
+      applet_id: manifest.applet_id,
+      name: manifest.name,
+      manifest: Some(PermissionManifest {
+        network: manifest.network,
+        permissions: manifest.permissions,
+        has_lib: manifest.lib.is_some(),
+      }),
+      grants,
+    })
+  }
+
+  fn summaries(&self, report: AppletListReport) -> Result<Vec<AppletPermissionSummary>, String> {
+    let mut entries = Vec::new();
+    for applet in report.applets {
+      entries.push(self.installed_summary(applet)?);
+    }
+    for applet in report.unavailable {
+      let grants = self.summary(&applet.applet_id, None, &[])?;
+      if !grants.is_empty() {
+        entries.push(AppletPermissionSummary {
+          applet_id: applet.applet_id.clone(),
+          name: applet.applet_id,
+          manifest: None,
+          grants,
+        });
+      }
+    }
+    Ok(entries)
+  }
 }
 
 #[derive(Serialize)]
@@ -221,39 +256,25 @@ struct GrantSummary {
   available: bool,
 }
 
+#[derive(Serialize)]
+struct PermissionManifest {
+  network: bool,
+  permissions: Vec<String>,
+  has_lib: bool,
+}
+
+#[derive(Serialize)]
+struct AppletPermissionSummary {
+  applet_id: String,
+  name: String,
+  manifest: Option<PermissionManifest>,
+  grants: Vec<GrantSummary>,
+}
+
 pub async fn list(host: &Host) -> Result<Value, String> {
   let bundles = host.bundles.clone();
   let store = host.grants.clone();
-  crate::commands::blocking(move || {
-    let mut entries = Vec::new();
-    let report = bundles.list_report()?;
-    for applet in report.applets {
-      let grants = store.summary(
-        &applet.manifest.applet_id,
-        Some(&GrantSource::from(&applet)),
-        &applet.manifest.permissions,
-      )?;
-      if !grants.is_empty() {
-        entries.push(json!({
-          "applet_id": applet.manifest.applet_id,
-          "name": applet.manifest.name,
-          "grants": grants,
-        }));
-      }
-    }
-    for applet in report.unavailable {
-      let grants = store.summary(&applet.applet_id, None, &[])?;
-      if !grants.is_empty() {
-        entries.push(json!({
-          "applet_id": applet.applet_id,
-          "name": applet.applet_id,
-          "grants": grants,
-        }));
-      }
-    }
-    Ok(json!(entries))
-  })
-  .await
+  crate::commands::blocking(move || Ok(json!(store.summaries(bundles.list_report()?)?))).await
 }
 
 #[cfg(test)]
@@ -272,6 +293,43 @@ mod tests {
       source: Some(source),
       icon_data_url: None,
     }
+  }
+
+  #[test]
+  fn settings_includes_installed_applets_without_managed_grants() {
+    let dir = tempfile::tempdir().unwrap();
+    let grants = PermissionGrants::new(dir.path().into());
+    let mut applet = installed(
+      StoreSource {
+        store_url: "https://store.example".into(),
+        applet_id: "recorder".into(),
+        channel: StoreChannel::Stable,
+      }
+      .into(),
+    );
+    applet.manifest.network = false;
+    applet.manifest.permissions = vec!["secrets".into(), "fs".into(), "photos".into()];
+    applet.manifest.lib = Some("lib/app.wasm".into());
+    let summary = grants
+      .summaries(AppletListReport {
+        applets: vec![applet],
+        unavailable: Vec::new(),
+        retained: Default::default(),
+      })
+      .unwrap();
+    assert_eq!(
+      json!(summary),
+      json!([{
+        "applet_id":"recorder",
+        "name":"Recorder",
+        "manifest":{
+          "network":false,
+          "permissions":["secrets","fs","photos"],
+          "has_lib":true,
+        },
+        "grants":[],
+      }])
+    );
   }
 
   #[test]

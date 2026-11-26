@@ -80,35 +80,57 @@ export function AppletChannel({
 
   const source = installation?.store_source;
   if (!installation) {
-    if (!error) return <p role="status">Checking installed channel…</p>;
+    if (!error) return <p role="status">Checking installation…</p>;
     return (
       <div className="applet-channel">
         <p role="alert">{error}</p>
-        <button onClick={load}>Retry installed channel</button>
+        <button onClick={load}>Retry installation check</button>
       </div>
     );
   }
-  if (!source) return null;
+  const restart = installation.restart_required && !review && (
+    <>
+      <p role="status">Version {installation.installed_version} is installed. Restart to use it.</p>
+      <button className="primary" disabled={!!phase} onClick={onRestart}>
+        Restart applet
+      </button>
+    </>
+  );
+  if (!source) return restart ? <div className="applet-channel">{restart}</div> : null;
 
   const checkRelease = (channel: StoreChannel) =>
     void run('checking', async (operation) => {
       setReview(undefined);
       const detail = await getStoreDetail(source.store_url, source.applet_id, true);
       if (!operation.isCurrent()) return;
-      if (detail.installed_channel !== source.channel || !detail.channel_snapshot) {
+      if (
+        detail.installed_channel !== source.channel ||
+        !detail.installed ||
+        !detail.channel_snapshot
+      ) {
         const installed = await getAppletInstallation(session_id, view_id);
         if (operation.isCurrent()) {
           setInstallation(installed);
-          throw new Error('The installed channel changed. Choose a channel again.');
+          throw new Error('The installed applet changed. Check its releases again.');
         }
         return;
       }
+      setInstallation({
+        store_source: source,
+        installed_version: detail.installed.version,
+        restart_required: detail.restart_required,
+      });
       const recommended = recommendedStoreRelease(detail, channel);
       const release = detail.releases.find(
         (item) => item.version === recommended.version && storeReleaseChannel(item) === channel,
       );
       if (!release) throw new Error(`No ${storeChannelName(channel)} release is available yet.`);
-      if (release.action !== 'switch_channel')
+      const same_channel = channel === source.channel;
+      if (same_channel && (release.action === 'installed' || release.action === 'older')) {
+        setNotice('You’re up to date.');
+        return;
+      }
+      if (release.action !== (same_channel ? 'update' : 'switch_channel'))
         throw new Error(release.action_reason ?? 'This release cannot be installed.');
       setReview({ detail, release });
     });
@@ -127,7 +149,9 @@ export function AppletChannel({
           store_url: detail.store_url,
           applet_id: detail.applet.applet_id,
           release,
-          channel_snapshot: detail.channel_snapshot,
+          ...(release.action === 'switch_channel'
+            ? { channel_snapshot: detail.channel_snapshot }
+            : {}),
           expected_installed_sha256: detail.installed?.sha256 ?? null,
           installed_source: true,
           operation_id,
@@ -147,6 +171,9 @@ export function AppletChannel({
           installed_version: result.applet.version,
           restart_required: result.restart_required,
         });
+        if (!result.restart_required && release.action === 'update') {
+          setNotice(`Version ${result.applet.version} is installed.`);
+        }
       } catch (error) {
         if (operation.isCurrent()) setReview(undefined);
         throw error;
@@ -156,6 +183,7 @@ export function AppletChannel({
     });
 
   const access = review ? newStoreAccess(review.release, review.detail.installed) : [];
+  const reviewing_update = review?.release.action === 'update';
   return (
     <div className="applet-channel">
       <dl className="applet-access">
@@ -177,13 +205,28 @@ export function AppletChannel({
           </dd>
         </div>
       </dl>
+      <button
+        type="button"
+        disabled={!!phase || !!review}
+        onClick={() => checkRelease(source.channel)}
+      >
+        Check for updates
+      </button>
       {phase === 'checking' && <p role="status">Checking releases…</p>}
       {error && <p role="alert">{error}</p>}
       {notice && <p role="status">{notice}</p>}
       {review && (
         <div className="applet-channel-review">
-          <strong>Switch to {storeChannelName(storeReleaseChannel(review.release))}?</strong>
-          <p>Install version {review.release.version} and use this channel for future updates.</p>
+          {reviewing_update ? (
+            <strong>Update to {review.release.version}?</strong>
+          ) : (
+            <>
+              <strong>Switch to {storeChannelName(storeReleaseChannel(review.release))}?</strong>
+              <p>
+                Install version {review.release.version} and use this channel for future updates.
+              </p>
+            </>
+          )}
           {review.release.release_notes && (
             <p className="applet-channel-notes">{review.release.release_notes}</p>
           )}
@@ -219,24 +262,17 @@ export function AppletChannel({
                 Cancel
               </button>
               <button className="primary" onClick={() => install(review)}>
-                {review.release.downloaded_bytes === undefined
-                  ? 'Switch and install'
-                  : 'Continue download'}
+                {review.release.downloaded_bytes !== undefined
+                  ? 'Continue download'
+                  : reviewing_update
+                    ? 'Update applet'
+                    : 'Switch and install'}
               </button>
             </div>
           )}
         </div>
       )}
-      {installation.restart_required && !review && (
-        <>
-          <p role="status">
-            Version {installation.installed_version} is installed. Restart to use it.
-          </p>
-          <button className="primary" disabled={!!phase} onClick={onRestart}>
-            Restart applet
-          </button>
-        </>
-      )}
+      {restart}
     </div>
   );
 }

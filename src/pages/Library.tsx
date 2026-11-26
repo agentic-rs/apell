@@ -7,8 +7,14 @@ import {
   message,
   onInstallProgress,
   removeApplet,
+  restartApplet,
 } from '../lib/tauri';
-import type { AppletSession, InstalledApplet, UnavailableApplet } from '../lib/types';
+import type {
+  AppletInstallResult,
+  AppletSession,
+  InstalledApplet,
+  UnavailableApplet,
+} from '../lib/types';
 import { InstallSheet } from '../components/InstallSheet';
 import { AppletTile } from '../components/AppletTile';
 import { Icon } from '../components/Icon';
@@ -43,6 +49,7 @@ export function Library({
   const [failed, setFailed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [launching_id, setLaunchingId] = useState('');
+  const [restart_offer, setRestartOffer] = useState<InstalledApplet>();
   const [removal, setRemoval] = useState<Removal>();
   const pending = useRef(false);
   const list_revision = useRef(0);
@@ -123,10 +130,40 @@ export function Library({
     setUnavailable(report.unavailable);
     setLoadError('');
   };
-  const installed = async () => {
-    await refresh();
-    setStatus('Package installed. Running applets use updates after Apell restarts.');
+  const installed = async ({ applet, restart_required }: AppletInstallResult) => {
+    const { applet_id, name, version } = applet;
+    setApplets((current) =>
+      current.some((item) => item.applet_id === applet_id)
+        ? current.map((item) => (item.applet_id === applet_id ? applet : item))
+        : [...current, applet],
+    );
+    setUnavailable((current) => current.filter((item) => item.applet_id !== applet_id));
+    setRestartOffer(restart_required ? applet : undefined);
+    setStatus(
+      restart_required
+        ? `${name} ${version} installed. Restart to use it.`
+        : `${name} ${version} installed.`,
+    );
     onInstallClose();
+    try {
+      await refresh();
+    } catch (error) {
+      setLoadError(`Could not refresh the library. ${message(error)}`);
+    }
+  };
+  const openApplet = (applet: InstalledApplet, restart = false) => {
+    if (removal || installOpen || pending.current) return;
+    if (!restart) setLaunchingId(applet.applet_id);
+    void run(
+      async () => {
+        const open = restart ? restartApplet : launchApplet;
+        const session = await open(applet.applet_id);
+        if (restart) setRestartOffer(undefined);
+        setStatus('');
+        onLaunch(session);
+      },
+      `${restart ? 'Restarting' : 'Opening'} ${applet.name}…`,
+    );
   };
   const showRemoval = (target: Removal) => {
     if (removal || installOpen || pending.current) return;
@@ -139,6 +176,7 @@ export function Library({
       await removeApplet(target.applet_id);
       setApplets((current) => current.filter((item) => item.applet_id !== target.applet_id));
       setUnavailable((current) => current.filter((item) => item.applet_id !== target.applet_id));
+      setRestartOffer((current) => (current?.applet_id === target.applet_id ? undefined : current));
       restore_library_focus.current = true;
       setRemoval(undefined);
       try {
@@ -170,15 +208,7 @@ export function Library({
             onActions={() =>
               showRemoval({ applet_id: applet.applet_id, name: applet.name, confirm: false })
             }
-            onOpen={() => {
-              if (removal || installOpen || pending.current) return;
-              setLaunchingId(applet.applet_id);
-              void run(async () => {
-                const session = await launchApplet(applet.applet_id);
-                setStatus('');
-                onLaunch(session);
-              }, `Opening ${applet.name}…`);
-            }}
+            onOpen={() => openApplet(applet)}
           />
         ))}
       </div>
@@ -234,6 +264,17 @@ export function Library({
           {status}
         </p>
       )}
+      {!installOpen && !removal && restart_offer && (
+        <div className="button-row library-restart">
+          <button
+            className="primary"
+            disabled={busy}
+            onClick={() => openApplet(restart_offer, true)}
+          >
+            Restart {restart_offer.name}
+          </button>
+        </div>
+      )}
       {removal && (
         <Sheet
           key={removal.confirm ? 'confirm' : 'actions'}
@@ -285,8 +326,7 @@ export function Library({
         onSample={() =>
           void run(async () => {
             const { sample_base64 } = await import('../generated/chatbot');
-            await installBundle({ bundle_base64: sample_base64 });
-            await installed();
+            await installed(await installBundle({ bundle_base64: sample_base64 }));
           }, 'Installing Companion…')
         }
         onFile={(file) =>
@@ -296,26 +336,25 @@ export function Library({
             let binary = '';
             for (let offset = 0; offset < bytes.length; offset += 32768)
               binary += String.fromCharCode(...bytes.subarray(offset, offset + 32768));
-            await installBundle({ bundle_base64: btoa(binary) });
-            await installed();
+            await installed(await installBundle({ bundle_base64: btoa(binary) }));
           }, 'Installing applet…')
         }
         onGitHub={(release, asset_name) =>
           void run(async () => {
-            await installBundle({
-              repository: release.repository,
-              release_tag: release.release_tag,
-              release_id: release.release_id,
-              asset_id: release.assets.find((asset) => asset.name === asset_name)!.asset_id,
-              asset_name,
-            });
-            await installed();
+            await installed(
+              await installBundle({
+                repository: release.repository,
+                release_tag: release.release_tag,
+                release_id: release.release_id,
+                asset_id: release.assets.find((asset) => asset.name === asset_name)!.asset_id,
+                asset_name,
+              }),
+            );
           }, 'Downloading applet…')
         }
         onUpdate={(applet_id) =>
           void run(async () => {
-            await updateApplet(applet_id);
-            await installed();
+            await installed(await updateApplet(applet_id));
           }, 'Checking GitHub release…')
         }
       />

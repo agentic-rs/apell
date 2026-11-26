@@ -274,6 +274,9 @@ svg {
 .library-status {
   margin-top: 28px;
 }
+.library-restart {
+  margin-top: 10px;
+}
 .error {
   color: var(--danger);
 }

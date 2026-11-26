@@ -1,40 +1,15 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
-import { managed_permission_labels } from '../lib/permissions';
+import {
+  appletPermissionRows,
+  managed_permission_labels,
+  permission_mode_labels,
+} from '../lib/permissions';
 import { getPermissionMode, message, setPermissionMode } from '../lib/tauri';
 import type { AppletSession, ManagedPermission, PermissionMode } from '../lib/types';
 import { Icon } from './Icon';
 import { Sheet } from './Sheet';
 import { AppletChannel } from './AppletChannel';
 import { OperationScope } from './providers/state';
-
-const permission_labels: Record<string, string> = {
-  sqlite: 'Saved app data',
-  llm: 'Shared AI',
-  resources: 'Downloaded resources',
-  device: 'Device information',
-  http: 'Network requests',
-  fs: 'App files',
-  config: 'App preferences',
-  websocket: 'Live connections',
-  secrets: 'Secure storage',
-  crypto: 'Secure randomness',
-  runtime: 'Timers',
-  audio: 'Audio files and playback',
-  speech: 'Speech transcription',
-};
-
-const offline_status: Record<string, string> = {
-  http: 'Off',
-  websocket: 'Off',
-  llm: 'Off',
-  resources: 'Local only',
-  speech: 'On-device only',
-};
-
-const mode_labels: Record<PermissionMode, string> = {
-  ask: 'Ask every time',
-  remembered: 'Always allow',
-};
 
 function PermissionAccess({
   session,
@@ -89,7 +64,7 @@ function PermissionAccess({
       <dd>
         {read_only || mode === 'unavailable' ? (
           mode && mode !== 'unavailable' ? (
-            mode_labels[mode]
+            permission_mode_labels[mode]
           ) : (
             'Unavailable'
           )
@@ -103,8 +78,8 @@ function PermissionAccess({
               if (value === 'ask' || value === 'remembered') void update(value);
             }}
           >
-            <option value="ask">{mode_labels.ask}</option>
-            <option value="remembered">{mode_labels.remembered}</option>
+            <option value="ask">{permission_mode_labels.ask}</option>
+            <option value="remembered">{permission_mode_labels.remembered}</option>
           </select>
         ) : busy ? (
           <span role="status">Loading…</span>
@@ -216,45 +191,20 @@ export function AppletControls({
               />
               <h4>Permissions</h4>
               <dl className="applet-access">
-                <div>
-                  <dt>Network</dt>
-                  <dd>{manifest.network === false ? 'Off' : 'On'}</dd>
-                </div>
-                {manifest.permissions.map((permission) => {
-                  if (permission === 'camera' || permission === 'location') {
-                    return (
-                      <PermissionAccess
-                        key={`${session.view_id}-${permission}`}
-                        session={session}
-                        permission={permission}
-                        read_only={read_only}
-                      />
-                    );
-                  }
-                  if (permission === 'photos') {
-                    return (
-                      <div key={permission}>
-                        <dt>Photo Library</dt>
-                        <dd>Pick each time</dd>
-                      </div>
-                    );
-                  }
-                  return (
-                    <div key={permission}>
-                      <dt>{permission_labels[permission] ?? permission}</dt>
-                      <dd>
-                        {manifest.network === false ? (offline_status[permission] ?? 'On') : 'On'}
-                      </dd>
+                {appletPermissionRows({ ...manifest, has_lib: session.has_lib }).map((row) =>
+                  row.kind === 'managed' && !row.unavailable_reason ? (
+                    <PermissionAccess
+                      key={`${session.view_id}-${row.key}`}
+                      session={session}
+                      permission={row.key}
+                      read_only={read_only}
+                    />
+                  ) : (
+                    <div key={row.key}>
+                      <dt>{row.label}</dt>
+                      <dd>{row.kind === 'fixed' ? row.status : row.unavailable_reason}</dd>
                     </div>
-                  );
-                })}
-                {manifest.permissions.includes('audio') && (
-                  <PermissionAccess
-                    key={session.view_id}
-                    session={session}
-                    permission="microphone"
-                    read_only={read_only}
-                  />
+                  ),
                 )}
               </dl>
             </div>

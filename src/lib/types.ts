@@ -16,6 +16,10 @@ export interface InstalledApplet extends Manifest {
   icon_data_url?: string | null;
   source?: PackageSource | null;
 }
+export interface AppletInstallResult {
+  applet: InstalledApplet;
+  restart_required: boolean;
+}
 export interface StoreSource {
   store_url: string;
   applet_id: string;
@@ -42,7 +46,11 @@ export interface AppletListReport {
 export interface AppletPermission {
   applet_id: string;
   name: string;
+  manifest: AppletPermissionManifest | null;
   grants: PermissionGrant[];
+}
+export interface AppletPermissionManifest extends Pick<Manifest, 'network' | 'permissions'> {
+  has_lib: boolean;
 }
 export type ManagedPermission = 'microphone' | 'camera' | 'location';
 export type PermissionMode = 'ask' | 'remembered';
@@ -118,8 +126,7 @@ export interface StoreInstallRequest {
   operation_id: string;
 }
 export type StoreInstallResult =
-  | { status: 'installed'; applet: InstalledApplet; restart_required: boolean }
-  | { status: 'paused'; received_bytes: number };
+  ({ status: 'installed' } & AppletInstallResult) | { status: 'paused'; received_bytes: number };
 export interface BackendEvent {
   session_id: string;
   event: { name: string; payload: unknown };

@@ -160,7 +160,10 @@ async fn install_inner(
   })
   .await
   .map_err(|_| "Package installation was interrupted.")??;
-  serde_json::to_value(installed).map_err(|_| "Could not encode installed applet.".into())
+  Ok(json!({
+    "restart_required": host.needs_applet_restart(&installed),
+    "applet": installed,
+  }))
 }
 
 #[cfg(test)]

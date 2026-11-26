@@ -5,6 +5,7 @@ import type { LlmResult } from '../../packages/applet-sdk/src/types';
 import type {
   AccountStatus,
   AppletEvent,
+  AppletInstallResult,
   AppletInstallation,
   AppletListReport,
   AppletPermission,
@@ -16,7 +17,6 @@ import type {
   GitHubRelease,
   CreateConnectionDraft,
   DraftCredential,
-  InstalledApplet,
   InstallProgress,
   KeySyncPairing,
   KeySyncRecovery,
@@ -96,11 +96,11 @@ export const installBundle = (
         release_id: number;
         asset_id: number;
       },
-) => shellCall<InstalledApplet>('applets.install', params);
+) => shellCall<AppletInstallResult>('applets.install', params);
 export const githubRelease = (repository: string) =>
   shellCall<GitHubRelease>('applets.github_release', { repository });
 export const updateApplet = (applet_id: string) =>
-  shellCall<InstalledApplet>('applets.update', { applet_id });
+  shellCall<AppletInstallResult>('applets.update', { applet_id });
 export const removeApplet = (applet_id: string) => shellCall<void>('applets.remove', { applet_id });
 export const launchApplet = (applet_id: string) =>
   shellCall<AppletSession>('applets.launch', { applet_id });

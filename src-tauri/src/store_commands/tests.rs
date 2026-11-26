@@ -270,7 +270,7 @@ fn same_store_channel_switch_requires_the_reviewed_snapshot() {
 }
 
 #[test]
-fn installed_source_path_only_switches_an_active_applets_own_channel() {
+fn installed_source_path_updates_or_switches_only_within_an_active_applets_store() {
   let mut report = empty_report();
   let mut saved = installed("1.0.0");
   let original = "https://original.example";
@@ -305,13 +305,31 @@ fn installed_source_path_only_switches_an_active_applets_own_channel() {
   report.applets[0].sha256.clone_from(&saved.sha256);
 
   request.release = release("2.0.0");
-  request.channel_snapshot = None;
   assert!(review_requested_install(&request, &report, original).is_err());
-  request.installed_source = false;
+  request.channel_snapshot = None;
   assert_eq!(
     review_requested_install(&request, &report, original).unwrap(),
     ReleaseAction::Update
   );
+  assert!(review_requested_install(&request, &report, "https://other.example").is_err());
+  report.applets[0].sha256 = "b".repeat(64);
+  assert!(review_requested_install(&request, &report, original).is_err());
+  report.applets[0].sha256.clone_from(&saved.sha256);
+  report.applets[0].source = Some(
+    StoreSource {
+      store_url: "https://other.example".into(),
+      ..source
+    }
+    .into(),
+  );
+  assert!(review_requested_install(&request, &report, original).is_err());
+  report.applets[0].source.clone_from(&saved.source);
+
+  for version in ["0.9.0", "1.0.0"] {
+    request.release = release(version);
+    assert!(review_requested_install(&request, &report, original).is_err());
+  }
+  request.release = release("2.0.0");
 
   report.applets.clear();
   report.retained.insert(
@@ -324,6 +342,7 @@ fn installed_source_path_only_switches_an_active_applets_own_channel() {
   );
   let review = review_install(&report, original, "sample");
   assert!(authorize_installed_source(review.installed, original, "sample").is_err());
+  assert!(review_requested_install(&request, &report, original).is_err());
 }
 
 #[test]

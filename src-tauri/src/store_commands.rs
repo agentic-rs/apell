@@ -494,8 +494,10 @@ fn review_requested_install(
     request.switch_snapshot.as_ref(),
     request.channel_snapshot.as_ref(),
   )?;
-  if request.installed_source && action != ReleaseAction::SwitchChannel {
-    return Err("Choose and confirm a different release channel for this applet.".into());
+  if request.installed_source
+    && !matches!(action, ReleaseAction::Update | ReleaseAction::SwitchChannel)
+  {
+    return Err("Choose an update or confirm a different release channel for this applet.".into());
   }
   Ok(action)
 }

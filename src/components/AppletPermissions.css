@@ -10,12 +10,41 @@
   overflow: hidden;
 }
 
-.applet-permission-group h3 {
-  margin: 0;
+.applet-permission-group > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 44px;
   padding: 10px 14px;
   background: var(--subtle);
   font-size: 0.875rem;
+  font-weight: 600;
+  list-style: none;
+  cursor: pointer;
   overflow-wrap: anywhere;
+}
+
+.applet-permission-group > summary::-webkit-details-marker {
+  display: none;
+}
+
+.applet-permission-group > summary::after {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-right: 1.5px solid var(--muted);
+  border-bottom: 1.5px solid var(--muted);
+  transform: rotate(-45deg);
+  content: '';
+}
+
+.applet-permission-group[open] > summary::after {
+  transform: rotate(45deg);
+}
+
+.applet-permission-group > summary:focus-visible {
+  outline-offset: -3px;
 }
 
 .applet-permission-group dl {
