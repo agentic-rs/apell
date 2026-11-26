@@ -203,7 +203,8 @@ and code. Enter the code on the sign-in page on this or another device. When
 Apell shows the signed-in account, turn on **Sync model settings**. Apell
 publishes local changes and checks for cloud changes while it runs. Use **Sync
 now** to check immediately. Apell shows changes on this device that are still
-waiting to sync.
+waiting to sync. The **Apell Account** row in Settings shows when model or
+encrypted API-key sync needs attention.
 Model settings sync includes connection labels, built-in provider and model
 selections, and the preferred active model. API keys can be synced separately
 through **Encrypted API keys**. A usable local model can serve as a fallback
@@ -215,9 +216,11 @@ This remains available after restarting Apell. Open it to compare the changed
 connections and preferred model, then choose which copy to use.
 Applying the cloud copy removes any local-only connections listed in the review
 and their saved credentials. **Refresh review** fetches a new comparison so you
-can review it again before choosing. The Store records each version with its
-parent revision and applies updates only when the expected cloud revision still
-matches.
+can review it again before choosing. If a connection conflicts with a local
+provider or the combined connections exceed the device limit, the review
+explains what to change before using the cloud copy. The Store records each
+version with its parent revision and applies updates only when the expected
+cloud revision still matches.
 
 ## Sync encrypted API keys
 

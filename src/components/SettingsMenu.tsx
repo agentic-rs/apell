@@ -1,6 +1,18 @@
 import { useEffect, useState, type ComponentProps } from 'react';
-import { getAccountStatus, onAccountChanged } from '../lib/tauri';
-import type { AccountStatus, LlmSettings } from '../lib/types';
+import {
+  getAccountStatus,
+  getConfigSyncStatus,
+  getLocalKeySyncStatus,
+  onAccountChanged,
+  onConfigSyncChanged,
+  onKeySyncChanged,
+} from '../lib/tauri';
+import type {
+  AccountStatus,
+  ConfigSyncStatus,
+  LlmSettings,
+  LocalKeySyncStatus,
+} from '../lib/types';
 import { Icon } from './Icon';
 
 export type SettingsSection = 'account' | 'connections' | 'permissions' | 'backup';
@@ -10,12 +22,14 @@ function SettingsRow({
   icon,
   title,
   detail,
+  attention,
   onOpen,
 }: {
   section: SettingsSection;
   icon: ComponentProps<typeof Icon>['name'];
   title: string;
   detail: string;
+  attention?: string;
   onOpen: (section: SettingsSection) => void;
 }) {
   return (
@@ -31,12 +45,35 @@ function SettingsRow({
       <span className="settings-menu-text">
         <strong>{title}</strong>
         <small>{detail}</small>
+        {attention && <small className="settings-menu-attention">{attention}</small>}
       </span>
       <span className="settings-menu-chevron">
         <Icon name="back" />
       </span>
     </button>
   );
+}
+
+type AccountSummary = { detail: string; attention?: string };
+
+const checking_account: AccountSummary = { detail: 'Checking sign-in…' };
+
+export function accountSyncAttention(model?: ConfigSyncStatus, keys?: LocalKeySyncStatus) {
+  const model_sync = model?.state === 'ready' ? model : undefined;
+  const key_sync = keys?.state === 'verified' ? keys.sync_state : undefined;
+  if (model_sync?.pending_conflict_id) return 'Review model changes';
+  if (key_sync === 'conflict') return 'Key sync conflict';
+  if (model_sync?.sync_error && !model_sync.syncing) return 'Couldn’t sync model settings';
+  switch (key_sync) {
+    case 'failed':
+      return 'Couldn’t sync keys';
+    case 'paused':
+      return 'Key sync paused';
+    case 'waiting_for_model_settings':
+      return 'Keys need model settings';
+    default:
+      return undefined;
+  }
 }
 
 export function SettingsMenu({
@@ -48,29 +85,55 @@ export function SettingsMenu({
   loading: boolean;
   onOpen: (section: SettingsSection) => void;
 }) {
-  const [account_detail, setAccountDetail] = useState('Checking sign-in…');
+  const [account_summary, setAccountSummary] = useState(checking_account);
   useEffect(() => {
     let alive = true;
     let sequence = 0;
-    let unsubscribe: (() => void) | undefined;
+    const unlisten: (() => void)[] = [];
     const update = async () => {
       const request = ++sequence;
-      const detail = await getAccountStatus().then(accountDetail, () => 'Status unavailable');
-      if (alive && request === sequence) setAccountDetail(detail);
+      const account = await getAccountStatus().catch(() => undefined);
+      if (!alive || request !== sequence) return;
+      const detail = account ? accountDetail(account) : 'Status unavailable';
+      if (account?.state !== 'signed_in') {
+        setAccountSummary({ detail });
+        return;
+      }
+      setAccountSummary((current) => (current.detail === detail ? current : { detail }));
+      const [model, keys] = await Promise.all([
+        getConfigSyncStatus().catch(() => undefined),
+        getLocalKeySyncStatus().catch(() => undefined),
+      ]);
+      if (alive && request === sequence) {
+        setAccountSummary({ detail, attention: accountSyncAttention(model, keys) });
+      }
     };
-    void update();
-    void onAccountChanged(() => void update()).then(
-      (stop) => {
-        if (alive) {
-          unsubscribe = stop;
-          void update();
-        } else stop();
-      },
-      () => {},
-    );
+    const reload = () => {
+      if (alive) void update();
+    };
+    const subscriptions = [
+      onAccountChanged(() => {
+        if (!alive) return;
+        setAccountSummary(checking_account);
+        reload();
+      }),
+      onConfigSyncChanged(reload),
+      onKeySyncChanged(reload),
+    ];
+    window.addEventListener('focus', reload);
+    reload();
+    void Promise.allSettled(
+      subscriptions.map((subscription) =>
+        subscription.then((stop) => {
+          if (alive) unlisten.push(stop);
+          else stop();
+        }),
+      ),
+    ).then(reload);
     return () => {
       alive = false;
-      unsubscribe?.();
+      window.removeEventListener('focus', reload);
+      for (const stop of unlisten) stop();
     };
   }, []);
 
@@ -90,7 +153,8 @@ export function SettingsMenu({
           section="account"
           icon="account"
           title="Apell Account"
-          detail={account_detail}
+          detail={account_summary.detail}
+          attention={account_summary.attention}
           onOpen={onOpen}
         />
       </div>

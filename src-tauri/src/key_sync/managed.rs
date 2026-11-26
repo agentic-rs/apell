@@ -189,7 +189,11 @@ pub(super) fn is_verified(local: &LocalVault) -> bool {
   local.managed && !local.pending_managed && local.setup.is_none()
 }
 
-pub(super) async fn status(app: &AppHandle, host: &Host) -> Result<Value, String> {
+pub(super) async fn status(
+  app: &AppHandle,
+  host: &Host,
+  local_only: bool,
+) -> Result<Value, String> {
   if !host.account.key_exchange_available() {
     return Ok(json!({ "state": "unavailable" }));
   }
@@ -205,6 +209,10 @@ pub(super) async fn status(app: &AppHandle, host: &Host) -> Result<Value, String
     };
     stop.wait(verify_account(app, host, &account)).await??;
     return Ok(health.verified_status());
+  }
+  if local_only {
+    stop.wait(verify_account(app, host, &account)).await??;
+    return Ok(json!({ "state": "unverified" }));
   }
   let discovery = async {
     let access = stop.access(app, host, true, None).await?;

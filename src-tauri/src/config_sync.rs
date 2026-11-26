@@ -16,7 +16,7 @@ use automatic::{Automatic, SyncStop};
 use reqwest::{Method, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use snapshot::Snapshot;
+use snapshot::{CloudApplyBlocker, Snapshot};
 use std::{collections::HashSet, io::Read, path::PathBuf, time::Duration};
 use tauri::{AppHandle, Emitter, Manager};
 use uuid::Uuid;
@@ -70,7 +70,7 @@ struct ComparedSettings {
   local: Snapshot,
   local_active: Option<String>,
   local_hash: String,
-  conflicting_destination: bool,
+  cloud_apply_blocker: Option<CloudApplyBlocker>,
 }
 
 struct SyncOptions<'a> {
@@ -336,14 +336,14 @@ async fn compare_settings(
     .wait(request_head(host, access, Method::GET, None))
     .await??;
   require_identity(app, host, &access.account_key, stop).await?;
-  let (mut local, local_active, conflicting_destination) = {
+  let (mut local, local_active, cloud_apply_blocker) = {
     let settings = stop.wait(host.settings.lock()).await?;
     (
       capture(&settings, state),
       settings.active_connection_id.clone(),
       head
         .as_ref()
-        .is_some_and(|head| head.snapshot.conflicts_with_destination(&settings)),
+        .and_then(|head| head.snapshot.cloud_apply_blocker(&settings)),
     )
   };
   local.validate()?;
@@ -353,7 +353,7 @@ async fn compare_settings(
     local,
     local_active,
     local_hash,
-    conflicting_destination,
+    cloud_apply_blocker,
   })
 }
 
@@ -368,6 +368,7 @@ fn review_settings(account_key: &str, state: &DeviceState, compared: &ComparedSe
         &compared.local,
         &remote.snapshot,
         local_changes,
+        compared.cloud_apply_blocker.as_ref(),
       )
     }
     _ => json!({"state":"review_clear","status":status(Some(state), local_changes)}),
@@ -380,6 +381,7 @@ fn conflict_result(
   local: &Snapshot,
   cloud: &Snapshot,
   local_changes: bool,
+  cloud_apply_blocker: Option<&CloudApplyBlocker>,
 ) -> Value {
   json!({
     "state":"conflict",
@@ -387,6 +389,7 @@ fn conflict_result(
     "conflict_id":conflict,
     "local":local.summary(),
     "cloud":cloud.summary(),
+    "cloud_apply_blocker":cloud_apply_blocker,
   })
 }
 
@@ -405,7 +408,7 @@ async fn synchronize(
     local,
     local_active,
     local_hash,
-    conflicting_destination,
+    cloud_apply_blocker,
   } = compared;
   let result = match head {
     None if input.resolution.is_some() => {
@@ -432,7 +435,7 @@ async fn synchronize(
         &remote,
         &state,
         input.resolution,
-        conflicting_destination,
+        cloud_apply_blocker.as_ref(),
       );
       match action {
         Action::Current => ("current", remote, local_active),
@@ -469,6 +472,7 @@ async fn synchronize(
             &local,
             &remote.snapshot,
             has_local_changes(&state, &local, &local_hash),
+            cloud_apply_blocker.as_ref(),
           );
           if changed {
             save_state(host, &access.account_key, state).await?;
@@ -529,15 +533,23 @@ fn decide_sync(
   remote: &Revision,
   state: &DeviceState,
   resolution: Option<Resolution>,
-  conflicting_destination: bool,
+  cloud_apply_blocker: Option<&CloudApplyBlocker>,
 ) -> Action {
-  if resolution.is_none()
+  let unresolved = resolution.is_none();
+  if unresolved
     && *local != remote.snapshot
-    && (state.pending_conflict_id.is_some() || conflicting_destination)
+    && (state.pending_conflict_id.is_some()
+      || matches!(
+        cloud_apply_blocker,
+        Some(CloudApplyBlocker::DestinationConflict { .. })
+      ))
   {
     return Action::Conflict;
   }
-  decide(local, hash, remote, state.cursor.as_ref(), resolution)
+  match decide(local, hash, remote, state.cursor.as_ref(), resolution) {
+    Action::Download if unresolved && cloud_apply_blocker.is_some() => Action::Conflict,
+    action => action,
+  }
 }
 
 fn decide(
@@ -990,12 +1002,13 @@ mod tests {
       local,
       local_active: None,
       local_hash,
-      conflicting_destination: false,
+      cloud_apply_blocker: None,
     };
     let status_before = serde_json::to_value(&state).unwrap();
     let reviewed = review_settings("fixture-account", &state, &compared);
     assert_eq!(reviewed["state"], "conflict");
     assert_eq!(reviewed["conflict_id"], conflict);
+    assert!(reviewed["cloud_apply_blocker"].is_null());
     assert_eq!(
       reviewed["local"]["connections"][0]["model_id"],
       "local-edit"
@@ -1003,6 +1016,22 @@ mod tests {
     assert_eq!(
       reviewed["cloud"]["connections"][0]["model_id"],
       "cloud-edit"
+    );
+    compared.cloud_apply_blocker = Some(CloudApplyBlocker::DestinationConflict {
+      name: "Local fixture".into(),
+    });
+    let blocked_review = review_settings("fixture-account", &state, &compared);
+    assert_eq!(blocked_review["conflict_id"], conflict);
+    assert_eq!(
+      blocked_review["cloud_apply_blocker"],
+      json!({ "kind": "destination_conflict", "name": "Local fixture" })
+    );
+    compared.cloud_apply_blocker = Some(CloudApplyBlocker::ConnectionLimit {
+      extra_connections: 2,
+    });
+    assert_eq!(
+      review_settings("fixture-account", &state, &compared)["cloud_apply_blocker"],
+      json!({ "kind": "connection_limit", "extra_connections": 2 })
     );
     compared.head.as_mut().unwrap().snapshot = compared.local.clone();
     assert_eq!(
@@ -1130,16 +1159,25 @@ mod tests {
       pending_conflict_id: None,
     };
     assert!(matches!(
-      decide_sync(&local, &hash, &remote, &state, None, false),
+      decide_sync(&local, &hash, &remote, &state, None, None),
       Action::Download
     ));
     assert!(matches!(
-      decide_sync(&local, &hash, &remote, &state, None, true),
+      decide_sync(
+        &local,
+        &hash,
+        &remote,
+        &state,
+        None,
+        Some(&CloudApplyBlocker::DestinationConflict {
+          name: "Local fixture".into()
+        })
+      ),
       Action::Conflict
     ));
     state.pending_conflict_id = Some("reviewed".into());
     assert!(matches!(
-      decide_sync(&local, &hash, &remote, &state, None, false),
+      decide_sync(&local, &hash, &remote, &state, None, None),
       Action::Conflict
     ));
     assert!(matches!(
@@ -1149,9 +1187,72 @@ mod tests {
         &remote,
         &state,
         Some(Resolution::UseCloud),
-        false
+        None
       ),
       Action::Download
+    ));
+  }
+
+  #[test]
+  fn capacity_block_goes_to_review_only_when_unresolved_sync_would_download() {
+    let local = snapshot("local-model");
+    let hash = local.fingerprint().unwrap();
+    let remote = Revision {
+      revision_id: "cloud-head".into(),
+      parent_revision_ids: vec!["ancestor".into()],
+      snapshot: snapshot("cloud-model"),
+      updated_at: String::new(),
+    };
+    let mut state = DeviceState {
+      enabled: true,
+      cursor: Some(Cursor {
+        revision_id: "ancestor".into(),
+        snapshot_hash: hash.clone(),
+        remote_active: LEGACY_DEMO_CONNECTION_ID.into(),
+        local_active: LEGACY_DEMO_CONNECTION_ID.into(),
+        updated_at: String::new(),
+      }),
+      pending_conflict_id: None,
+    };
+    let blocker = CloudApplyBlocker::ConnectionLimit {
+      extra_connections: 2,
+    };
+    assert!(matches!(
+      decide_sync(&local, &hash, &remote, &state, None, Some(&blocker)),
+      Action::Conflict
+    ));
+    assert!(matches!(
+      decide_sync(
+        &local,
+        &hash,
+        &remote,
+        &state,
+        Some(Resolution::UseCloud),
+        Some(&blocker)
+      ),
+      Action::Download
+    ));
+
+    state
+      .cursor
+      .as_mut()
+      .unwrap()
+      .revision_id
+      .clone_from(&remote.revision_id);
+    assert!(matches!(
+      decide_sync(&local, &hash, &remote, &state, None, Some(&blocker)),
+      Action::Upload
+    ));
+    assert!(matches!(
+      decide_sync(
+        &remote.snapshot,
+        &hash,
+        &remote,
+        &state,
+        None,
+        Some(&blocker)
+      ),
+      Action::Current
     ));
   }
 }

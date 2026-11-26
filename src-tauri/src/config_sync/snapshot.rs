@@ -38,6 +38,26 @@ struct SummaryConnection<'a> {
   model_id: &'a str,
 }
 
+#[derive(Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(super) enum CloudApplyBlocker {
+  DestinationConflict { name: String },
+  ConnectionLimit { extra_connections: usize },
+}
+
+impl CloudApplyBlocker {
+  fn message(&self) -> &'static str {
+    match self {
+      Self::DestinationConflict { .. } => {
+        "A synced connection conflicts with a local provider or endpoint."
+      }
+      Self::ConnectionLimit { .. } => {
+        "These synced settings exceed the connection limit with your device-only connections."
+      }
+    }
+  }
+}
+
 fn built_in_endpoint(provider_id: &str) -> Option<&'static str> {
   if matches!(provider_id, "custom" | "llama-cpp") {
     return None;
@@ -145,15 +165,30 @@ impl Snapshot {
     })
   }
 
-  pub(super) fn conflicts_with_destination(&self, current: &Settings) -> bool {
-    self.connections.iter().any(|entry| {
-      current
-        .connection(&entry.connection_id)
-        .is_ok_and(|old| entry.conflicts_with_destination(old))
-    })
+  pub(super) fn cloud_apply_blocker(&self, current: &Settings) -> Option<CloudApplyBlocker> {
+    for entry in &self.connections {
+      if let Ok(local) = current.connection(&entry.connection_id) {
+        if entry.conflicts_with_destination(local) {
+          return Some(CloudApplyBlocker::DestinationConflict {
+            name: local.name.clone(),
+          });
+        }
+      }
+    }
+    let device_only_count = current
+      .connections
+      .iter()
+      .filter(|local| !eligible(local))
+      .count();
+    let extra_connections =
+      (self.connections.len() + device_only_count).saturating_sub(MAX_CONNECTIONS);
+    (extra_connections > 0).then_some(CloudApplyBlocker::ConnectionLimit { extra_connections })
   }
 
   pub fn settings(&self, current: &Settings) -> Result<(Settings, Vec<String>), String> {
+    if let Some(blocker) = self.cloud_apply_blocker(current) {
+      return Err(blocker.message().into());
+    }
     let mut next = current.clone();
     next.connections.retain(|connection| !eligible(connection));
     let mut credential_removals: Vec<_> = current
@@ -171,21 +206,12 @@ impl Snapshot {
     for entry in &self.connections {
       let mut connection = entry.connection()?;
       if let Ok(old) = current.connection(&entry.connection_id) {
-        if entry.conflicts_with_destination(old) {
-          return Err("A synced connection conflicts with a local provider or endpoint.".into());
-        }
         connection.credential = old.credential.clone();
       } else {
         // A cloud ID must never attach to a stale Keychain slot for a removed connection.
         connection.credential = credential_ref(&Uuid::new_v4().to_string());
       }
       next.connections.push(connection);
-    }
-    if next.connections.len() > MAX_CONNECTIONS {
-      return Err(
-        "These synced settings exceed the connection limit with your device-only connections."
-          .into(),
-      );
     }
     if current.active().is_none_or(eligible) {
       next.active_connection_id = saved_selection(&self.active_connection_id).map(str::to_owned);
@@ -335,7 +361,7 @@ mod tests {
     let mut remote = Snapshot::capture(&local, Some("fixture"));
     remote.connections[0].model_id = "updated-model".into();
     assert!(remote.validate().is_ok());
-    assert!(!remote.conflicts_with_destination(&local));
+    assert_eq!(remote.cloud_apply_blocker(&local), None);
     let (next, removed) = remote.settings(&local).unwrap();
     assert!(removed.is_empty());
     assert_eq!(next.active(), Some(&private));
@@ -350,12 +376,22 @@ mod tests {
 
     remote.connections[0].provider_id = "codex".into();
     assert!(built_in_endpoint("codex").is_some());
-    assert!(remote.conflicts_with_destination(&local));
+    assert_eq!(
+      remote.cloud_apply_blocker(&local),
+      Some(CloudApplyBlocker::DestinationConflict {
+        name: openai.name.clone()
+      })
+    );
     assert!(remote.settings(&local).is_err());
     remote.connections[0]
       .connection_id
       .clone_from(&private.connection_id);
-    assert!(remote.conflicts_with_destination(&local));
+    assert_eq!(
+      remote.cloud_apply_blocker(&local),
+      Some(CloudApplyBlocker::DestinationConflict {
+        name: private.name.clone()
+      })
+    );
     remote.connections[0].connection_id = "new-connection".into();
     remote.active_connection_id = "new-connection".into();
     let (next, removed) = remote.settings(&local).unwrap();
@@ -365,6 +401,55 @@ mod tests {
       credential_ref("new-connection")
     );
     assert_eq!(next.connection("private").unwrap(), &private);
+  }
+
+  #[test]
+  fn review_counts_capacity_after_preserving_device_only_connections() {
+    let cloud = Settings {
+      connections: (0..MAX_CONNECTIONS)
+        .map(|index| {
+          saved(
+            &format!("cloud-{index}"),
+            "openai",
+            built_in_endpoint("openai").unwrap(),
+          )
+        })
+        .collect(),
+      ..Default::default()
+    };
+    let remote = Snapshot::capture(&cloud, None);
+    let mut local = Settings {
+      connections: vec![
+        saved("device-a", "custom", "https://private.example.invalid/v1"),
+        saved("device-b", "custom", "https://private.example.invalid/v1"),
+        saved(
+          "replaced-by-cloud",
+          "openai",
+          built_in_endpoint("openai").unwrap(),
+        ),
+      ],
+      ..Default::default()
+    };
+    assert_eq!(
+      remote.cloud_apply_blocker(&local),
+      Some(CloudApplyBlocker::ConnectionLimit {
+        extra_connections: 2
+      })
+    );
+    assert!(remote.settings(&local).is_err());
+    local.connections.remove(0);
+    assert_eq!(
+      remote.cloud_apply_blocker(&local),
+      Some(CloudApplyBlocker::ConnectionLimit {
+        extra_connections: 1
+      })
+    );
+    local.connections.remove(0);
+    assert_eq!(remote.cloud_apply_blocker(&local), None);
+    assert_eq!(
+      remote.settings(&local).unwrap().0.connections.len(),
+      MAX_CONNECTIONS
+    );
   }
 
   #[test]

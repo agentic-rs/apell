@@ -23,6 +23,7 @@ import type {
   KeySyncPairing,
   KeySyncRecovery,
   KeySyncStatus,
+  LocalKeySyncStatus,
   LlmConnection,
   LlmModels,
   LlmSettings,
@@ -184,6 +185,7 @@ export const syncConfig = (resolution?: ConfigSyncResolution) =>
   shellCall<ConfigSyncResult>('sync.run', resolution ?? {});
 export const reviewConfigSync = () => shellCall<ConfigSyncReviewResult>('sync.review');
 export const getKeySyncStatus = () => shellCall<KeySyncStatus>('key_sync.status');
+export const getLocalKeySyncStatus = () => shellCall<LocalKeySyncStatus>('key_sync.local_status');
 export const retryKeySync = () => shellCall<void>('key_sync.retry');
 export const onKeySyncChanged = (handler: () => void) => listen('apell-key-sync-changed', handler);
 export const onLlmSettingsChanged = (handler: () => void) =>

@@ -229,6 +229,8 @@ export type KeySyncStatus =
     }
   | { state: 'unverified'; action: 'setup' | 'pair' | 'upgrade' | 'legacy' }
   | { state: 'unverified'; action: 'check'; error: string };
+export type LocalKeySyncStatus =
+  Exclude<KeySyncStatus, { state: 'unverified' }> | { state: 'unverified' };
 export interface KeySyncPairing {
   pair_id: string;
   code: string;
@@ -268,6 +270,10 @@ export interface ConfigSyncConflict {
   conflict_id: string;
   local: ConfigSyncSummary;
   cloud: ConfigSyncSummary;
+  cloud_apply_blocker:
+    | { kind: 'destination_conflict'; name: string }
+    | { kind: 'connection_limit'; extra_connections: number }
+    | null;
 }
 export type ConfigSyncResult =
   { state: 'current' | 'uploaded' | 'downloaded'; status: ConfigSyncStatus } | ConfigSyncConflict;

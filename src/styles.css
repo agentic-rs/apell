@@ -525,6 +525,7 @@ svg {
 }
 .settings-menu-text {
   display: grid;
+  min-width: 0;
   gap: 3px;
   line-height: 1.35;
 }
@@ -534,6 +535,10 @@ svg {
 .settings-menu-text small,
 .settings-menu-chevron {
   color: var(--muted);
+}
+.settings-menu-text .settings-menu-attention {
+  color: var(--text);
+  font-weight: 600;
 }
 .settings-menu-chevron {
   transform: rotate(180deg);

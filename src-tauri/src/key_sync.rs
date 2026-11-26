@@ -410,7 +410,9 @@ pub(crate) async fn dispatch(app: AppHandle, method: &str, params: Value) -> Res
     let host = app.state::<Host>();
     let stop = BackgroundStop(host.key_sync.signing_out.subscribe());
     match method.as_str() {
-      "key_sync.status" => return managed::status(&app, &host).await,
+      "key_sync.status" | "key_sync.local_status" => {
+        return managed::status(&app, &host, method == "key_sync.local_status").await;
+      }
       "key_sync.retry" => return managed::retry(&app, &host).await,
       "key_sync.pair_cancel" => {
         return managed::cancel_pair(&app, &host, parse(params)?, &stop).await

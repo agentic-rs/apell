@@ -1,3 +1,4 @@
+import { useId } from 'react';
 import { compareConfigSync } from '../lib/configSyncReview';
 import type { ConfigSyncConflict, ConfigSyncConnection, LlmProvider } from '../lib/types';
 
@@ -38,6 +39,32 @@ function ConnectionDescription({
   );
 }
 
+function CloudApplyDescription({
+  blocker,
+}: {
+  blocker: ConfigSyncConflict['cloud_apply_blocker'];
+}) {
+  if (blocker?.kind === 'destination_conflict') {
+    return (
+      <>
+        “{blocker.name}” conflicts with a cloud connection. In Model connections, change its
+        provider or endpoint, or remove it. Then refresh this review.
+      </>
+    );
+  }
+  if (blocker?.kind === 'connection_limit') {
+    const { extra_connections } = blocker;
+    return (
+      <>
+        Free {extra_connections} {extra_connections === 1 ? 'slot' : 'slots'} in Model connections
+        by removing connections excluded from sync, such as local models or custom endpoints. Then
+        refresh this review.
+      </>
+    );
+  }
+  return 'Apply your account’s model settings to this device.';
+}
+
 export function ConfigSyncReview({
   conflict,
   providers,
@@ -49,6 +76,8 @@ export function ConfigSyncReview({
   onKeepLocal,
   onUseCloud,
 }: Props) {
+  const cloud_description_id = useId();
+  const blocker = conflict.cloud_apply_blocker;
   const { preferred, changes, removed_count, ambiguous_ids } = compareConfigSync(
     conflict.local,
     conflict.cloud,
@@ -114,11 +143,18 @@ export function ConfigSyncReview({
           <p>Replace your account’s saved model settings with this device’s copy.</p>
         </div>
         <div>
-          <button type="button" disabled={disabled || busy || stale} onClick={onUseCloud}>
+          <button
+            type="button"
+            disabled={disabled || busy || stale || !!blocker}
+            aria-describedby={cloud_description_id}
+            onClick={onUseCloud}
+          >
             Use cloud on this device
           </button>
-          <p>Apply your account’s model settings to this device.</p>
-          {removed_count > 0 && (
+          <p id={cloud_description_id}>
+            <CloudApplyDescription blocker={blocker} />
+          </p>
+          {!blocker && removed_count > 0 && (
             <p>
               Connections marked Only on this device and their saved credentials will be removed.
             </p>
