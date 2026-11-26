@@ -5545,8 +5545,10 @@ dependencies = [
  "apple-native-keyring-store",
  "keyring-core",
  "serde",
+ "sha2 0.10.9",
  "tauri",
  "tauri-plugin",
+ "tempfile",
 ]
 
 [[package]]

@@ -6,7 +6,7 @@ license.workspace = true
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]
-local-dev = []
+local-dev = ["tauri-plugin-apell-credentials/local-dev"]
 
 [lib]
 name = "apell_lib"

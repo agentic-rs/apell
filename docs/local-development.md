@@ -65,11 +65,14 @@ With the container and `pnpm dev:local web` running, open another terminal:
 pnpm dev:local shell
 ```
 
-**Apell Local** runs the macOS shell with hot reload, its own app data and
-Keychain entries, and the local Store configured by default. Its native
-connections to the Store, Account, and encrypted relay trust the generated
-development CA. To approve a device code or test browser recovery, open the
-approval page in the test browser that trusts the development CA.
+**Apell Local** runs the macOS shell with hot reload, its own app data, and the
+local Store configured by default. Its mock credential store uses owner-only
+files and persists across app restarts without accessing macOS Keychain. If
+you used an earlier local build, sign in again to start a session in the mock
+store. Its native connections to the Store, Account, and encrypted relay trust
+the generated development CA. To approve a device code or test browser
+recovery, open the approval page in the test browser that trusts the
+development CA.
 
 The fictional account can test first verification and encrypted API key sync.
 Use fictional model settings and API keys. If the fixture restarts while a
