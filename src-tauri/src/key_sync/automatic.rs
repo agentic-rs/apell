@@ -23,6 +23,9 @@ use uuid::Uuid;
 use zeroize::Zeroizing;
 
 const STATE_FILE: &str = "key-sync-device.json";
+const PAUSE_FILE: &str = "key-sync-paused";
+const SYNC_PAUSED: &str =
+  "Apell could not safely track API key changes. Manage local keys in Model connections.";
 const MAX_STATE_BYTES: usize = 256 * 1024;
 const SYNC_INTERVAL: Duration = Duration::from_secs(60);
 const OWNERSHIP_CHANGED: &str = "A credential changed accounts during sync. Try again.";
@@ -95,6 +98,11 @@ struct Device {
 
 impl Device {
   fn load(root: &Path) -> Result<Self, String> {
+    match std::fs::symlink_metadata(root.join(PAUSE_FILE)) {
+      Ok(_) => return Err(SYNC_PAUSED.into()),
+      Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+      Err(_) => return Err("Could not check the device key sync status.".into()),
+    }
     let file = match std::fs::File::open(root.join(STATE_FILE)) {
       Ok(file) => file,
       Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Self::default()),
@@ -117,14 +125,7 @@ impl Device {
     if bytes.len() > MAX_STATE_BYTES {
       return Err("The device key sync state exceeds its size limit.".into());
     }
-    let path = root.join(STATE_FILE);
-    atomic_write(&path, &bytes).or_else(|error| {
-      if std::fs::read(path).is_ok_and(|published| published == bytes) {
-        Ok(())
-      } else {
-        Err(error)
-      }
-    })
+    atomic_write(&root.join(STATE_FILE), &bytes)
   }
 
   fn record(&mut self, id: String, owner: &Owner, common: Option<String>) {
@@ -160,6 +161,27 @@ impl Device {
     self.initialized = true;
     changed
   }
+}
+
+fn persist_pause(root: &Path) -> Result<(), String> {
+  atomic_write(&root.join(PAUSE_FILE), b"paused\n")
+    .map_err(|_| "Could not pause encrypted API key sync safely. Free space or check device storage before editing keys.".into())
+}
+
+fn load_or_pause(root: &Path) -> Result<Option<Device>, String> {
+  match Device::load(root) {
+    Ok(device) => Ok(Some(device)),
+    Err(_) => {
+      // Keep the old ledger. Rebuilding it would lose ownership and deletion history.
+      persist_pause(root)?;
+      Ok(None)
+    }
+  }
+}
+
+pub(super) async fn require_device_sync(root: &Path) -> Result<(), String> {
+  let root = root.to_owned();
+  blocking(move || Device::load(&root).map(|_| ())).await
 }
 
 pub(crate) fn kick(app: &AppHandle) {
@@ -209,7 +231,9 @@ pub(super) async fn activate(
   let app = app.clone();
   let root = host.root.clone();
   blocking(move || {
-    let mut device = Device::load(&root)?;
+    let Some(mut device) = load_or_pause(&root)? else {
+      return Ok(());
+    };
     // The first pairing can enroll existing device keys. A later pairing can
     // only adopt new keys recorded for that same account while it was unpaired.
     let eligible = settings
@@ -220,8 +244,8 @@ pub(super) async fn activate(
           && local_key(&app, connection).is_ok_and(|key| key.is_some())
       })
       .map(|connection| connection.connection_id);
-    if device.enroll(&owner, eligible) {
-      device.save(&root)?;
+    if device.enroll(&owner, eligible) && device.save(&root).is_err() {
+      persist_pause(&root)?;
     }
     Ok(())
   })
@@ -264,7 +288,14 @@ pub(crate) async fn commit_local_credentials(
 ) -> Result<(), String> {
   // The caller holds credential_gate through the sync markers and the local save.
   let edits = local_credential_edits(previous, next, &updates);
-  let assignment = if edits.values().any(|adds_key| *adds_key) {
+  let root = host.root.clone();
+  let device = if edits.is_empty() {
+    None
+  } else {
+    let root = root.clone();
+    blocking(move || load_or_pause(&root)).await?
+  };
+  let assignment = if device.is_some() && edits.values().any(|adds_key| *adds_key) {
     match host.account.account_key(app).await {
       Ok(Some(account)) => match local_vault(app, &account)
         .await
@@ -285,10 +316,9 @@ pub(crate) async fn commit_local_credentials(
     Assignment::Blocked
   };
   let app = app.clone();
-  let root = host.root.clone();
   let settings = next.clone();
   blocking(move || {
-    commit_tracked_edits(&root, edits, assignment, || {
+    commit_tracked_edits(&root, device, edits, assignment, || {
       commit_settings(&app, &root, &settings, updates)
     })
   })
@@ -297,14 +327,14 @@ pub(crate) async fn commit_local_credentials(
 
 fn commit_tracked_edits(
   root: &Path,
+  device: Option<Device>,
   edits: BTreeMap<String, bool>,
   assignment: Assignment,
   commit: impl FnOnce() -> Result<(), String>,
 ) -> Result<(), String> {
-  if edits.is_empty() {
+  let Some(mut device) = device else {
     return commit();
-  }
-  let mut device = Device::load(root)?;
+  };
   let blocked: Vec<_> = edits
     .into_iter()
     .filter(|(id, adds_key)| {
@@ -319,7 +349,10 @@ fn commit_tracked_edits(
     for (id, _) in &blocked {
       device.connections.insert(id.clone(), Tracked::default());
     }
-    device.save(root)?;
+    if device.save(root).is_err() {
+      persist_pause(root)?;
+      return commit();
+    }
   }
   commit()?;
   if assignment != Assignment::Blocked && blocked.iter().any(|(_, adds_key)| *adds_key) {
@@ -446,6 +479,7 @@ async fn synchronize(app: &AppHandle, host: &Host, account: &str) -> Result<(), 
   {
     return Ok(());
   }
+  require_device_sync(&host.root).await?;
   let relay = host.account.key_exchange_access(app).await?;
   if relay.account_key != account {
     return Err(OWNERSHIP_CHANGED.into());
@@ -752,18 +786,106 @@ mod tests {
       edits,
       BTreeMap::from([("new".into(), true), ("old".into(), false)])
     );
-    commit_tracked_edits(root, edits, Assignment::Paired(owner.clone()), || {
-      // A metadata fetch that started earlier must recheck the on-disk markers.
-      retain_restorable(root, &owner, &mut requested)?;
-      assert_eq!(requested, HashSet::from(["unrelated".into()]));
-      assert!(!Device::load(root)?.permits("new", &owner));
-      next.persist(root)
-    })
+    commit_tracked_edits(
+      root,
+      load_or_pause(root).unwrap(),
+      edits,
+      Assignment::Paired(owner.clone()),
+      || {
+        // A metadata fetch that started earlier must recheck the on-disk markers.
+        retain_restorable(root, &owner, &mut requested)?;
+        assert_eq!(requested, HashSet::from(["unrelated".into()]));
+        assert!(!Device::load(root)?.permits("new", &owner));
+        next.persist(root)
+      },
+    )
     .unwrap();
     let device = Device::load(root).unwrap();
     assert!(!device.permits("old", &owner));
     assert!(device.connections["new"].belongs_to(&owner));
     assert_eq!(Settings::load(root).unwrap().connections, next.connections);
+  }
+
+  #[test]
+  fn a_damaged_ledger_allows_local_edits_with_a_durable_device_pause() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let damaged = b"incomplete sync state";
+    std::fs::write(root.join(STATE_FILE), damaged).unwrap();
+    let next = Settings {
+      connections: vec![fixture_connection("new", "deepseek")],
+      ..Settings::default()
+    };
+    commit_tracked_edits(
+      root,
+      load_or_pause(root).unwrap(),
+      BTreeMap::from([("new".into(), true)]),
+      Assignment::Blocked,
+      || {
+        assert_eq!(Device::load(root).err().as_deref(), Some(SYNC_PAUSED));
+        next.persist(root)
+      },
+    )
+    .unwrap();
+    assert_eq!(Settings::load(root).unwrap().connections, next.connections);
+    assert_eq!(std::fs::read(root.join(STATE_FILE)).unwrap(), damaged);
+
+    // Repairing the old file cannot resume sync after local keys have changed.
+    std::fs::write(
+      root.join(STATE_FILE),
+      serde_json::to_vec(&Device::default()).unwrap(),
+    )
+    .unwrap();
+    for account in ["previous-account", "different-account"] {
+      let owner = Owner {
+        account: account.into(),
+        vault_id: Uuid::new_v4(),
+      };
+      let mut stale = HashSet::from(["old".into()]);
+      assert_eq!(
+        retain_restorable(root, &owner, &mut stale).unwrap_err(),
+        SYNC_PAUSED
+      );
+    }
+    assert!(load_or_pause(root).unwrap().is_none());
+  }
+
+  #[test]
+  fn a_failed_ownership_checkpoint_still_allows_edits_if_sync_can_be_paused() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let device = load_or_pause(root).unwrap();
+    // A directory cannot be replaced by the checkpoint's atomic file rename.
+    std::fs::create_dir(root.join(STATE_FILE)).unwrap();
+    commit_tracked_edits(
+      root,
+      device,
+      BTreeMap::from([("removed".into(), false)]),
+      Assignment::Blocked,
+      || {
+        assert_eq!(Device::load(root).err().as_deref(), Some(SYNC_PAUSED));
+        Ok(())
+      },
+    )
+    .unwrap();
+    assert!(root.join(STATE_FILE).is_dir());
+  }
+
+  #[test]
+  fn a_failed_pause_write_prevents_local_edits_with_unrecorded_ownership() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let device = load_or_pause(root).unwrap();
+    std::fs::create_dir(root.join(STATE_FILE)).unwrap();
+    std::fs::create_dir(root.join(PAUSE_FILE)).unwrap();
+    let result = commit_tracked_edits(
+      root,
+      device,
+      BTreeMap::from([("removed".into(), false)]),
+      Assignment::Blocked,
+      || panic!("the edit requires a durable sync checkpoint or pause"),
+    );
+    assert!(result.unwrap_err().starts_with("Could not pause"));
   }
 
   #[test]

@@ -238,6 +238,11 @@ device. Apell keeps local and cloud copies when both have changed
 independently. Provider OAuth sessions and custom endpoint credentials stay
 on the device.
 
+If Apell cannot reliably record key changes on a device, it pauses encrypted
+API key sync on that device so you can continue managing its local model
+connections. The pause persists across restarts and Account sign-ins. A
+verified device can still approve another device while its own sync is paused.
+
 ### Enable encrypted key sync in a deployment
 
 1. Add `credentials:read` and `credentials:write` to the existing Store config

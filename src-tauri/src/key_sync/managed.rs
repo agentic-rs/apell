@@ -144,9 +144,16 @@ pub(super) async fn status(app: &AppHandle, host: &Host) -> Result<Value, String
   };
   let local = local_vault(app, &account).await?;
   if local.as_ref().is_some_and(is_verified) {
+    let device_error = automatic::require_device_sync(&host.root).await.err();
+    let sync_paused = device_error.is_some();
+    let sync_error = match device_error {
+      Some(error) => Some(error),
+      None => host.key_sync.automatic.error(&account).await,
+    };
     return Ok(json!({
       "state": "verified",
-      "sync_error": host.key_sync.automatic.error(&account).await,
+      "sync_paused": sync_paused,
+      "sync_error": sync_error,
     }));
   }
   let access = host.account.key_exchange_access(app).await?;

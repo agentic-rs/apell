@@ -181,7 +181,7 @@ export interface AccountStatus {
 }
 export type KeySyncStatus =
   | { state: 'signed_out' | 'unavailable' }
-  | { state: 'verified'; sync_error: string | null }
+  | { state: 'verified'; sync_error: string | null; sync_paused: boolean }
   | { state: 'unverified'; action: 'setup' | 'pair' | 'upgrade' | 'legacy' };
 export interface KeySyncPairing {
   pair_id: string;

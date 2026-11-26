@@ -305,6 +305,7 @@ async fn save_head(
   entries: Vec<Entry>,
 ) -> Result<(), String> {
   verify_account(app, host, &access.account_key).await?;
+  automatic::require_device_sync(&host.root).await?;
   let revision_id = Uuid::new_v4();
   let response = host
     .key_sync

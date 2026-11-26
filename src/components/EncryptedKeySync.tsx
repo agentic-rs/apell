@@ -421,7 +421,8 @@ export function EncryptedKeySync({ disabled, onApplied, onBusyChange }: Props) {
       {status?.state === 'verified' && (
         <>
           <p>
-            <strong>Verified</strong> · API keys sync automatically.
+            <strong>Verified</strong> ·{' '}
+            {status.sync_paused ? 'Sync paused on this device.' : 'API keys sync automatically.'}
           </p>
           {status.sync_error && (
             <p className="status error" role="alert">
