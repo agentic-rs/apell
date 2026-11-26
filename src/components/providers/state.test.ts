@@ -9,6 +9,7 @@ import {
   draftPayload,
   DraftSession,
   hasChanges,
+  hasUnsavedInputs,
   matchingModels,
   OperationScope,
   savePayload,
@@ -30,6 +31,7 @@ const providers: LlmProvider[] = [
 ];
 const connection: LlmConnection = {
   connection_id: 'saved_connection',
+  edit_revision: 'a'.repeat(64),
   name: 'Writing',
   provider_id: 'openai',
   base_url: 'https://provider.invalid/v1',
@@ -82,6 +84,36 @@ describe('connection setup', () => {
     const saved = { ...connection, provider_id: 'codex', base_url: providers[1].base_url };
     expect(hasChanges(connectionDraft(saved, providers), saved)).toBe(false);
     expect(hasChanges(connectionDraft(saved, providers), saved, true)).toBe(true);
+  });
+
+  it('distinguishes a blank new draft from inputs that would be discarded', () => {
+    const initial = connectionDraft(undefined, providers);
+    expect(hasChanges(initial)).toBe(true);
+    expect(hasUnsavedInputs(initial, initial)).toBe(false);
+    const changes = [
+      { name: 'Renamed connection' },
+      { provider_id: 'codex' },
+      { base_url: 'https://other.invalid/v1' },
+      { model_id: 'another-model' },
+      { api_key: 'typed-fixture' },
+      { remove_credential: true },
+    ];
+    for (const change of changes) {
+      expect(hasUnsavedInputs({ ...initial, ...change }, initial)).toBe(true);
+    }
+    expect(hasUnsavedInputs(initial, initial, true)).toBe(true);
+  });
+
+  it('ignores formatting changes that would not change the saved inputs', () => {
+    const initial = connectionDraft(connection, providers);
+    const equivalent = {
+      ...initial,
+      name: `  ${initial.name}  `,
+      base_url: `  ${initial.base_url}///  `,
+      model_id: `  ${initial.model_id}  `,
+    };
+    expect(hasUnsavedInputs(equivalent, initial)).toBe(false);
+    expect(hasChanges(equivalent, connection)).toBe(false);
   });
 
   it('requires fresh authentication after removing a saved key and changing its destination', () => {
@@ -137,6 +169,7 @@ describe('connection setup', () => {
         expect(hasChanges(draft, saved)).toBe(false);
         expect(draftPayload(draft, saved)).toEqual({
           connection_id: saved.connection_id,
+          expected_edit_revision: saved.edit_revision,
           provider_id: saved.provider_id,
           base_url: connection.base_url,
         });
@@ -152,6 +185,7 @@ describe('connection setup', () => {
     expect(destinationChanged(changed, connection)).toBe(true);
     expect(draftPayload(changed, connection)).toMatchObject({
       connection_id: connection.connection_id,
+      expected_edit_revision: connection.edit_revision,
       provider_id: 'codex',
     });
   });
@@ -218,6 +252,22 @@ describe('temporary native drafts', () => {
     session.consume('temporary');
     await session.discard();
     expect(remove).not.toHaveBeenCalled();
+  });
+
+  it('releases the old draft when a saved connection is reviewed at a different revision', async () => {
+    const replacement: NativeConnectionDraft = { draft_id: 'fresh', credential_status: 'absent' };
+    const create = vi.fn().mockResolvedValueOnce(native_draft).mockResolvedValueOnce(replacement);
+    const remove = vi.fn(async () => {});
+    const session = new DraftSession(create, remove);
+    const draft = connectionDraft(connection, providers);
+    await session.ensure(draftPayload(draft, connection));
+    session.update({ ...native_draft, credential_status: 'present' });
+
+    const reviewed = { ...connection, edit_revision: 'b'.repeat(64) };
+    expect(await session.ensure(draftPayload(draft, reviewed))).toEqual(replacement);
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(create).toHaveBeenLastCalledWith(draftPayload(draft, reviewed));
+    expect(remove).toHaveBeenCalledExactlyOnceWith(native_draft.draft_id);
   });
 
   it('discards old destination auth and keeps a newer draft when the old creation completes late', async () => {

@@ -197,6 +197,7 @@ export interface LlmProvider {
 }
 export interface LlmConnection {
   connection_id: string;
+  edit_revision: string;
   name: string;
   provider_id: string;
   base_url: string;
@@ -329,11 +330,13 @@ export interface SettingsTransferResult {
   added: number;
   skipped: number;
 }
-export interface CreateConnectionDraft {
-  connection_id?: string;
+export type CreateConnectionDraft = {
   provider_id: string;
   base_url: string;
-}
+} & (
+  | { connection_id: string; expected_edit_revision: string }
+  | { connection_id?: undefined; expected_edit_revision?: undefined }
+);
 export interface NativeConnectionDraft {
   draft_id: string;
   credential_status: CredentialStatus;

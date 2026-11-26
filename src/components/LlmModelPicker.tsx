@@ -73,6 +73,7 @@ export function LlmModelPicker({ choice }: { choice: ModelChoice }) {
     try {
       const draft = await attempt.ensure({
         connection_id: target.connection_id,
+        expected_edit_revision: target.edit_revision,
         provider_id: target.provider_id,
         base_url: target.base_url,
       });

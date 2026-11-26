@@ -22,6 +22,7 @@ import type {
   NativeConnectionDraft,
 } from '../../lib/types';
 import { Icon } from '../Icon';
+import { Sheet } from '../Sheet';
 import { useBackAction } from '../../lib/backNavigation';
 import { connectionReadiness, connectionReadinessLabel } from '../../lib/modelChoice';
 import { ApiKeyField } from './ApiKeyField';
@@ -35,6 +36,7 @@ import {
   draftPayload,
   DraftSession,
   hasChanges,
+  hasUnsavedInputs,
   OperationScope,
   requestId,
   savePayload,
@@ -49,30 +51,49 @@ interface EditorProps {
   onSaved: (connection: LlmConnection, previous_id?: string) => void;
   onActivated: (connection_id: string) => void;
   onDeleted: (connection_id: string) => void;
-  onBack: () => void;
+  onBack: (refresh?: boolean) => void;
 }
+
+const expired_draft =
+  'This connection draft expired or was discarded. Reopen the editor to continue.';
+const changed_source =
+  'This saved connection changed while you were editing. Reopen it before saving.';
 
 export function ConnectionEditor(props: EditorProps) {
   const [saved, setSaved] = useState(props.connection);
   const [draft, setDraft] = useState(() => connectionDraft(props.connection, props.providers));
+  const original_draft = useRef(draft);
   const [models, setModels] = useState<LlmModels>();
   const [login, setLogin] = useState<LoginChallenge>();
   const [native_draft, setNativeDraft] = useState<NativeConnectionDraft>();
   const [staged_login, setStagedLogin] = useState(false);
+  const [sign_in_expired, setSignInExpired] = useState(false);
+  const [source_changed, setSourceChanged] = useState(false);
   const [busy, setBusy] = useState('');
   const back_disabled = ['save', 'activate', 'delete'].includes(busy);
-  const [status, setStatus] = useState('');
-  const [failed, setFailed] = useState(false);
+  const [status, setStatus] = useState<{ text: string; failed: boolean; setup: boolean }>();
   const [confirm_delete, setConfirmDelete] = useState(false);
-  const goBack = () => {
-    if (back_disabled) return;
-    if (confirm_delete) setConfirmDelete(false);
-    else props.onBack();
-  };
-  useBackAction(25, true, goBack);
+  const [confirm_discard, setConfirmDiscard] = useState(false);
   const scope = useRef(new OperationScope());
   const drafts = useRef(new DraftSession(createConnectionDraft, discardConnectionDraft));
   const login_operation = useRef<Operation | undefined>(undefined);
+  const leave = () => {
+    scope.current.cancel();
+    void drafts.current.discard().catch(() => {});
+    props.onBack(source_changed);
+  };
+  const goBack = () => {
+    if (back_disabled) return;
+    if (confirm_delete) setConfirmDelete(false);
+    else if (
+      busy === 'login' ||
+      sign_in_expired ||
+      hasUnsavedInputs(draft, saved ?? original_draft.current, staged_login)
+    )
+      setConfirmDiscard(true);
+    else leave();
+  };
+  useBackAction(25, true, goBack);
   const provider = props.providers.find((item) => item.provider_id === draft.provider_id);
   const device_login = provider?.auth_methods.includes('device_code') ?? false;
   const accepts_key = provider?.auth_methods.includes('api_key') ?? false;
@@ -80,12 +101,15 @@ export function ConnectionEditor(props: EditorProps) {
   const dirty = hasChanges(draft, saved, staged_login);
   const readiness = saved && connectionReadiness(saved, props.providers);
   const readiness_label = readiness && connectionReadinessLabel(readiness);
-  const can_probe = readiness?.state === 'ready' && !dirty && !busy;
+  const can_probe =
+    readiness?.state === 'ready' && !dirty && !busy && !sign_in_expired && !source_changed;
   const active = saved?.connection_id === props.active_connection_id;
   const inherited_status = !changed_destination ? saved?.credential_status : undefined;
   const credential_status = native_draft?.credential_status ?? inherited_status;
   const can_discover =
     !busy &&
+    !source_changed &&
+    !sign_in_expired &&
     !!provider &&
     !!draft.base_url.trim() &&
     (provider.auth_methods.includes('none') ||
@@ -102,9 +126,36 @@ export function ConnectionEditor(props: EditorProps) {
     [],
   );
 
-  const announce = (text: string, error = false) => {
-    setStatus(text);
-    setFailed(error);
+  const announce = (text: string, failed = false, setup = false) =>
+    setStatus(text ? { text, failed, setup } : undefined);
+  const discardDraft = () => {
+    const disposal = drafts.current.discard();
+    setNativeDraft(undefined);
+    setStagedLogin(false);
+    setModels(undefined);
+    setLogin(undefined);
+    return disposal;
+  };
+  const handleDraftFailure = (error: unknown, was_signed_in = staged_login) => {
+    const detail = message(error);
+    if (detail === changed_source) {
+      void discardDraft().catch(() => {});
+      setSourceChanged(true);
+      announce(detail, true, true);
+      return true;
+    }
+    if (detail !== expired_draft) return false;
+    void discardDraft().catch(() => {});
+    const lost_sign_in = (was_signed_in || sign_in_expired) && !draft.remove_credential;
+    setSignInExpired(lost_sign_in);
+    announce(
+      lost_sign_in
+        ? 'Your temporary sign-in expired. Sign in again before saving it.'
+        : 'This setup expired. Your changes are still here. Try again.',
+      true,
+      true,
+    );
+    return true;
   };
   const acceptSaved = (connection: LlmConnection) => {
     props.onSaved(connection, saved?.connection_id);
@@ -112,8 +163,10 @@ export function ConnectionEditor(props: EditorProps) {
     setDraft(connectionDraft(connection, props.providers));
     setNativeDraft(undefined);
     setStagedLogin(false);
+    setSignInExpired(false);
   };
   const run = async (kind: string, action: (operation: Operation) => Promise<void>) => {
+    if (source_changed) return;
     const operation = scope.current.start();
     if (!operation) return;
     setBusy(kind);
@@ -122,7 +175,7 @@ export function ConnectionEditor(props: EditorProps) {
     try {
       await action(operation);
     } catch (error) {
-      if (operation.isCurrent()) announce(message(error), true);
+      if (operation.isCurrent() && !handleDraftFailure(error)) announce(message(error), true);
     } finally {
       if (operation.isCurrent()) {
         operation.finish();
@@ -143,22 +196,15 @@ export function ConnectionEditor(props: EditorProps) {
       return;
     }
     void run('cancel_login', async (operation) => {
-      const disposal = drafts.current.discard();
-      setNativeDraft(undefined);
-      setStagedLogin(false);
-      setModels(undefined);
-      await disposal;
+      await discardDraft();
       if (!operation.isCurrent()) return;
       announce('Sign-in cancelled. No credential was saved.');
     });
   };
   const resetDestination = () => {
     scope.current.cancel();
-    void drafts.current.discard().catch(() => {});
-    setNativeDraft(undefined);
-    setStagedLogin(false);
-    setModels(undefined);
-    setLogin(undefined);
+    void discardDraft().catch(() => {});
+    setSignInExpired(false);
   };
   const ensureDraft = async (operation: Operation) => {
     const value = await drafts.current.ensure(draftPayload(draft, saved));
@@ -198,13 +244,15 @@ export function ConnectionEditor(props: EditorProps) {
       drafts.current.update(authenticated);
       setNativeDraft(authenticated);
       setStagedLogin(true);
+      setSignInExpired(false);
       setDraft((current) => ({ ...current, remove_credential: false, api_key: '' }));
       setLogin(undefined);
       setBusy('models');
       try {
         await loadModels(operation, authenticated, true);
       } catch (error) {
-        if (operation.isCurrent()) announce(`Signed in for this setup. ${message(error)}`, true);
+        if (operation.isCurrent() && !handleDraftFailure(error, true))
+          announce(`Signed in for this setup. ${message(error)}`, true);
       }
     });
   const openSignIn = async () => {
@@ -216,6 +264,14 @@ export function ConnectionEditor(props: EditorProps) {
       if (operation.isCurrent()) announce(message(error), true);
     }
   };
+  const feedback = status && (
+    <p
+      className={`status connection-status${status.failed ? ' error' : ''}`}
+      role={status.failed ? 'alert' : 'status'}
+    >
+      {status.text}
+    </p>
+  );
 
   return (
     <section className="settings connection-editor panel" aria-busy={!!busy}>
@@ -242,6 +298,7 @@ export function ConnectionEditor(props: EditorProps) {
       <form
         onSubmit={(event) => {
           event.preventDefault();
+          if (source_changed || sign_in_expired) return;
           void run('save', async (operation) => {
             const value = await ensureDraft(operation);
             if (!operation.isCurrent()) return;
@@ -256,7 +313,7 @@ export function ConnectionEditor(props: EditorProps) {
           });
         }}
       >
-        <fieldset disabled={!!busy}>
+        <fieldset disabled={!!busy || source_changed}>
           <label>
             Provider
             <select
@@ -354,8 +411,19 @@ export function ConnectionEditor(props: EditorProps) {
                       : 'Sign in with your account using a one-time code.'}
               </p>
               <button type="button" disabled={!!busy} onClick={signIn}>
-                {credential_status === 'present' ? 'Sign in again' : 'Sign in'}
+                {sign_in_expired || credential_status === 'present' ? 'Sign in again' : 'Sign in'}
               </button>
+              {sign_in_expired && inherited_status === 'present' && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSignInExpired(false);
+                    announce('Your saved sign-in will be kept.');
+                  }}
+                >
+                  Keep saved sign-in
+                </button>
+              )}
               {credential_status === 'present' && (
                 <button
                   type="button"
@@ -367,6 +435,7 @@ export function ConnectionEditor(props: EditorProps) {
                       api_key: '',
                     });
                     setModels(undefined);
+                    if (!draft.remove_credential) setSignInExpired(false);
                     announce(draft.remove_credential ? '' : 'Save to remove the sign-in.');
                   }}
                 >
@@ -408,7 +477,7 @@ export function ConnectionEditor(props: EditorProps) {
             Cancel sign-in
           </button>
         )}
-        <fieldset disabled={!!busy}>
+        <fieldset disabled={!!busy || source_changed}>
           <ModelPicker
             model_id={draft.model_id}
             models={models}
@@ -442,10 +511,17 @@ export function ConnectionEditor(props: EditorProps) {
         </fieldset>
         <button
           className="primary"
-          disabled={!!busy || !dirty || !canSaveDraft(draft, provider, saved, staged_login)}
+          disabled={
+            !!busy ||
+            source_changed ||
+            sign_in_expired ||
+            !dirty ||
+            !canSaveDraft(draft, provider, saved, staged_login)
+          }
         >
           {busy === 'save' ? 'Saving…' : 'Save connection'}
         </button>
+        {status?.setup && feedback}
       </form>
 
       {busy === 'test' && (
@@ -500,14 +576,7 @@ export function ConnectionEditor(props: EditorProps) {
           )}
         </div>
       )}
-      {status && (
-        <p
-          className={`status connection-status${failed ? ' error' : ''}`}
-          role={failed ? 'alert' : 'status'}
-        >
-          {status}
-        </p>
-      )}
+      {!status?.setup && feedback}
       {saved && (
         <div className="delete-connection">
           {confirm_delete ? (
@@ -539,7 +608,7 @@ export function ConnectionEditor(props: EditorProps) {
             <button
               type="button"
               className="text-button danger"
-              disabled={!!busy}
+              disabled={!!busy || source_changed}
               onClick={() => setConfirmDelete(true)}
             >
               Remove connection
@@ -547,6 +616,21 @@ export function ConnectionEditor(props: EditorProps) {
           )}
         </div>
       )}
+      <Sheet
+        open={confirm_discard}
+        title="Discard connection changes?"
+        onClose={() => setConfirmDiscard(false)}
+      >
+        <p>Your changes to this connection setup will be lost.</p>
+        <div className="button-row">
+          <button type="button" onClick={() => setConfirmDiscard(false)}>
+            Keep editing
+          </button>
+          <button type="button" className="danger" onClick={leave}>
+            Discard changes
+          </button>
+        </div>
+      </Sheet>
     </section>
   );
 }

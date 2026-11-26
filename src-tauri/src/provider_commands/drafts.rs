@@ -16,6 +16,8 @@ const MAX_DRAFTS: usize = 4;
 const DRAFT_LIFETIME: Duration = Duration::from_secs(30 * 60);
 const EXPIRED: &str =
   "This connection draft expired or was discarded. Reopen the editor to continue.";
+const SOURCE_CHANGED: &str =
+  "This saved connection changed while you were editing. Reopen it before saving.";
 
 #[derive(Clone)]
 pub(super) struct Draft {
@@ -32,6 +34,7 @@ pub(super) struct Draft {
 #[serde(deny_unknown_fields)]
 pub(super) struct CreateDraft {
   connection_id: Option<String>,
+  expected_edit_revision: Option<String>,
   provider_id: String,
   base_url: String,
 }
@@ -65,10 +68,8 @@ impl Draft {
 
   fn check_source(&self, settings: &Settings) -> Result<(), String> {
     if let Some(source) = &self.source {
-      if settings.connection(&source.connection_id)? != source {
-        return Err(
-          "This saved connection changed while you were editing. Reopen it before saving.".into(),
-        );
+      if settings.connection(&source.connection_id).ok() != Some(source) {
+        return Err(SOURCE_CHANGED.into());
       }
     }
     Ok(())
@@ -97,11 +98,17 @@ fn public(id: &str, status: &str) -> Value {
 }
 
 fn prepare_draft(settings: &Settings, input: CreateDraft) -> Result<Draft, String> {
-  let source = input
-    .connection_id
-    .as_deref()
-    .map(|id| settings.connection(id).cloned())
-    .transpose()?;
+  let source = match (&input.connection_id, &input.expected_edit_revision) {
+    (Some(id), Some(expected)) => {
+      let source = settings.connection(id).map_err(|_| SOURCE_CHANGED)?;
+      if source.edit_revision()? != *expected {
+        return Err(SOURCE_CHANGED.into());
+      }
+      Some(source.clone())
+    }
+    (None, None) => None,
+    _ => return Err("Invalid connection draft.".into()),
+  };
   let name = providers::presets()
     .into_iter()
     .find(|preset| preset.provider_id == input.provider_id)
@@ -380,7 +387,7 @@ pub(super) async fn save(app: AppHandle, host: &Host, input: SaveDraft) -> Resul
   .await?;
   crate::key_sync::kick(&app);
   crate::config_sync::kick(&app);
-  blocking(move || Ok(connection.public(credential_status(&app, &connection)))).await
+  blocking(move || connection.public(credential_status(&app, &connection))).await
 }
 
 async fn save_with<F: Future<Output = Result<(), String>>>(
@@ -438,6 +445,7 @@ async fn save_with<F: Future<Output = Result<(), String>>>(
 
 pub(super) async fn begin_login(host: &Host, id: &str) -> Result<Value, String> {
   let (draft, reservation, mut cancellation) = {
+    let settings = host.settings.lock().await;
     let drafts = host
       .provider_jobs
       .drafts
@@ -445,6 +453,7 @@ pub(super) async fn begin_login(host: &Host, id: &str) -> Result<Value, String> 
       .map_err(|_| "Connection drafts are unavailable.")?;
     let draft = drafts.get(id).ok_or(EXPIRED)?;
     draft.check_alive()?;
+    draft.check_source(&settings)?;
     if !draft.connection.is_oauth() {
       return Err("This provider does not use sign-in.".into());
     }
@@ -582,10 +591,20 @@ mod tests {
   fn create_input(provider: &str) -> CreateDraft {
     CreateDraft {
       connection_id: None,
+      expected_edit_revision: None,
       provider_id: provider.into(),
       base_url: providers::default_base_url(provider)
         .unwrap_or("https://example.invalid/v1")
         .into(),
+    }
+  }
+
+  fn edit_input(source: &Connection) -> CreateDraft {
+    CreateDraft {
+      connection_id: Some(source.connection_id.clone()),
+      expected_edit_revision: Some(source.edit_revision().unwrap()),
+      provider_id: source.provider_id.clone(),
+      base_url: source.base_url.clone(),
     }
   }
 
@@ -726,9 +745,7 @@ mod tests {
     source.credential.account = "a".repeat(64);
     source.credential.format = CredentialFormat::ApiKey;
     host.settings.lock().await.replace(None, source.clone());
-    let mut input = create_input("custom");
-    input.connection_id = Some(source.connection_id.clone());
-    let draft = prepare_draft(&*host.settings.lock().await, input).unwrap();
+    let draft = prepare_draft(&*host.settings.lock().await, edit_input(&source)).unwrap();
     let id = "legacy-draft";
     host
       .provider_jobs
@@ -756,8 +773,7 @@ mod tests {
       .unwrap()
       .connection;
     host.settings.lock().await.replace(None, source.clone());
-    let mut input = create_input("openai");
-    input.connection_id = Some(source.connection_id.clone());
+    let mut input = edit_input(&source);
     input.base_url = "https://another.invalid/v1".into();
     let changed = prepare_draft(&*host.settings.lock().await, input).unwrap();
     assert!(changed.inherited().is_none());
@@ -765,13 +781,54 @@ mod tests {
     let mut final_connection = changed.connection.clone();
     assert!(final_updates(&changed, &mut final_connection, &KeyAction::Keep, None).is_err());
 
-    let mut input = create_input("openai");
-    input.connection_id = Some(source.connection_id.clone());
-    let same = prepare_draft(&*host.settings.lock().await, input).unwrap();
+    let same = prepare_draft(&*host.settings.lock().await, edit_input(&source)).unwrap();
     let mut final_connection = same.connection.clone();
     assert_eq!(
       final_updates(&same, &mut final_connection, &KeyAction::Remove, None).unwrap(),
       vec![(source.credential.account, None)]
+    );
+  }
+
+  #[test]
+  fn edits_require_the_reviewed_source_before_the_first_draft_and_on_reopen() {
+    let mut settings = Settings::default();
+    let source = prepare_draft(&settings, create_input("custom"))
+      .unwrap()
+      .connection;
+    settings.replace(None, source.clone());
+
+    for input in [
+      json!({"connection_id":source.connection_id,"provider_id":source.provider_id,"base_url":source.base_url}),
+      json!({"expected_edit_revision":source.edit_revision().unwrap(),"provider_id":source.provider_id,"base_url":source.base_url}),
+    ] {
+      let input = serde_json::from_value(input).unwrap();
+      assert_eq!(
+        prepare_draft(&settings, input).err().as_deref(),
+        Some("Invalid connection draft.")
+      );
+    }
+    let first = prepare_draft(&settings, edit_input(&source)).unwrap();
+    assert_eq!(first.source, Some(source.clone()));
+    settings.active_connection_id = Some(source.connection_id.clone());
+    let renewed = prepare_draft(&settings, edit_input(&source)).unwrap();
+    assert_eq!(renewed.source, Some(source.clone()));
+
+    let updated = &mut settings.connections[0];
+    updated.model_id = "synced-model".into();
+    let updated_review = updated.clone();
+    assert_eq!(
+      prepare_draft(&settings, edit_input(&source))
+        .err()
+        .as_deref(),
+      Some(SOURCE_CHANGED)
+    );
+    assert!(prepare_draft(&settings, edit_input(&updated_review)).is_ok());
+    settings.connections.clear();
+    assert_eq!(
+      prepare_draft(&settings, edit_input(&updated_review))
+        .err()
+        .as_deref(),
+      Some(SOURCE_CHANGED)
     );
   }
 
@@ -786,13 +843,11 @@ mod tests {
     })
     .await
     .is_err());
-    let source = prepare_draft(&Settings::default(), create_input("custom"))
+    let source = prepare_draft(&Settings::default(), create_input("codex"))
       .unwrap()
       .connection;
     host.settings.lock().await.replace(None, source.clone());
-    let mut input = create_input("custom");
-    input.connection_id = Some(source.connection_id.clone());
-    let draft = prepare_draft(&*host.settings.lock().await, input).unwrap();
+    let draft = prepare_draft(&*host.settings.lock().await, edit_input(&source)).unwrap();
     host
       .provider_jobs
       .drafts
@@ -808,11 +863,24 @@ mod tests {
       .find(|connection| connection.connection_id == source.connection_id)
       .unwrap()
       .name = "Changed elsewhere".into();
-    assert!(save_with(&host, save_input("stale"), |_, _, _| async {
-      panic!("stale editor must not commit")
-    })
-    .await
-    .is_err());
+    assert_eq!(
+      begin_login(&host, "stale").await.unwrap_err(),
+      SOURCE_CHANGED
+    );
+    assert!(host.provider_jobs.pending.lock().unwrap().is_empty());
+    for removed in [false, true] {
+      if removed {
+        host.settings.lock().await.connections.clear();
+      }
+      assert_eq!(
+        save_with(&host, save_input("stale"), |_, _, _| async {
+          panic!("stale editor must not commit")
+        })
+        .await
+        .unwrap_err(),
+        SOURCE_CHANGED
+      );
+    }
   }
 
   #[tokio::test]
@@ -903,10 +971,18 @@ mod tests {
       .get_mut(&id)
       .unwrap()
       .expires_at = Instant::now() - Duration::from_secs(1);
-    assert!(get(&host.provider_jobs, &id)
-      .err()
-      .unwrap()
-      .contains("expired"));
+    assert_eq!(
+      get(&host.provider_jobs, &id).err().as_deref(),
+      Some(EXPIRED)
+    );
+    assert_eq!(
+      save_with(&host, save_input(&id), |_, _, _| async {
+        panic!("expired editor must not commit")
+      })
+      .await
+      .unwrap_err(),
+      EXPIRED
+    );
     discard(&host.provider_jobs, &id).await.unwrap();
     assert!(host.provider_jobs.drafts.lock().unwrap().is_empty());
     assert_eq!(credential_ref("fixture").account.len(), 64);

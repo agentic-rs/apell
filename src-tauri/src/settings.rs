@@ -50,15 +50,22 @@ impl Connection {
     matches!(self.provider_id.as_str(), "codex" | "github-copilot")
   }
 
-  pub fn public(&self, credential_status: &str) -> serde_json::Value {
-    serde_json::json!({
+  pub fn edit_revision(&self) -> Result<String, String> {
+    serde_json::to_vec(self)
+      .map(|metadata| digest(&metadata))
+      .map_err(|_| "Could not encode the connection revision.".into())
+  }
+
+  pub fn public(&self, credential_status: &str) -> Result<serde_json::Value, String> {
+    Ok(serde_json::json!({
       "connection_id": self.connection_id,
       "name": self.name,
       "provider_id": self.provider_id,
       "base_url": self.base_url,
       "model_id": self.model_id,
       "credential_status": credential_status,
-    })
+      "edit_revision": self.edit_revision()?,
+    }))
   }
 
   fn is_legacy_demo(&self) -> bool {
@@ -480,7 +487,16 @@ mod tests {
       std::fs::read_to_string(dir.path().join("llm.json")).unwrap(),
       old.to_string()
     );
-    assert!(active.public("present").get("credential").is_none());
+    let public = active.public("present").unwrap();
+    assert!(public.get("credential").is_none());
+    assert_eq!(public["edit_revision"], active.edit_revision().unwrap());
+    assert_eq!(
+      public["edit_revision"],
+      active.public("absent").unwrap()["edit_revision"]
+    );
+    let mut moved = active.clone();
+    moved.credential = credential_ref(&moved.connection_id);
+    assert_ne!(moved.edit_revision().unwrap(), public["edit_revision"]);
   }
 
   #[test]

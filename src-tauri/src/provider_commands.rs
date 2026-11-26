@@ -448,12 +448,20 @@ pub async fn dispatch(
       let saved = host.settings.lock().await.clone();
       let pending_preferred_connection_id =
         crate::config_sync::pending_preferred_connection_id(&app, host, &saved).await;
-      blocking(move || Ok(json!({
-        "active_connection_id": saved.active_connection_id,
-        "pending_preferred_connection_id": pending_preferred_connection_id,
-        "connections": saved.connections.iter().map(|connection| connection.public(credential_status(&app, connection))).collect::<Vec<_>>(),
-        "providers": providers::presets(),
-      }))).await
+      blocking(move || {
+        let connections = saved
+          .connections
+          .iter()
+          .map(|connection| connection.public(credential_status(&app, connection)))
+          .collect::<Result<Vec<_>, _>>()?;
+        Ok(json!({
+          "active_connection_id": saved.active_connection_id,
+          "pending_preferred_connection_id": pending_preferred_connection_id,
+          "connections": connections,
+          "providers": providers::presets(),
+        }))
+      })
+      .await
     }
     "llm.create_draft" => {
       let input = serde_json::from_value(params).map_err(|_| "Invalid connection draft.")?;

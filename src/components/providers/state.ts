@@ -47,7 +47,10 @@ function normalizedEndpoint(value: string): string {
   return value.trim().replace(/\/+$/, '');
 }
 
-export function destinationChanged(draft: ConnectionDraft, saved?: LlmConnection): boolean {
+export function destinationChanged(
+  draft: ConnectionDraft,
+  saved?: Pick<ConnectionDraft, 'provider_id' | 'base_url'>,
+): boolean {
   return (
     !!saved &&
     (draft.provider_id !== saved.provider_id ||
@@ -56,11 +59,17 @@ export function destinationChanged(draft: ConnectionDraft, saved?: LlmConnection
 }
 
 export function draftPayload(draft: ConnectionDraft, saved?: LlmConnection): CreateConnectionDraft {
-  return {
-    ...(saved ? { connection_id: saved.connection_id } : {}),
+  const destination = {
     provider_id: draft.provider_id,
     base_url: normalizedEndpoint(draft.base_url),
   };
+  return saved
+    ? {
+        ...destination,
+        connection_id: saved.connection_id,
+        expected_edit_revision: saved.edit_revision,
+      }
+    : destination;
 }
 
 export function credentialPayload(draft: ConnectionDraft): DraftCredential {
@@ -86,19 +95,26 @@ export function savePayload(
   };
 }
 
+export function hasUnsavedInputs(
+  draft: ConnectionDraft,
+  baseline: Pick<ConnectionDraft, 'name' | 'provider_id' | 'base_url' | 'model_id'>,
+  staged_login = false,
+): boolean {
+  return (
+    staged_login ||
+    draft.name.trim() !== baseline.name ||
+    destinationChanged(draft, baseline) ||
+    draft.model_id.trim() !== baseline.model_id ||
+    credentialPayload(draft).key_action !== 'keep'
+  );
+}
+
 export function hasChanges(
   draft: ConnectionDraft,
   saved?: LlmConnection,
   staged_login = false,
 ): boolean {
-  if (!saved) return true;
-  return (
-    staged_login ||
-    draft.name.trim() !== saved.name ||
-    destinationChanged(draft, saved) ||
-    draft.model_id.trim() !== saved.model_id ||
-    credentialPayload(draft).key_action !== 'keep'
-  );
+  return !saved || hasUnsavedInputs(draft, saved, staged_login);
 }
 
 export function canSaveDraft(
@@ -151,6 +167,7 @@ export class DraftSession {
     const normalized = { ...input, base_url: normalizedEndpoint(input.base_url) };
     const key = JSON.stringify([
       normalized.connection_id,
+      normalized.expected_edit_revision,
       normalized.provider_id,
       normalized.base_url,
     ]);

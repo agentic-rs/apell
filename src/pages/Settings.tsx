@@ -144,9 +144,10 @@ export function Settings() {
       back_label={section === 'default-model' ? 'Default model' : undefined}
       providers={settings.providers}
       active_connection_id={settings.active_connection_id}
-      onBack={() => {
+      onBack={(refresh) => {
         setEditor(undefined);
         setStatus('');
+        if (refresh) setReloadRequested(true);
       }}
       onSaved={(connection, previous_id) => {
         setSettings((current) => {

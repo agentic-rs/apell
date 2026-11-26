@@ -12,6 +12,7 @@ import type { LlmConnection, LlmProvider, LlmSettings } from './types';
 
 const connection: LlmConnection = {
   connection_id: 'connection_one',
+  edit_revision: 'a'.repeat(64),
   name: 'Private alias',
   provider_id: 'custom',
   base_url: 'https://private.invalid/v1',
@@ -82,6 +83,7 @@ describe('initial applet model target', () => {
   const default_connection: LlmConnection = {
     ...connection,
     connection_id: 'default-connection',
+    edit_revision: 'b'.repeat(64),
     model_id: 'preferred-model',
   };
   const picker_settings = {
