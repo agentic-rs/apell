@@ -48,6 +48,11 @@ pub fn run() {
         .build(),
     )
     .setup(move |app| {
+      #[cfg(all(feature = "local-dev", target_os = "macos", debug_assertions))]
+      if app.config().identifier != tauri_plugin_apell_credentials::LOCAL_BUNDLE_IDENTIFIER {
+        let message = "Use pnpm dev:local shell to run Apell Local with its own bundle ID.";
+        return Err(std::io::Error::other(message).into());
+      }
       let root = app.path().app_data_dir()?;
       let host = host::Host::new(root).map_err(std::io::Error::other)?;
       #[cfg(all(target_os = "ios", debug_assertions))]

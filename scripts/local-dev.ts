@@ -5,6 +5,7 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
+  readFileSync,
   readdirSync,
   rmSync,
   writeFileSync,
@@ -234,6 +235,35 @@ function start() {
   console.log('Run pnpm dev:local web for the Store at https://localhost:8788.');
 }
 
+function runShell() {
+  if (process.platform !== 'darwin') {
+    throw new Error('The local native shell currently requires macOS.');
+  }
+  initialize();
+  const shell_config = {
+    identifier: 'dev.apell.shell.local',
+    productName: 'Apell Local',
+    build: {
+      beforeDevCommand: 'pnpm exec vite --host 127.0.0.1 --port 1422',
+      devUrl: 'http://localhost:1422',
+    },
+  };
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    APELL_SHELL_BUILD_PROFILE: readFileSync(join(config, 'shell.env'), 'utf8'),
+    APELL_REQUIRE_KEY_SYNC: '1',
+    APELL_LOCAL_CA_FILE: join(tls, 'ca.crt'),
+  };
+  delete env.TAURI_DEV_HOST;
+  // Build the sample before Tauri starts its frontend-server deadline.
+  run('pnpm', ['build:chatbot'], env);
+  run(
+    'pnpm',
+    ['desktop:dev', '--features', 'local-dev', '--config', JSON.stringify(shell_config)],
+    env,
+  );
+}
+
 try {
   const command = process.argv[2] ?? 'up';
   switch (command) {
@@ -252,6 +282,9 @@ try {
         APELL_DEV_TLS_DIR: tls,
       });
       break;
+    case 'shell':
+      runShell();
+      break;
     case 'logs':
       if (!running()) throw new Error('Start the local services first.');
       run(engine, ['logs', '--follow', name]);
@@ -260,7 +293,7 @@ try {
       if (running()) run(engine, ['stop', name]);
       break;
     default:
-      throw new Error('Usage: pnpm dev:local [up | web | reload | logs | stop]');
+      throw new Error('Usage: pnpm dev:local [up | web | shell | reload | logs | stop]');
   }
 } catch (error) {
   console.error(error instanceof Error ? error.message : error);

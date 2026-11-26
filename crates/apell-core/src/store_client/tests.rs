@@ -130,6 +130,29 @@ async fn catalog_networking_rejects_redirects_and_malformed_responses() {
 }
 
 #[tokio::test]
+async fn a_custom_tls_builder_still_rejects_store_redirects() {
+  let server = MockStore::new(vec![
+    (
+      "/api/v1/applets".into(),
+      Reply::status(302, Vec::new()).header("Location", "/redirected"),
+    ),
+    (
+      "/redirected".into(),
+      Reply::json(&StoreCatalog { applets: vec![] }),
+    ),
+  ])
+  .await;
+  let builder = Client::builder().redirect(reqwest::redirect::Policy::limited(5));
+  let error = StoreClient::with_http_builder(&server.origin, builder)
+    .unwrap()
+    .catalog()
+    .await
+    .unwrap_err();
+  assert!(error.contains("The store returned a redirect"));
+  assert_eq!(server.requests.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
 async fn network_metadata_cannot_redirect_downloads_or_icons() {
   let release = release(&package("sample", "1.0.0", &["sqlite"]), "1.0.0");
   let mut cross_origin = detail(&release);

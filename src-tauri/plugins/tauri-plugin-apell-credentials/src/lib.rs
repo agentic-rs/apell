@@ -18,12 +18,25 @@ pub fn init<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {
     .build()
 }
 
+#[cfg(target_os = "macos")]
+pub const LOCAL_BUNDLE_IDENTIFIER: &str = "dev.apell.shell.local";
+
+#[cfg(target_os = "macos")]
+fn macos_service(identifier: &str) -> &'static str {
+  // The macOS User Keychain matches credentials by service and account.
+  if identifier == LOCAL_BUNDLE_IDENTIFIER {
+    "dev.apell.llm.local"
+  } else {
+    "dev.apell.llm"
+  }
+}
+
 #[cfg(any(target_os = "macos", target_os = "ios"))]
-fn entry(account: &str) -> Result<keyring_core::Entry, String> {
+fn entry<R: Runtime>(_app: &AppHandle<R>, account: &str) -> Result<keyring_core::Entry, String> {
   #[cfg(target_os = "macos")]
   let result = apple_native_keyring_store::keychain::Cred::build(
     apple_native_keyring_store::keychain::MacKeychainDomain::User,
-    "dev.apell.llm",
+    macos_service(&_app.config().identifier),
     account,
   );
   #[cfg(target_os = "ios")]
@@ -40,7 +53,7 @@ fn entry(account: &str) -> Result<keyring_core::Entry, String> {
 pub fn read<R: Runtime>(_app: &AppHandle<R>, account: &str) -> Result<Option<String>, String> {
   #[cfg(any(target_os = "macos", target_os = "ios"))]
   {
-    match entry(account)?.get_password() {
+    match entry(_app, account)?.get_password() {
       Ok(value) => Ok(Some(value)),
       Err(keyring_core::Error::NoEntry) => Ok(None),
       Err(_) => Err("Could not read the credential from Keychain.".into()),
@@ -80,7 +93,7 @@ pub fn write<R: Runtime>(
   }
   #[cfg(any(target_os = "macos", target_os = "ios"))]
   {
-    let entry = entry(account)?;
+    let entry = entry(_app, account)?;
     if let Some(value) = value {
       entry
         .set_password(value)
@@ -110,5 +123,23 @@ pub fn write<R: Runtime>(
   {
     let _ = (account, value);
     Err("Secure credentials are supported on iOS, Android, and macOS.".into())
+  }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+  use super::macos_service;
+
+  #[test]
+  fn only_the_local_shell_uses_the_local_keychain_service() {
+    assert_eq!(
+      macos_service("dev.apell.shell.local"),
+      "dev.apell.llm.local"
+    );
+    assert_eq!(macos_service("dev.apell.shell"), "dev.apell.llm");
+    assert_eq!(
+      macos_service("dev.apell.shell.local.preview"),
+      "dev.apell.llm"
+    );
   }
 }

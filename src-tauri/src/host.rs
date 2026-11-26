@@ -81,6 +81,8 @@ impl Host {
     let settings = Settings::load(&root)?;
     let llm = Arc::new(LlmService::new()?);
     llm.register_session("shell-settings")?;
+    let account = crate::account::Account::new()?;
+    let key_sync = crate::key_sync::KeySync::new(account.http_client().clone());
     Ok(Self {
       host_key: format!("{}{}", Uuid::new_v4(), Uuid::new_v4()),
       bundles: Arc::new(BundleStore::new(root.join("bundles"))),
@@ -92,9 +94,9 @@ impl Host {
       files: Arc::new(FileStore::new(root.join("files"))),
       config: Arc::new(ConfigStore::new(root.join("config"))),
       settings: tokio::sync::Mutex::new(settings),
-      account: crate::account::Account::new()?,
+      account,
       config_sync: crate::config_sync::ConfigSync::default(),
-      key_sync: crate::key_sync::KeySync::new()?,
+      key_sync,
       credential_gate: tokio::sync::Mutex::new(()),
       store_gate: Arc::default(),
       store_icons: tokio::sync::Semaphore::new(4),

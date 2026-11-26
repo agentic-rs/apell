@@ -6,7 +6,7 @@ pub use transfer::{DownloadCheckpoint, DownloadOutcome};
 
 use crate::bundles::{digest, parse};
 use crate::icons::{png_data_url, MAX_ICON_BYTES};
-use reqwest::{Client, Response};
+use reqwest::{Client, ClientBuilder, Response};
 use serde::de::DeserializeOwned;
 use std::time::Duration;
 use url::{Host, Url};
@@ -55,9 +55,25 @@ pub struct StoreClient {
 
 impl StoreClient {
   pub fn new(store_url: &str) -> Result<Self, String> {
-    let origin = normalize_store_url(store_url)?;
-    let mut builder = crate::http::client_builder()?
+    Self::from_origin(
+      normalize_store_url(store_url)?,
+      crate::http::client_builder()?,
+    )
+  }
+
+  /// Uses the host's TLS policy and applies the Store's timeout and redirect rules.
+  /// The builder must not carry credentials or default authorization headers.
+  pub fn with_http_builder(store_url: &str, builder: ClientBuilder) -> Result<Self, String> {
+    Self::from_origin(normalize_store_url(store_url)?, builder)
+  }
+
+  fn from_origin(origin: String, builder: ClientBuilder) -> Result<Self, String> {
+    let mut builder = builder
       .redirect(reqwest::redirect::Policy::none())
+      .no_gzip()
+      .no_brotli()
+      .no_deflate()
+      .no_zstd()
       .connect_timeout(Duration::from_secs(15))
       .read_timeout(Duration::from_secs(30))
       .timeout(Duration::from_secs(120))

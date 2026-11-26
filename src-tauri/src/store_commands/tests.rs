@@ -329,7 +329,10 @@ fn installed_source_path_only_switches_an_active_applets_own_channel() {
 #[test]
 fn local_store_settings_are_atomic_optional_and_preserve_corrupt_files() {
   let root = tempfile::tempdir().unwrap();
-  assert!(state::load(root.path()).unwrap().store_url.is_none());
+  assert_eq!(
+    state::load(root.path()).unwrap().store_url.as_deref(),
+    DEFAULT_STORE_URL
+  );
   state::save(
     root.path(),
     &StoreConfig {

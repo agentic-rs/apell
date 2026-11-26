@@ -1,3 +1,6 @@
+#[cfg(all(feature = "local-dev", not(all(target_os = "macos", debug_assertions))))]
+compile_error!("The local-dev feature requires a macOS debug build.");
+
 mod oidc;
 
 use crate::{commands::blocking, host::Host};
@@ -179,13 +182,31 @@ pub(crate) struct Account {
 
 impl Account {
   pub(crate) fn new() -> Result<Self, String> {
+    let config = Config::compiled();
+    #[cfg(all(feature = "local-dev", target_os = "macos", debug_assertions))]
+    let client = oidc::local_http_builder(config.as_ref())?
+      .connect_timeout(Duration::from_secs(10))
+      .read_timeout(Duration::from_secs(30))
+      .timeout(Duration::from_secs(30))
+      .build()
+      .map_err(|_| "Could not initialize local Account networking.")?;
+    #[cfg(not(all(feature = "local-dev", target_os = "macos", debug_assertions)))]
     let client = apell_core::providers::http_client()
       .map_err(|_| "Could not initialize Apell Account networking.")?;
     Ok(Self {
-      config: Config::compiled(),
+      config,
       client,
       state: Mutex::default(),
     })
+  }
+
+  pub(crate) fn http_client(&self) -> &Client {
+    &self.client
+  }
+
+  #[cfg(all(feature = "local-dev", target_os = "macos", debug_assertions))]
+  pub(crate) fn local_http_builder(&self) -> Result<reqwest::ClientBuilder, String> {
+    oidc::local_http_builder(self.config.as_ref())
   }
 
   async fn status(&self, app: &AppHandle) -> Result<Status, String> {

@@ -60,6 +60,43 @@ impl Config {
   }
 }
 
+#[cfg(all(feature = "local-dev", target_os = "macos", debug_assertions))]
+pub(super) fn local_http_builder(
+  config: Option<&Config>,
+) -> Result<reqwest::ClientBuilder, String> {
+  if !config.is_some_and(is_local_profile) {
+    return Err("The macOS local-dev build requires the generated local Account profile.".into());
+  }
+  let certs = reqwest::Certificate::from_pem_bundle(include_bytes!(env!("APELL_LOCAL_CA_FILE")))
+    .map_err(|_| "The local development CA could not be read.")?;
+  if certs.len() != 1 {
+    return Err("The local development CA file must contain one certificate.".into());
+  }
+  Ok(
+    Client::builder()
+      .tls_backend_rustls()
+      .tls_certs_only(certs)
+      .https_only(true)
+      .no_proxy()
+      .resolve("localhost", ([127, 0, 0, 1], 0).into())
+      .redirect(reqwest::redirect::Policy::none())
+      .no_gzip()
+      .no_brotli()
+      .no_deflate()
+      .no_zstd(),
+  )
+}
+
+#[cfg(all(feature = "local-dev", target_os = "macos", debug_assertions))]
+fn is_local_profile(config: &Config) -> bool {
+  config.issuer.as_str() == "https://localhost:5656/oidc"
+    && config.client_id == "apell-local-shell"
+    && config.sync_url.as_str() == "https://localhost:8788/"
+    && config.resource == "https://localhost:8788/api/v1/config-sync"
+    && config.key_exchange.as_ref().map(Url::as_str)
+      == Some("https://localhost:5656/api/v1/key-vault")
+}
+
 fn secure_url(value: &str) -> Option<Url> {
   let url = Url::parse(value).ok()?;
   let authority = value.strip_prefix("https://")?.split('/').next()?;
@@ -624,6 +661,44 @@ mod tests {
       sync_url: Url::parse("https://sync.example.invalid/").unwrap(),
       resource: "https://sync.example.invalid/config-sync",
       key_exchange: None,
+    }
+  }
+
+  #[cfg(all(feature = "local-dev", target_os = "macos", debug_assertions))]
+  #[test]
+  fn local_ca_requires_all_fixture_endpoints() {
+    let local = || Config {
+      issuer: Url::parse("https://localhost:5656/oidc").unwrap(),
+      client_id: "apell-local-shell",
+      sync_url: Url::parse("https://localhost:8788").unwrap(),
+      resource: "https://localhost:8788/api/v1/config-sync",
+      key_exchange: Some(Url::parse("https://localhost:5656/api/v1/key-vault").unwrap()),
+    };
+    assert!(local_http_builder(Some(&local())).unwrap().build().is_ok());
+    assert!(local_http_builder(None).is_err());
+    for other in [
+      Config {
+        issuer: fixture().issuer,
+        ..local()
+      },
+      Config {
+        client_id: fixture().client_id,
+        ..local()
+      },
+      Config {
+        sync_url: fixture().sync_url,
+        ..local()
+      },
+      Config {
+        resource: fixture().resource,
+        ..local()
+      },
+      Config {
+        key_exchange: None,
+        ..local()
+      },
+    ] {
+      assert!(local_http_builder(Some(&other)).is_err());
     }
   }
 

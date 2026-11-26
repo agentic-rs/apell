@@ -11,7 +11,11 @@ pub struct StoreConfig {
 pub fn load(root: &Path) -> Result<StoreConfig, String> {
   let file = match std::fs::File::open(root.join("store-settings.json")) {
     Ok(file) => file,
-    Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(StoreConfig::default()),
+    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+      return Ok(StoreConfig {
+        store_url: super::DEFAULT_STORE_URL.map(str::to_owned),
+      });
+    }
     Err(_) => return Err("Could not read store settings.".into()),
   };
   let mut bytes = Vec::new();

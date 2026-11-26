@@ -57,24 +57,34 @@ To publish a test `.apel` from the host, use the generated local token from
 [Store publishing API](store.md#http-api). To test maintainer or publishing
 settings, register a package in the local Store first.
 
-## Connect a native test app
+## Run the macOS test app
 
-Use a separate macOS user for local native testing so the test app gets its own
-app data and Keychain. On iOS, use a separate test simulator. Trust the
-generated CA there before running a local-profile test app. Port 5656 serves
-the synthetic Account origin and the encrypted relay.
+With the container and `pnpm dev:local web` running, open another terminal:
+
+```sh
+pnpm dev:local shell
+```
+
+**Apell Local** runs the macOS shell with hot reload, its own app data and
+Keychain entries, and the local Store configured by default. Its native
+connections to the Store, Account, and encrypted relay trust the generated
+development CA. To approve a device code or test browser recovery, open the
+approval page in the test browser that trusts the development CA.
+
+The fictional account can test first verification and encrypted API key sync.
+Use fictional model settings and API keys. If the fixture restarts while a
+sign-in or recovery is pending, start a fresh request.
+
+## Test on iOS
+
+Use a separate test simulator with the generated CA installed and trusted.
+Build the shell for that simulator with the local profile:
 
 ```sh
 APELL_SHELL_BUILD_PROFILE="$(cat deploy/local/.state/config/shell.env)" \
-  APELL_REQUIRE_KEY_SYNC=1 pnpm desktop:dev
+  APELL_REQUIRE_KEY_SYNC=1 pnpm ios:dev 'Your test simulator name'
 ```
 
-With the local profile, sign in and approve the displayed device code at the
-local test issuer. The same fictional account is available for testing first
-verification, pairing from a second test install, and browser recovery. Use
-fictional model settings and API keys for sync tests. If the fixture restarts
-while sign-in or recovery is pending, start a fresh request.
-
-These loopback URLs are intended for the host and the iOS Simulator. A physical
-phone or Android emulator needs its own network and development certificate
+The simulator can act as a second device for pairing. A physical phone or
+Android emulator needs its own network and development certificate
 configuration to reach the services.

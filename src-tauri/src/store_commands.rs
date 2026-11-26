@@ -19,6 +19,16 @@ use tauri::{AppHandle, Emitter, Manager};
 
 pub use state::StoreConfig;
 
+const DEFAULT_STORE_URL: Option<&str> = if cfg!(all(
+  feature = "local-dev",
+  target_os = "macos",
+  debug_assertions
+)) {
+  Some("https://localhost:8788")
+} else {
+  None
+};
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StoreQuery {
@@ -144,6 +154,13 @@ async fn configured(host: &Host, requested: &str) -> Result<String, String> {
   }
   Ok(store_url)
 }
+fn store_client(_host: &Host, store_url: &str) -> Result<StoreClient, String> {
+  #[cfg(all(feature = "local-dev", target_os = "macos", debug_assertions))]
+  if Some(store_url) == DEFAULT_STORE_URL {
+    return StoreClient::with_http_builder(store_url, _host.account.local_http_builder()?);
+  }
+  StoreClient::new(store_url)
+}
 async fn save_config(host: &Host, requested: &str) -> Result<StoreConfig, String> {
   let config = StoreConfig {
     store_url: if requested.trim().is_empty() {
@@ -212,7 +229,7 @@ pub async fn dispatch(
     "store.catalog" => {
       let request: StoreQuery = input(params)?;
       let store_url = configured(host, &request.store_url).await?;
-      let catalog = StoreClient::new(&store_url)?.catalog().await?;
+      let catalog = store_client(host, &store_url)?.catalog().await?;
       let installed = installed(host).await?;
       let applets = catalog
         .applets
@@ -244,7 +261,7 @@ pub async fn dispatch(
       } else {
         configured(host, &request.store_url).await?
       };
-      let detail = StoreClient::new(&store_url)?
+      let detail = store_client(host, &store_url)?
         .detail(&request.applet_id)
         .await?;
       let installed = installed(host).await?;
@@ -297,7 +314,7 @@ pub async fn dispatch(
         .await
         .map_err(|_| "Store icons are unavailable.")?;
       output(
-        StoreClient::new(&store_url)?
+        store_client(host, &store_url)?
           .icon(&request.icon_url)
           .await?,
       )
@@ -511,7 +528,7 @@ async fn install(app: AppHandle, host: &Host, request: InstallQuery) -> Result<V
     }
     std::future::pending::<()>().await;
   };
-  let download = StoreClient::new(&store_url)?.download_resumable(
+  let download = store_client(host, &store_url)?.download_resumable(
     &request.applet_id, &request.release, &checkpoint, pause, |received_bytes, total_bytes| {
       let _ = app.emit_to("main", "install-progress", json!({"operation_id":operation_id,"received_bytes":received_bytes,"total_bytes":total_bytes}));
     },

@@ -438,7 +438,8 @@ async fn request_head(
     .join(HEAD_PATH)
     .map_err(|_| "Invalid config sync service address.")?;
   let mut request = host
-    .provider_http
+    .account
+    .http_client()
     .request(method, url)
     .bearer_auth(access.token.as_str())
     .timeout(Duration::from_secs(20));

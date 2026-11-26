@@ -111,14 +111,13 @@ struct HeadReply {
 }
 
 impl KeySync {
-  pub fn new() -> Result<Self, String> {
-    let client = apell_core::providers::http_client()?;
-    Ok(Self {
+  pub fn new(client: Client) -> Self {
+    Self {
       client,
       gate: Mutex::new(()),
       managed: managed::Managed::default(),
       automatic: automatic::Automatic::default(),
-    })
+    }
   }
 
   pub async fn clear_requests(&self) {
