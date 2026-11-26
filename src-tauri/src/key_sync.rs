@@ -2,7 +2,7 @@ mod automatic;
 mod crypto;
 mod managed;
 
-pub(crate) use automatic::{commit_local_credentials, kick, start, suppress_local_restore};
+pub(crate) use automatic::{commit_local_credentials, kick, start};
 
 use crate::{
   account::Access,

@@ -378,7 +378,8 @@ async fn apply_archive(app: AppHandle, archive: Archive) -> Result<Value, String
         .into_iter()
         .map(|(slot, mut credential)| (slot, Some(std::mem::take(&mut *credential))))
         .collect();
-      crate::key_sync::commit_local_credentials(&app, &host, &plan.settings, updates).await?;
+      crate::key_sync::commit_local_credentials(&app, &host, &current, &plan.settings, updates)
+        .await?;
       *current = plan.settings;
       crate::key_sync::kick(&app);
     }

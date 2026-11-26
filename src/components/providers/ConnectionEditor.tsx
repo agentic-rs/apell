@@ -224,7 +224,7 @@ export function ConnectionEditor(props: EditorProps) {
       <h2>{saved ? saved.name : 'Add connection'}</h2>
       <p>
         {active
-          ? 'New requests use this connection.'
+          ? 'New requests use the saved settings.'
           : 'Choose a provider, connect your account, and select a model.'}
       </p>
       <form
@@ -297,6 +297,11 @@ export function ConnectionEditor(props: EditorProps) {
                 />
               </label>
             </details>
+          )}
+          {saved && changed_destination && (
+            <p className="status">
+              Saving replaces this connection and any saved credentials on this device.
+            </p>
           )}
           {draft.provider_id === 'zai-coding-plan' && (
             <p className="status">
@@ -422,11 +427,6 @@ export function ConnectionEditor(props: EditorProps) {
               onChange={(event) => setDraft({ ...draft, name: event.target.value })}
             />
           </label>
-          {changed_destination && (
-            <p className="status">
-              This is a different destination. The previous credential will not be reused.
-            </p>
-          )}
         </fieldset>
         <button
           className="primary"
@@ -497,7 +497,7 @@ export function ConnectionEditor(props: EditorProps) {
           {confirm_delete ? (
             <>
               <p>
-                Remove this connection and its saved credential?
+                Remove this connection from this device and delete its saved credential?
                 {active ? ' Choose another connection to set a new default model.' : ''}
               </p>
               <div className="button-row">

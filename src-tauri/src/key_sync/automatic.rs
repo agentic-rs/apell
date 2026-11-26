@@ -228,15 +228,12 @@ pub(super) async fn activate(
   .await
 }
 
-pub(crate) async fn commit_local_credentials(
-  app: &AppHandle,
-  host: &Host,
-  settings: &Settings,
-  updates: Vec<(String, Option<String>)>,
-) -> Result<(), String> {
-  // The caller holds credential_gate while these markers and the Keychain
-  // update are committed. Record ambiguous ownership before touching a key.
-  let edits: Vec<_> = settings
+fn local_credential_edits(
+  previous: &Settings,
+  next: &Settings,
+  updates: &[(String, Option<String>)],
+) -> BTreeMap<String, bool> {
+  let mut edits: BTreeMap<_, _> = next
     .connections
     .iter()
     .filter(|connection| eligible_endpoint(connection).is_some())
@@ -248,7 +245,26 @@ pub(crate) async fn commit_local_credentials(
         .map(|(_, value)| (connection.connection_id.clone(), value.is_some()))
     })
     .collect();
-  let assignment = if edits.iter().any(|(_, adds_key)| *adds_key) {
+  for connection in &previous.connections {
+    if eligible_endpoint(connection).is_some()
+      && next.connection(&connection.connection_id).is_err()
+    {
+      edits.insert(connection.connection_id.clone(), false);
+    }
+  }
+  edits
+}
+
+pub(crate) async fn commit_local_credentials(
+  app: &AppHandle,
+  host: &Host,
+  previous: &Settings,
+  next: &Settings,
+  updates: Vec<(String, Option<String>)>,
+) -> Result<(), String> {
+  // The caller holds credential_gate through the sync markers and the local save.
+  let edits = local_credential_edits(previous, next, &updates);
+  let assignment = if edits.values().any(|adds_key| *adds_key) {
     match host.account.account_key(app).await {
       Ok(Some(account)) => match local_vault(app, &account)
         .await
@@ -270,65 +286,59 @@ pub(crate) async fn commit_local_credentials(
   };
   let app = app.clone();
   let root = host.root.clone();
-  let settings = settings.clone();
+  let settings = next.clone();
   blocking(move || {
-    if edits.is_empty() {
-      return commit_settings(&app, &root, &settings, updates);
-    }
-    let mut device = Device::load(&root)?;
-    let blocked: Vec<_> = edits
-      .into_iter()
-      .filter(|(id, adds_key)| {
-        !adds_key
-          || match device.connections.get(id) {
-            Some(record) => record.assignment != assignment,
-            None => assignment != Assignment::Blocked || device.initialized,
-          }
-      })
-      .collect();
-    if !blocked.is_empty() {
-      for (id, _) in &blocked {
-        device.connections.insert(id.clone(), Tracked::default());
-      }
-      device.save(&root)?;
-    }
-    commit_settings(&app, &root, &settings, updates)?;
-    if assignment != Assignment::Blocked && blocked.iter().any(|(_, adds_key)| *adds_key) {
-      for (id, adds_key) in blocked {
-        if adds_key {
-          device.connections.insert(
-            id,
-            Tracked {
-              assignment: assignment.clone(),
-              common: None,
-            },
-          );
-        }
-      }
-      // The device already saved the credential. If enrollment cannot be
-      // recorded, the durable unowned marker still prevents misdirected sync.
-      let _ = device.save(&root);
-    }
-    Ok(())
+    commit_tracked_edits(&root, edits, assignment, || {
+      commit_settings(&app, &root, &settings, updates)
+    })
   })
   .await
 }
 
-pub(crate) async fn suppress_local_restore(
-  host: &Host,
-  connection: &Connection,
+fn commit_tracked_edits(
+  root: &Path,
+  edits: BTreeMap<String, bool>,
+  assignment: Assignment,
+  commit: impl FnOnce() -> Result<(), String>,
 ) -> Result<(), String> {
-  if eligible_endpoint(connection).is_none() {
-    return Ok(());
+  if edits.is_empty() {
+    return commit();
   }
-  let id = connection.connection_id.clone();
-  let root = host.root.clone();
-  blocking(move || {
-    let mut device = Device::load(&root)?;
-    device.connections.insert(id, Tracked::default());
-    device.save(&root)
-  })
-  .await
+  let mut device = Device::load(root)?;
+  let blocked: Vec<_> = edits
+    .into_iter()
+    .filter(|(id, adds_key)| {
+      !adds_key
+        || match device.connections.get(id) {
+          Some(record) => record.assignment != assignment,
+          None => assignment != Assignment::Blocked || device.initialized,
+        }
+    })
+    .collect();
+  if !blocked.is_empty() {
+    for (id, _) in &blocked {
+      device.connections.insert(id.clone(), Tracked::default());
+    }
+    device.save(root)?;
+  }
+  commit()?;
+  if assignment != Assignment::Blocked && blocked.iter().any(|(_, adds_key)| *adds_key) {
+    for (id, adds_key) in blocked {
+      if adds_key {
+        device.connections.insert(
+          id,
+          Tracked {
+            assignment: assignment.clone(),
+            common: None,
+          },
+        );
+      }
+    }
+    // The device already saved the credential. If enrollment cannot be
+    // recorded, the durable unowned marker still prevents misdirected sync.
+    let _ = device.save(root);
+  }
+  Ok(())
 }
 
 fn local_key(
@@ -425,6 +435,7 @@ struct Plan {
   conflict: bool,
   capacity: bool,
   invalid: bool,
+  awaiting_metadata: bool,
 }
 
 async fn synchronize(app: &AppHandle, host: &Host, account: &str) -> Result<(), String> {
@@ -452,8 +463,13 @@ async fn synchronize(app: &AppHandle, host: &Host, account: &str) -> Result<(), 
     .map(|entry| (entry.connection_id.clone(), entry))
     .collect();
   let missing = missing_metadata(host, &owner, &entries).await?;
+  let metadata_owner = owner.clone();
+  let root = host.root.clone();
   // A metadata retry cannot prevent synchronization of other complete entries.
-  let added = crate::config_sync::add_credential_connections(app, host, &access, &missing)
+  let added =
+    crate::config_sync::add_credential_connections(app, host, &access, missing, move |ids| {
+      retain_restorable(&root, &metadata_owner, ids)
+    })
     .await
     .unwrap_or(false);
   if added {
@@ -462,10 +478,9 @@ async fn synchronize(app: &AppHandle, host: &Host, account: &str) -> Result<(), 
   let plan_owner = owner.clone();
   let plan_app = app.clone();
   let root = host.root.clone();
-  let (plan, awaiting_metadata) =
+  let plan =
     crate::config_sync::apply_key_restores(app, host, &access, move |settings, preferred| {
-      let awaiting_metadata = missing.iter().any(|id| settings.connection(id).is_err());
-      let plan = apply_plan(
+      apply_plan(
         &plan_app,
         &root,
         settings,
@@ -473,8 +488,7 @@ async fn synchronize(app: &AppHandle, host: &Host, account: &str) -> Result<(), 
         &secret,
         entries,
         preferred,
-      )?;
-      Ok((plan, awaiting_metadata))
+      )
     })
     .await?;
   if let Some(upload) = plan.upload {
@@ -507,7 +521,7 @@ async fn synchronize(app: &AppHandle, host: &Host, account: &str) -> Result<(), 
   if plan.capacity {
     return Err("The encrypted API key limit was reached.".into());
   }
-  if awaiting_metadata {
+  if plan.awaiting_metadata {
     return Err(
       "Use model settings sync to bring in the provider connections for your backed-up API keys."
         .into(),
@@ -523,7 +537,7 @@ async fn missing_metadata(
 ) -> Result<HashSet<String>, String> {
   let _gate = host.credential_gate.lock().await;
   let settings = host.settings.lock().await;
-  let ids: Vec<_> = entries
+  let mut ids: HashSet<_> = entries
     .keys()
     .filter(|id| settings.connection(id).is_err())
     .cloned()
@@ -534,15 +548,16 @@ async fn missing_metadata(
   let owner = owner.clone();
   let root = host.root.clone();
   blocking(move || {
-    let device = Device::load(&root)?;
-    Ok(
-      ids
-        .into_iter()
-        .filter(|id| device.permits(id, &owner))
-        .collect(),
-    )
+    retain_restorable(&root, &owner, &mut ids)?;
+    Ok(ids)
   })
   .await
+}
+
+fn retain_restorable(root: &Path, owner: &Owner, ids: &mut HashSet<String>) -> Result<(), String> {
+  let device = Device::load(root)?;
+  ids.retain(|id| device.permits(id, owner));
+  Ok(())
 }
 
 fn apply_plan(
@@ -558,7 +573,12 @@ fn apply_plan(
   let mut uploads = Vec::new();
   let mut restores = Vec::new();
   let mut common = Vec::new();
-  let mut plan = Plan::default();
+  let mut plan = Plan {
+    awaiting_metadata: entries
+      .keys()
+      .any(|id| settings.connection(id).is_err() && device.permits(id, owner)),
+    ..Plan::default()
+  };
   let vault_id = owner.vault_id.to_string();
   let encryption_key = derive_api_key_encryption_key(vault_key, &vault_id);
   let fingerprint_key = derive_sync_fingerprint_key(vault_key, &vault_id);
@@ -683,21 +703,96 @@ mod tests {
   use super::*;
   use crate::settings::credential_ref;
 
-  #[test]
-  fn only_restoring_the_preferred_slots_key_can_activate_it() {
-    let mut settings = Settings::default();
-    let connection = |id: &str| Connection {
+  fn fixture_connection(id: &str, provider: &str) -> Connection {
+    Connection {
       connection_id: id.into(),
       name: id.into(),
       model_id: "fixture-model".into(),
-      provider_id: "openai".into(),
-      base_url: apell_core::providers::default_base_url("openai")
+      provider_id: provider.into(),
+      base_url: apell_core::providers::default_base_url(provider)
         .unwrap()
         .into(),
       credential: credential_ref(id),
+    }
+  }
+
+  #[test]
+  fn replacement_blocks_the_old_restore_before_saving_the_new_key() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let owner = Owner {
+      account: "fixture-account".into(),
+      vault_id: Uuid::new_v4(),
     };
-    let preferred = connection("preferred");
-    let unrelated = connection("unrelated");
+    let mut device = Device::default();
+    device.record("old".into(), &owner, Some("old-fingerprint".into()));
+    device.save(root).unwrap();
+    let mut requested = HashSet::from(["old".into(), "unrelated".into()]);
+    retain_restorable(root, &owner, &mut requested).unwrap();
+    assert!(requested.contains("old"));
+
+    let previous = Settings {
+      connections: vec![fixture_connection("old", "openai")],
+      ..Settings::default()
+    };
+    let replacement = fixture_connection("new", "deepseek");
+    let updates = vec![
+      (
+        replacement.credential.account.clone(),
+        Some("fixture-key".into()),
+      ),
+      (previous.connections[0].credential.account.clone(), None),
+    ];
+    let next = Settings {
+      connections: vec![replacement],
+      ..Settings::default()
+    };
+    let edits = local_credential_edits(&previous, &next, &updates);
+    assert_eq!(
+      edits,
+      BTreeMap::from([("new".into(), true), ("old".into(), false)])
+    );
+    commit_tracked_edits(root, edits, Assignment::Paired(owner.clone()), || {
+      // A metadata fetch that started earlier must recheck the on-disk markers.
+      retain_restorable(root, &owner, &mut requested)?;
+      assert_eq!(requested, HashSet::from(["unrelated".into()]));
+      assert!(!Device::load(root)?.permits("new", &owner));
+      next.persist(root)
+    })
+    .unwrap();
+    let device = Device::load(root).unwrap();
+    assert!(!device.permits("old", &owner));
+    assert!(device.connections["new"].belongs_to(&owner));
+    assert_eq!(Settings::load(root).unwrap().connections, next.connections);
+  }
+
+  #[test]
+  fn removal_blocks_restore_even_without_replacing_a_credential() {
+    let previous = Settings {
+      connections: vec![fixture_connection("old", "openai")],
+      ..Settings::default()
+    };
+    let mut rename = previous.clone();
+    rename.connections[0].name = "Renamed".into();
+    assert!(local_credential_edits(&previous, &rename, &[]).is_empty());
+
+    let replacement = Settings {
+      connections: vec![fixture_connection("oauth", "codex")],
+      ..Settings::default()
+    };
+    for next in [Settings::default(), replacement] {
+      assert_eq!(
+        local_credential_edits(&previous, &next, &[]),
+        BTreeMap::from([("old".into(), false)])
+      );
+    }
+  }
+
+  #[test]
+  fn only_restoring_the_preferred_slots_key_can_activate_it() {
+    let mut settings = Settings::default();
+    let preferred = fixture_connection("preferred", "openai");
+    let unrelated = fixture_connection("unrelated", "openai");
     let preferred_slot = preferred.credential.account.clone();
     let unrelated_slot = unrelated.credential.account.clone();
     settings.connections = vec![preferred, unrelated];

@@ -377,7 +377,8 @@ pub(crate) async fn add_credential_connections(
   app: &AppHandle,
   host: &Host,
   access: &Access,
-  ids: &HashSet<String>,
+  mut ids: HashSet<String>,
+  retain_restorable: impl FnOnce(&mut HashSet<String>) -> Result<(), String> + Send + 'static,
 ) -> Result<bool, String> {
   if ids.is_empty() {
     return Ok(false);
@@ -392,17 +393,23 @@ pub(crate) async fn add_credential_connections(
   let _credential_gate = host.credential_gate.lock().await;
   let mut current = host.settings.lock().await;
   require_account(app, host, access).await?;
-  let missing = head.snapshot.missing_key_connections(&current, ids)?;
-  if missing.is_empty() {
-    return Ok(false);
-  }
-  // Credentials require local provider metadata. Fill in only the requested
-  // additions so a background pass cannot resolve settings conflicts for users.
-  let mut next = current.clone();
-  next.connections.extend(missing);
   let root = host.root.clone();
-  let to_save = next.clone();
-  blocking(move || to_save.persist(&root)).await?;
+  let mut next = current.clone();
+  let updated = blocking(move || {
+    // The device could have removed a connection while the head was loading.
+    retain_restorable(&mut ids)?;
+    let missing = head.snapshot.missing_key_connections(&next, &ids)?;
+    if missing.is_empty() {
+      return Ok(None);
+    }
+    next.connections.extend(missing);
+    next.persist(&root)?;
+    Ok(Some(next))
+  })
+  .await?;
+  let Some(next) = updated else {
+    return Ok(false);
+  };
   *current = next;
   Ok(true)
 }

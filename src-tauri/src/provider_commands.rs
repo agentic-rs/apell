@@ -457,18 +457,13 @@ pub async fn dispatch(
       if next.active_connection_id.as_deref() == Some(id) {
         next.active_connection_id = None;
       }
-      let persist = next.clone();
-      let root = host.root.clone();
-      crate::key_sync::suppress_local_restore(host, &connection).await?;
-      let app_write = app.clone();
-      blocking(move || {
-        commit_settings(
-          &app_write,
-          &root,
-          &persist,
-          vec![(connection.credential.account, None)],
-        )
-      })
+      crate::key_sync::commit_local_credentials(
+        &app,
+        host,
+        &current,
+        &next,
+        vec![(connection.credential.account, None)],
+      )
       .await?;
       *current = next;
       drafts::invalidate_source(&host.provider_jobs, id, None);

@@ -374,8 +374,8 @@ fn final_updates(
 
 pub(super) async fn save(app: AppHandle, host: &Host, input: SaveDraft) -> Result<Value, String> {
   let app_write = &app;
-  let connection = save_with(host, input, move |settings, updates| async move {
-    crate::key_sync::commit_local_credentials(app_write, host, &settings, updates).await
+  let connection = save_with(host, input, move |previous, next, updates| async move {
+    crate::key_sync::commit_local_credentials(app_write, host, &previous, &next, updates).await
   })
   .await?;
   crate::key_sync::kick(&app);
@@ -385,7 +385,7 @@ pub(super) async fn save(app: AppHandle, host: &Host, input: SaveDraft) -> Resul
 async fn save_with<F: Future<Output = Result<(), String>>>(
   host: &Host,
   input: SaveDraft,
-  commit: impl FnOnce(Settings, Vec<(String, Option<String>)>) -> F,
+  commit: impl FnOnce(Settings, Settings, Vec<(String, Option<String>)>) -> F,
 ) -> Result<Connection, String> {
   let draft = get(&host.provider_jobs, &input.draft_id)?;
   let _draft_gate = draft.gate.lock().await;
@@ -419,7 +419,7 @@ async fn save_with<F: Future<Output = Result<(), String>>>(
   )?;
   let mut next = settings.clone();
   next.replace(source_id, connection.clone());
-  commit(next.clone(), updates).await?;
+  commit(settings.clone(), next.clone(), updates).await?;
   *settings = next;
   host
     .provider_jobs
@@ -631,7 +631,7 @@ mod tests {
     }
     let original = std::fs::read(directory.path().join("llm-connections.json")).unwrap();
     let vault = RefCell::new(HashMap::<String, String>::new());
-    let failed = save_with(&host, save_input(&id), |_, updates| async {
+    let failed = save_with(&host, save_input(&id), |_, _, updates| async {
       super::super::commit_with_vault(
         |slot| Ok(vault.borrow().get(slot).cloned()),
         |slot, value| {
@@ -658,7 +658,7 @@ mod tests {
 
     let vault_ref = &vault;
     let directory_ref = &directory;
-    let saved = save_with(&host, save_input(&id), |settings, updates| async move {
+    let saved = save_with(&host, save_input(&id), |_, settings, updates| async move {
       super::super::commit_with_vault(
         |slot| Ok(vault_ref.borrow().get(slot).cloned()),
         |slot, value| {
@@ -695,7 +695,7 @@ mod tests {
       "request-only-key"
     );
     assert!(get(&host.provider_jobs, &id).unwrap().oauth.is_none());
-    let failed = save_with(&host, save_input(&id), |_, _| async {
+    let failed = save_with(&host, save_input(&id), |_, _, _| async {
       panic!("credential-free required provider must not commit")
     })
     .await;
@@ -704,7 +704,7 @@ mod tests {
     let mut input = save_input(&id);
     input.key_action = KeyAction::Replace;
     input.api_key = Some("final-key".into());
-    let saved = save_with(&host, input, |_, updates| async move {
+    let saved = save_with(&host, input, |_, _, updates| async move {
       assert_eq!(updates.len(), 1);
       let account: AccountConfig = serde_json::from_str(updates[0].1.as_ref().unwrap()).unwrap();
       assert_eq!(account.api_key.unwrap().expose(), "final-key");
@@ -735,7 +735,7 @@ mod tests {
       .lock()
       .unwrap()
       .insert(id.into(), draft);
-    let saved = save_with(&host, save_input(id), |_, updates| async move {
+    let saved = save_with(&host, save_input(id), |_, _, updates| async move {
       assert!(
         updates.is_empty(),
         "Keep must not read or overwrite a newer vault credential"
@@ -780,7 +780,7 @@ mod tests {
     let id = install_draft(&host, "custom").await;
     let mut input = save_input(&id);
     input.model_id = " ".into();
-    assert!(save_with(&host, input, |_, _| async {
+    assert!(save_with(&host, input, |_, _, _| async {
       panic!("empty model must not commit")
     })
     .await
@@ -807,7 +807,7 @@ mod tests {
       .find(|connection| connection.connection_id == source.connection_id)
       .unwrap()
       .name = "Changed elsewhere".into();
-    assert!(save_with(&host, save_input("stale"), |_, _| async {
+    assert!(save_with(&host, save_input("stale"), |_, _, _| async {
       panic!("stale editor must not commit")
     })
     .await
@@ -850,7 +850,7 @@ mod tests {
     let saving_host = host.clone();
     let saving_id = id.clone();
     let save = tokio::spawn(async move {
-      save_with(&saving_host, save_input(&saving_id), |_, _| async move {
+      save_with(&saving_host, save_input(&saving_id), |_, _, _| async move {
         started.send(()).unwrap();
         released.await.unwrap();
         Ok(())
