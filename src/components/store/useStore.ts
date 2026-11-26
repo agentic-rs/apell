@@ -22,7 +22,6 @@ import type {
   StoreDetail,
   StoreReleaseOption,
   StoreSource,
-  StoreUpdatesReport,
 } from '../../lib/types';
 import {
   reviewSavedCatalog,
@@ -43,6 +42,12 @@ import {
   type StoreBrowseCache,
   type StoreBrowsePreferences,
 } from './cache';
+import {
+  applyUpdateCheck,
+  savePreviousUpdates,
+  verifySavedUpdates,
+  type StoreUpdateResults,
+} from './updatesState';
 
 type StoreOperation = 'save' | 'install' | 'open' | 'restart';
 interface DetailSelection extends StoreReleaseChoice {
@@ -58,7 +63,7 @@ export function useStore(
   const [config, setConfig] = useState<StoreConfig>();
   const [browse, setBrowse] = useState(DEFAULT_BROWSE);
   const [catalog, setCatalog] = useState<StoreCatalog>();
-  const [updates, setUpdates] = useState<StoreUpdatesReport>();
+  const [updates, setUpdates] = useState<StoreUpdateResults>();
   const [updates_query, setUpdatesQuery] = useState('');
   const [detail, setDetail] = useState<StoreDetail>();
   const [local_installation, setLocalInstallation] = useState<AppletInstallResult>();
@@ -129,6 +134,7 @@ export function useStore(
       ...patch,
       ...(patch.query !== undefined ? { query: patch.query.slice(0, 200) } : {}),
     };
+    if (patch.updates_only && !browse.updates_only) setUpdates(savePreviousUpdates);
     setBrowse(next);
     if (cache.current) {
       cache.current.preferences = next;
@@ -184,11 +190,17 @@ export function useStore(
     const isCurrent = () => scope.current.alive && scope.current.updates === request;
     setUpdatesLoading(true);
     setUpdatesError('');
+    setUpdates(savePreviousUpdates);
     try {
       const result = await getStoreUpdates();
-      if (isCurrent()) setUpdates(result);
+      if (isCurrent()) setUpdates((previous) => applyUpdateCheck(result, previous));
     } catch (error) {
-      if (isCurrent()) setUpdatesError(message(error));
+      if (!isCurrent()) return;
+      setUpdatesError(message(error));
+      if (updates?.sources.some((source) => source.updates.length || source.saved_updates.length)) {
+        const report = await listApplets().catch(() => undefined);
+        if (report && isCurrent()) setUpdates((previous) => verifySavedUpdates(previous, report));
+      }
     } finally {
       if (isCurrent()) setUpdatesLoading(false);
     }
@@ -272,6 +284,7 @@ export function useStore(
     scope.current.alive = true;
     markFresh(false);
     clearCatalogReview();
+    setUpdates(savePreviousUpdates);
     if (selection.current) {
       setLocalInstallation(undefined);
       setDetailLoading(true);

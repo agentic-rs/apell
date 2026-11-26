@@ -1,6 +1,7 @@
 import { storeChannelName } from '../../lib/storeState';
-import type { StoreSource, StoreUpdatesReport } from '../../lib/types';
+import type { StoreSource } from '../../lib/types';
 import { AppletIcon } from '../AppletIcon';
+import type { StoreUpdateResults } from './updatesState';
 
 export function StoreUpdatesView({
   report,
@@ -10,7 +11,7 @@ export function StoreUpdatesView({
   onRefresh,
   onSelect,
 }: {
-  report?: StoreUpdatesReport;
+  report?: StoreUpdateResults;
   loading: boolean;
   error: string;
   query: string;
@@ -20,19 +21,23 @@ export function StoreUpdatesView({
   const search = query.trim().toLocaleLowerCase();
   const groups = (report?.sources ?? []).map((source) => ({
     source,
-    unchecked: source.installed_count - source.checked_count,
-    matching: source.updates.filter(({ applet }) =>
-      applet.name.toLocaleLowerCase().includes(search),
-    ),
+    unchecked: report?.fresh ? source.installed_count - source.checked_count : 0,
+    check_error: report?.fresh ? source.error : undefined,
+    matching: [
+      ...source.updates.map((entry) => ({ ...entry, saved: false })),
+      ...source.saved_updates.map((entry) => ({ ...entry, saved: true })),
+    ].filter(({ applet }) => applet.name.toLocaleLowerCase().includes(search)),
   }));
   const visible = groups.filter(
-    ({ source, unchecked, matching }) => unchecked > 0 || source.error || matching.length > 0,
+    ({ check_error, unchecked, matching }) => unchecked > 0 || check_error || matching.length > 0,
   );
   const no_installations = groups.every(({ source }) => source.installed_count === 0);
-  const has_updates = groups.some(({ source }) => source.updates.length > 0);
+  const has_updates = groups.some(
+    ({ source }) => source.updates.length || source.saved_updates.length,
+  );
   return (
     <>
-      {(loading || (!report && !error)) && (
+      {(loading || (!report?.fresh && !error)) && (
         <p className="status" role="status">
           Checking installed applets for updates…
         </p>
@@ -41,9 +46,7 @@ export function StoreUpdatesView({
         <div className="store-feedback" role="alert">
           <strong>Couldn’t check for updates</strong>
           <p>
-            {has_updates
-              ? 'Shown updates are from the previous check.'
-              : 'Update status is unknown.'}
+            {has_updates ? 'Showing updates from previous checks.' : 'Update status is unknown.'}
           </p>
           <p>{error}</p>
           <button disabled={loading} onClick={onRefresh}>
@@ -51,7 +54,7 @@ export function StoreUpdatesView({
           </button>
         </div>
       )}
-      {!loading && !error && report && !visible.length && (
+      {!loading && !error && report?.fresh && !visible.length && (
         <div className="store-empty">
           <h2>
             {no_installations
@@ -69,22 +72,22 @@ export function StoreUpdatesView({
           </p>
         </div>
       )}
-      {visible.map(({ source, unchecked, matching }) => (
+      {visible.map(({ source, check_error, unchecked, matching }) => (
         <section className="store-update-group" key={source.store_url}>
           <h2>{source.store_url}</h2>
-          {(unchecked > 0 || source.error) && (
+          {(unchecked > 0 || check_error) && (
             <div className="store-feedback" role="status">
               <strong>
                 {unchecked === 1
                   ? 'Couldn’t check one applet'
                   : `Couldn’t check ${unchecked} applets`}
               </strong>
-              {source.error && <p>{source.error}</p>}
+              {check_error && <p>{check_error}</p>}
             </div>
           )}
           {!!matching.length && (
             <ul className="store-list">
-              {matching.map(({ applet, release }) => {
+              {matching.map(({ applet, release, saved }) => {
                 const installed_source = applet.source;
                 if (installed_source?.kind !== 'store') return null;
                 const version_id = `store-update-version-${applet.applet_id}`;
@@ -93,7 +96,7 @@ export function StoreUpdatesView({
                     <button
                       className="store-card"
                       onClick={() => onSelect(installed_source)}
-                      aria-label={`Review update for ${applet.name}`}
+                      aria-label={`${saved ? 'Check saved release' : 'Review update'} for ${applet.name}`}
                       aria-describedby={version_id}
                     >
                       <span className="store-icon" aria-hidden="true">
@@ -105,6 +108,9 @@ export function StoreUpdatesView({
                           <span className="store-badge">
                             {storeChannelName(installed_source.channel)}
                           </span>
+                          {saved && (
+                            <span className="store-badge store-badge-muted">Saved result</span>
+                          )}
                           {applet.version} → {release.version}
                         </span>
                       </span>

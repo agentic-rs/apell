@@ -1,4 +1,4 @@
-import type { StoreCatalog, StoreSource, StoreUpdatesReport } from '../../lib/types';
+import type { StoreCatalog, StoreSource } from '../../lib/types';
 import {
   installedStoreChannel,
   matchingStoreApplets,
@@ -9,6 +9,7 @@ import {
 import { Icon } from '../Icon';
 import { StoreIcon } from './StoreIcon';
 import { StoreUpdatesView } from './StoreUpdatesView';
+import type { StoreUpdateResults } from './updatesState';
 
 export function StoreCatalogView({
   catalog,
@@ -27,7 +28,7 @@ export function StoreCatalogView({
 }: {
   catalog?: StoreCatalog;
   store_url?: string | null;
-  updates?: StoreUpdatesReport;
+  updates?: StoreUpdateResults;
   loading: boolean;
   error: string;
   query: string;

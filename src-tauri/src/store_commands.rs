@@ -86,11 +86,19 @@ struct AppletUpdate {
   release: StoreRelease,
 }
 #[derive(Serialize)]
+struct UnreachableInstallation {
+  applet_id: String,
+  sha256: String,
+  channel: StoreChannel,
+}
+#[derive(Serialize)]
 struct UpdateSource {
   store_url: String,
   installed_count: usize,
   checked_count: usize,
   updates: Vec<AppletUpdate>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  unreachable_installations: Option<Vec<UnreachableInstallation>>,
   #[serde(skip_serializing_if = "Option::is_none")]
   error: Option<String>,
 }
@@ -215,16 +223,17 @@ async fn check_updates<F>(
 where
   F: Future<Output = Result<StoreCatalog, String>>,
 {
-  let mut installations = BTreeMap::<String, Vec<InstalledApplet>>::new();
+  let mut installations = BTreeMap::<String, Vec<(InstalledApplet, StoreChannel)>>::new();
   for applet in report.applets {
     let Some(PackageSource::Store(source)) = applet.source.as_ref() else {
       continue;
     };
     if source.applet_id == applet.manifest.applet_id && source.validate().is_ok() {
+      let channel = source.channel;
       installations
         .entry(source.store_url.clone())
         .or_default()
-        .push(applet);
+        .push((applet, channel));
     }
   }
 
@@ -237,12 +246,23 @@ where
         installed_count: applets.len(),
         checked_count: 0,
         updates: Vec::new(),
+        unreachable_installations: None,
         error: None,
       };
       let catalog = match catalog {
         Ok(catalog) => catalog,
         Err(error) => {
           source.error = Some(error);
+          source.unreachable_installations = Some(
+            applets
+              .into_iter()
+              .map(|(applet, channel)| UnreachableInstallation {
+                applet_id: applet.manifest.applet_id,
+                sha256: applet.sha256,
+                channel,
+              })
+              .collect(),
+          );
           return source;
         }
       };
@@ -251,7 +271,7 @@ where
         .iter()
         .map(|listing| (listing.applet_id.as_str(), listing))
         .collect();
-      for applet in applets {
+      for (applet, _) in applets {
         let Some(release) = listings
           .get(applet.manifest.applet_id.as_str())
           .and_then(|listing| installed_channel_release(listing, &applet))

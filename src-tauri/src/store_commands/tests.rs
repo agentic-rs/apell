@@ -189,9 +189,17 @@ async fn updates_keep_successful_results_when_an_origin_fails() {
   let healthy = "https://healthy.example";
   let unavailable = "https://unavailable.example";
   let mut report = empty_report();
+  let mut nightly = store_installation(
+    "nightly",
+    unavailable,
+    "1.0.0-beta.1",
+    StoreChannel::Nightly,
+  );
+  nightly.sha256 = "b".repeat(64);
   report.applets = vec![
     store_installation("sample", healthy, "1.0.0", StoreChannel::Stable),
     store_installation("other", unavailable, "1.0.0", StoreChannel::Stable),
+    nightly,
   ];
   let result = check_updates(report, |origin| async move {
     match origin.as_str() {
@@ -209,13 +217,18 @@ async fn updates_keep_successful_results_when_an_origin_fails() {
   assert_eq!(sources[0]["checked_count"], 1);
   assert_eq!(sources[0]["updates"][0]["release"]["version"], "2.0.0");
   assert!(sources[0].get("error").is_none());
+  assert!(sources[0].get("unreachable_installations").is_none());
   assert_eq!(
     sources[1],
     json!({
       "store_url": unavailable,
-      "installed_count": 1,
+      "installed_count": 2,
       "checked_count": 0,
       "updates": [],
+      "unreachable_installations": [
+        {"applet_id": "other", "sha256": "a".repeat(64), "channel": "stable"},
+        {"applet_id": "nightly", "sha256": "b".repeat(64), "channel": "nightly"}
+      ],
       "error": "Could not reach the store."
     })
   );
@@ -251,6 +264,7 @@ async fn updates_follow_each_installed_channel_and_keep_local_artwork() {
   let source = &result.sources[0];
   assert_eq!(source.installed_count, 4);
   assert_eq!(source.checked_count, 2);
+  assert!(source.unreachable_installations.is_none());
   assert_eq!(source.updates.len(), 1);
   let update = &source.updates[0];
   assert_eq!(update.applet.manifest.name, "Sample");

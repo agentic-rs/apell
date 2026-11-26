@@ -107,12 +107,18 @@ export interface StoreUpdateEntry {
   applet: InstalledApplet;
   release: StoreRelease;
 }
+export interface StoreUpdateInstallation {
+  applet_id: string;
+  sha256: string;
+  channel: StoreChannel;
+}
 export interface StoreUpdateSource {
   store_url: string;
   installed_count: number;
   checked_count: number;
   updates: StoreUpdateEntry[];
   error?: string;
+  unreachable_installations?: StoreUpdateInstallation[];
 }
 export interface StoreUpdatesReport {
   sources: StoreUpdateSource[];
