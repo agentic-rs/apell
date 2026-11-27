@@ -28,6 +28,8 @@ Saved applet details for an installed source follow that Store and the applet’
 installed channel, even while Discover points at another Store. If no releases
 for the channel are saved, you can still open the installed applet.
 Installation and updates require a fresh review of the selected release.
+If installation fails, Apell shows the error and checks the same release page
+again. Review the current release before trying the installation again.
 The Store website also saves public listings in the browser.
 
 The catalog lists every published applet once, including Nightly-only applets.

@@ -66,6 +66,8 @@ export function Store({
   const downloads_heading = useRef<HTMLHeadingElement>(null);
   const download_return = useRef<HTMLButtonElement>(null);
   const detail_route = useRef<HTMLDivElement>(null);
+  const install_failure_alert = useRef<HTMLDivElement>(null);
+  const focused_failure = useRef<string>(undefined);
   const permission_return = useRef<HTMLButtonElement>(null);
   const address_heading = useRef<HTMLHeadingElement>(null);
   const catalog = useRef<HTMLElement>(null);
@@ -210,6 +212,13 @@ export function Store({
     const target = entry && !entry.disabled ? entry : downloads_heading.current;
     target?.focus({ preventScroll: true });
   }, [repair]);
+  const failure_id = state.install_failure?.operation_id;
+  useEffect(() => {
+    const alert = install_failure_alert.current;
+    if (!alert || !failure_id || focused_failure.current === failure_id) return;
+    focused_failure.current = failure_id;
+    alert.focus();
+  }, [failure_id]);
   useEffect(() => {
     const trigger = permission_return.current;
     if (permission_applet || !trigger) return;
@@ -311,6 +320,19 @@ export function Store({
         <p className="store-feedback error" role="alert">
           {state.action_error}
         </p>
+      )}
+      {state.install_failure && (
+        <div ref={install_failure_alert} tabIndex={-1} className="store-feedback" role="alert">
+          <strong>
+            {reviewing_download
+              ? 'Couldn’t continue this download'
+              : 'Couldn’t install this release'}
+          </strong>
+          <p>{state.install_failure.reason}</p>
+          {state.detail_fresh && state.review?.release && !paused_download_missing && (
+            <p>Current release details are below.</p>
+          )}
+        </div>
       )}
       {state.detail && state.detail_error && (
         <div className="store-feedback" role="alert">

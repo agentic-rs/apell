@@ -82,6 +82,10 @@ export function useStore(
   const [config_error, setConfigError] = useState('');
   const [catalog_error, setCatalogError] = useState('');
   const [detail_error, setDetailError] = useState('');
+  const [install_failure, setInstallFailure] = useState<{
+    operation_id: string;
+    reason: string;
+  }>();
   const [status, setStatus] = useState('');
   const [action_error, setActionError] = useState('');
   const [operation, setOperation] = useState<StoreOperation>();
@@ -374,6 +378,7 @@ export function useStore(
     setDetail(undefined);
     setLocalInstallation(undefined);
     setDetailError('');
+    setInstallFailure(undefined);
     setDetailLoading(false);
     setActionError('');
     setStatus('');
@@ -390,6 +395,7 @@ export function useStore(
     setLocalInstallation(undefined);
     setDetailLoading(true);
     setDetailError('');
+    setInstallFailure(undefined);
   };
 
   const reviewDownload = (pending_download: StorePendingDownload) =>
@@ -453,6 +459,7 @@ export function useStore(
     if (!switching && !switching_channel && !['install', 'update'].includes(release.action)) return;
     const review_revision = scope.current.detail;
     void run('install', async (operation_id) => {
+      setInstallFailure(undefined);
       try {
         const installed = await transfer.run(operation_id, async () => {
           if (!scope.current.alive || fresh.current !== snapshot || selection.current !== requested)
@@ -519,10 +526,14 @@ export function useStore(
         invalidateCatalog();
         store_updates.invalidate(installed.applet.applet_id);
       } catch (error) {
-        if (has_checkpoint && scope.current.alive && scope.current.detail === review_revision) {
-          void loadDetail(requested);
-        }
-        throw error;
+        const selected = selection.current;
+        if (!scope.current.alive || selected?.target !== target) return;
+        markFresh();
+        setInstallFailure({ operation_id, reason: message(error) });
+        invalidateCatalog();
+        store_updates.invalidate(target.applet_id);
+        // An installation change already schedules a review for this target.
+        if (scope.current.detail === review_revision) void loadDetail(selected);
       } finally {
         refreshDownloads();
       }
@@ -548,6 +559,7 @@ export function useStore(
   const chooseRelease = (choice: StoreReleaseChoice) => {
     const requested = selection.current;
     if (
+      scope.current.operation ||
       !displayed_detail ||
       !requested ||
       requested.target.installed_source ||
@@ -604,6 +616,7 @@ export function useStore(
     catalog_error,
     updates_error: store_updates.error,
     detail_error,
+    install_failure,
     status,
     action_error,
     operation,
